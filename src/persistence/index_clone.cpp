@@ -8,8 +8,8 @@
  * HNSW-only index clone implementation
  */
 
-#include <core/hypervec_assert.h>
-#include <factory/clone_index.h>
+#include <utils/log/assert.h>
+#include <persistence/index_clone.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/idmap/index_id_map.h>

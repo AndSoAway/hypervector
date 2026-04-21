@@ -10,7 +10,7 @@
 
 /* Function for soft heap */
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <utils/structures/heap.h>
 
 namespace hypervec {

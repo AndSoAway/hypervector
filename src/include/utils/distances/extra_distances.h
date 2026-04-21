@@ -11,9 +11,9 @@
 /** In this file are the implementations of extra metrics beyond L2
  *  and inner product */
 
-#include <core/id_selector.h>
-#include <core/metric_type.h>
-#include <core/simd_dispatch.h>
+#include <utils/selector/id_selector.h>
+#include <utils/distances/metric_type.h>
+#include <utils/simd/simd_dispatch.h>
 #include <utils/structures/ordered_key_value.h>
 
 #include <cstdint>

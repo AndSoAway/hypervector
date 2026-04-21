@@ -16,8 +16,8 @@
  * the interface.
  */
 
-#include <core/metric_type.h>
-#include <core/maybe_owned_vector.h>
+#include <utils/distances/metric_type.h>
+#include <utils/structures/maybe_owned_vector.h>
 
 #include <vector>
 

@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include <core/id_selector.h>
-#include <core/index.h>
+#include <utils/selector/id_selector.h>
+#include <index/index.h>
 
 #include <unordered_map>
 #include <vector>

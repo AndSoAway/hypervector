@@ -8,8 +8,8 @@
 
 // -*- c++ -*-
 
-#include <core/distance_computer.h>
-#include <core/id_selector.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 #include <omp.h>
 #include <search/aux_index_structures.h>
 #include <utils/distances/extra_distances.h>

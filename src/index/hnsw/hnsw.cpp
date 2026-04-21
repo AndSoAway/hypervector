@@ -6,8 +6,8 @@
  * source tree.
  */
 
-#include <core/distance_computer.h>
-#include <core/id_selector.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 #include <index/hnsw/hnsw.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>

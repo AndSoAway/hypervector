@@ -17,7 +17,7 @@
 #ifndef HYPERVEC_utils_h
 #define HYPERVEC_utils_h
 
-#include <core/platform_macros.h>
+#include <utils/common/platform_macros.h>
 #include <stdint.h>
 #include <utils/structures/heap.h>
 

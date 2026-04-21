@@ -6,8 +6,8 @@
  * source tree.
  */
 
-#include <core/hypervec_assert.h>
-#include <core/platform_macros.h>
+#include <utils/log/assert.h>
+#include <utils/common/platform_macros.h>
 #include <utils/simd/simdlib/simdlib_dispatch.h>
 #include <utils/structures/aligned_table.h>
 #include <utils/structures/ordered_key_value.h>

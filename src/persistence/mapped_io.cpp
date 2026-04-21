@@ -21,8 +21,8 @@
 
 #endif
 
-#include <core/hypervec_assert.h>
-#include <io/mapped_io.h>
+#include <utils/log/assert.h>
+#include <persistence/mapped_io.h>
 
 #include <cstring>
 

@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include <core/maybe_owned_vector.h>
-#include <io/io.h>
+#include <utils/structures/maybe_owned_vector.h>
+#include <persistence/io.h>
 
 #include <cstddef>
 #include <cstdint>

@@ -7,7 +7,7 @@
  */
 #pragma once
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 
 #include <cstddef>
 #include <cstdint>

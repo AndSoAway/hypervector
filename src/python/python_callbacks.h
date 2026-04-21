@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include <core/id_selector.h>
+#include <utils/selector/id_selector.h>
 #include <invlists/inverted_lists.h>
-#include <io/io.h>
+#include <persistence/io.h>
 
 #include <cstdint>
 

@@ -12,21 +12,18 @@ project(hypervec VERSION 1.0.0)
 # =============================================================================
 
 set(HYPERVEC_SRC
-  core/index.cpp
-  core/hypervec_exception.cpp
-  core/id_selector.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
-  factory/clone_index.cpp
+  persistence/index_clone.cpp
   search/aux_index_structures.cpp
-  io/index_read.cpp
-  io/index_write.cpp
-  io/io.cpp
-  io/mapped_io.cpp
+  persistence/index_read.cpp
+  persistence/index_write.cpp
+  persistence/io.cpp
+  persistence/mapped_io.cpp
   utils/structures/heap.cpp
   utils/structures/random.cpp
   utils/structures/sorting.cpp
@@ -35,30 +32,29 @@ set(HYPERVEC_SRC
   utils/distances/distances.cpp
   utils/distances/distances_simd.cpp
   utils/distances/extra_distances.cpp
+  utils/selector/id_selector.cpp
   utils/simd/simd_levels.cpp
 )
 
 set(HYPERVEC_HEADERS
-  include/core/index.h
-  include/core/metric_type.h
-  include/core/hypervec_assert.h
-  include/core/hypervec_exception.h
-  include/core/platform_macros.h
-  include/core/distance_computer.h
-  include/core/id_selector.h
-  include/core/maybe_owned_vector.h
+  include/index/index.h
+  include/utils/distances/metric_type.h
+  include/utils/log/assert.h
+  include/utils/common/platform_macros.h
+  include/utils/distances/distance_computer.h
+  include/utils/structures/maybe_owned_vector.h
   include/index/flat/index_flat.h
   include/index/flat/index_flat_codes.h
   include/index/hnsw/index_hnsw.h
   include/index/hnsw/hnsw.h
   include/index/hnsw/visited_table.h
   include/index/idmap/index_id_map.h
-  include/factory/clone_index.h
+  include/persistence/index_clone.h
   include/search/aux_index_structures.h
-  include/io/io.h
-  include/io/io_macros.h
-  include/io/index_read_utils.h
-  include/io/mapped_io.h
+  include/persistence/io.h
+  include/persistence/io_macros.h
+  include/persistence/index_read_utils.h
+  include/persistence/mapped_io.h
   include/utils/utils.h
   include/utils/structures/heap.h
   include/utils/structures/random.h
@@ -72,7 +68,6 @@ set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
 
 add_library(hypervec ${HYPERVEC_SRC})
 
-# Handle new include path: #include <core/Index.h> etc.
 target_include_directories(hypervec PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 

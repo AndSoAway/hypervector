@@ -10,7 +10,7 @@
 
 #include <invlists/inverted_lists.h>
 #include <invlists/inverted_lists_io_hook.h>
-#include <io/index_io.h>
+#include <persistence/index_io.h>
 #include <utils/structures/aligned_table.h>
 
 namespace hypervec {

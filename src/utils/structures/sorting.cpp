@@ -8,7 +8,7 @@
 
 // -*- c++ -*-
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <omp.h>
 #include <utils/structures/sorting.h>
 #include <utils/utils.h>

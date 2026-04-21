@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include <core/index.h>
+#include <index/index.h>
 #include <utils/utils.h>
 
 TEST(TestUtils, GetVersion) {

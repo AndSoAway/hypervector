@@ -8,7 +8,7 @@
 
 // -*- c++ -*-
 
-#include <core/index.h>
+#include <index/index.h>
 #include <utils/simd/simd_levels.h>
 #include <utils/utils.h>
 
@@ -26,7 +26,7 @@
 #include <unistd.h>
 #endif  // !_MSC_VER
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <omp.h>
 #include <search/aux_index_structures.h>
 #include <utils/structures/random.h>

@@ -12,8 +12,8 @@
 #ifndef HYPERVEC_AUX_INDEX_STRUCTURES_H
 #define HYPERVEC_AUX_INDEX_STRUCTURES_H
 
-#include <core/metric_type.h>
-#include <core/platform_macros.h>
+#include <utils/distances/metric_type.h>
+#include <utils/common/platform_macros.h>
 #include <stdint.h>
 
 #include <cstring>

@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include <core/distance_computer.h>
-#include <core/index.h>
-#include <core/maybe_owned_vector.h>
+#include <utils/distances/distance_computer.h>
+#include <index/index.h>
+#include <utils/structures/maybe_owned_vector.h>
 
 #include <vector>
 

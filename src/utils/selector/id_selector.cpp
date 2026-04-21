@@ -6,8 +6,8 @@
  * source tree.
  */
 
-#include <core/hypervec_assert.h>
-#include <core/id_selector.h>
+#include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 
 namespace hypervec {
 

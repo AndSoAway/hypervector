@@ -9,7 +9,7 @@
 #pragma once
 
 #include <invlists/inverted_lists.h>
-#include <io/io.h>
+#include <persistence/io.h>
 
 #include <string>
 

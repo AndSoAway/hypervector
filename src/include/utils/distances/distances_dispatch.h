@@ -23,7 +23,7 @@
  * functions in distances.cpp and simply delegate to these _dispatch variants.
  */
 
-#include <core/simd_dispatch.h>
+#include <utils/simd/simd_dispatch.h>
 #include <utils/distances/distances.h>
 
 namespace hypervec {

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <core/metric_type.h>
+#include <utils/distances/metric_type.h>
 
 #include <unordered_set>
 #include <vector>

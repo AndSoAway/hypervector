@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include <core/platform_macros.h>
+#include <utils/common/platform_macros.h>
 #include <stdint.h>
 #include <utils/simd/simd_levels.h>
 #include <utils/structures/heap.h>

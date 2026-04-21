@@ -6,7 +6,7 @@
  * source tree.
  */
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <index/idmap/index_id_map.h>
 #include <search/aux_index_structures.h>
 #include <utils/structures/heap.h>

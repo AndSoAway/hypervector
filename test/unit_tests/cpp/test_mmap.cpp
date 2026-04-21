@@ -16,8 +16,8 @@
 #include <vector>
 
 #include <index/flat/index_flat.h>
-#include <io/io.h>
-#include <io/index_io.h>
+#include <persistence/io.h>
+#include <persistence/index_io.h>
 
 namespace {
 

@@ -12,9 +12,8 @@
 
 #pragma once
 
-#include <core/hypervec_assert.h>
-#include <core/hypervec_exception.h>
-#include <core/id_selector.h>
+#include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <search/aux_index_structures.h>
 #include <utils/structures/heap.h>
 #include <utils/structures/partitioning.h>

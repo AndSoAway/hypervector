@@ -8,15 +8,15 @@
  * HNSW-only index read implementation
  */
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <invlists/block_inverted_lists.h>
-#include <io/index_io.h>
-#include <io/index_read_utils.h>
-#include <io/io.h>
-#include <io/io_macros.h>
-#include <io/mapped_io.h>
+#include <persistence/index_io.h>
+#include <persistence/index_read_utils.h>
+#include <persistence/io.h>
+#include <persistence/io_macros.h>
+#include <persistence/mapped_io.h>
 
 #include <cstdio>
 #include <cstdlib>

@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <io/io.h>
+#include <persistence/io.h>
 
 namespace hypervec {
 

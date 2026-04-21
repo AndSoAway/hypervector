@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <core/index.h>
+#include <index/index.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/hnsw.h>
 #include <utils/utils.h>

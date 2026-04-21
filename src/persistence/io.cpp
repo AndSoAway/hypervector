@@ -8,8 +8,8 @@
 
 // -*- c++ -*-
 
-#include <core/hypervec_assert.h>
-#include <io/io.h>
+#include <utils/log/assert.h>
+#include <persistence/io.h>
 
 #include <algorithm>
 #include <cassert>

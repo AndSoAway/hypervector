@@ -11,7 +11,7 @@
 // TODO: Support big endian (currently supporting only little endian)
 
 #include <arm_neon.h>
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <utils/simd/simdlib/simdlib.h>
 
 #include <algorithm>

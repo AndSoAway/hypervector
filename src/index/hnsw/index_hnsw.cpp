@@ -8,7 +8,7 @@
 
 // HNSW-only index implementation
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>

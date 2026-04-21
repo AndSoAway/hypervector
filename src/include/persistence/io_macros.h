@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <core/maybe_owned_vector.h>
+#include <utils/structures/maybe_owned_vector.h>
 
 /*************************************************************
  * I/O macros

@@ -8,8 +8,8 @@
 
 // -*- c++ -*-
 
-#include <core/hypervec_assert.h>
-#include <core/simd_dispatch.h>
+#include <utils/log/assert.h>
+#include <utils/simd/simd_dispatch.h>
 #include <index/flat/index_flat.h>
 #include <omp.h>
 #include <search/aux_index_structures.h>

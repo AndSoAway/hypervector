@@ -8,7 +8,7 @@
 
 // -*- c++ -*-
 
-#include <core/hypervec_exception.h>
+#include <utils/log/exception.h>
 
 #include <sstream>
 
@@ -63,9 +63,6 @@ void handleExceptions(
     throw HypervecException(ss.str());
   }
 }
-
-// From
-// https://stackoverflow.com/questions/281818/unmangling-the-result-of-stdtype-infoname
 
 std::string demangle_cpp_symbol(const char* name) {
 #ifdef __GNUG__

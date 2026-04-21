@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <core/platform_macros.h>
+#include <utils/common/platform_macros.h>
 #include <immintrin.h>
 #include <utils/simd/simdlib/simdlib.h>
 #include <utils/simd/simdlib/simdlib_avx2.h>

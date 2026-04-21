@@ -9,7 +9,7 @@
 #ifndef HYPERVEC_VISITED_TABLE_H
 #define HYPERVEC_VISITED_TABLE_H
 
-#include <core/platform_macros.h>
+#include <utils/common/platform_macros.h>
 #include <stdint.h>
 #include <utils/structures/prefetch.h>
 

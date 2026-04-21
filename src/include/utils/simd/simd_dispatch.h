@@ -19,7 +19,7 @@
  *   #include <utils/simd/simd_levels.h>
  */
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <utils/simd/simd_levels.h>
 
 namespace hypervec {

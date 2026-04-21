@@ -13,8 +13,7 @@
 // Put C++ includes here
 %{
 
-#include <core/HypervecException.h>
-#include <core/IDSelector.h>
+// Example: #include <some header.h>
 
 %}
 

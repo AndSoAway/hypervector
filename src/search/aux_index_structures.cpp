@@ -8,7 +8,7 @@
 
 // -*- c++ -*-
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <search/aux_index_structures.h>
 
 #include <algorithm>

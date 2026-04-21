@@ -22,8 +22,8 @@
 #include <arm_sve.h>
 #endif
 
-#include <core/hypervec_assert.h>
-#include <core/id_selector.h>
+#include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <search/aux_index_structures.h>
 #include <search/result_handler.h>
 #include <utils/distances/distances_dispatch.h>

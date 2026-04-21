@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <core/platform_macros.h>
+#include <utils/common/platform_macros.h>
 #include <stdint.h>
 #include <stdio.h>
 

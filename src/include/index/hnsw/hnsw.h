@@ -8,11 +8,11 @@
 
 #pragma once
 
-#include <core/distance_computer.h>
-#include <core/hypervec_assert.h>
-#include <core/index.h>
-#include <core/maybe_owned_vector.h>
-#include <core/platform_macros.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/log/exception.h>
+#include <index/index.h>
+#include <utils/structures/maybe_owned_vector.h>
+#include <utils/common/platform_macros.h>
 #include <omp.h>
 #include <utils/structures/heap.h>
 #include <utils/structures/random.h>

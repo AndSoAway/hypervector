@@ -11,7 +11,7 @@
 #ifndef HYPERVEC_METRIC_TYPE_H
 #define HYPERVEC_METRIC_TYPE_H
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 
 #include <cstdint>
 #include <cstdio>

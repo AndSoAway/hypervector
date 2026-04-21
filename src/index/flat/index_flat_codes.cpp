@@ -6,10 +6,10 @@
  * source tree.
  */
 
-#include <core/code_packer.h>
-#include <core/distance_computer.h>
-#include <core/hypervec_assert.h>
-#include <core/id_selector.h>
+#include <index/flat/code_packer.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <index/flat/index_flat_codes.h>
 #include <search/aux_index_structures.h>
 #include <search/result_handler.h>

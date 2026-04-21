@@ -11,8 +11,8 @@
 #ifndef HYPERVEC_ASSERT_INCLUDED
 #define HYPERVEC_ASSERT_INCLUDED
 
-#include <core/hypervec_exception.h>
-#include <core/platform_macros.h>
+#include <utils/log/exception.h>
+#include <utils/common/platform_macros.h>
 
 #include <cinttypes>
 #include <cstdio>

@@ -11,8 +11,8 @@
 #ifndef HYPERVEC_INDEX_H
 #define HYPERVEC_INDEX_H
 
-#include <core/hypervec_assert.h>
-#include <core/metric_type.h>
+#include <utils/log/assert.h>
+#include <utils/distances/metric_type.h>
 
 #include <cstdio>
 

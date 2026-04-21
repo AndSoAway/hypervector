@@ -8,9 +8,9 @@
 
 // -*- c++ -*-
 
-#include <core/distance_computer.h>
-#include <core/hypervec_assert.h>
-#include <core/index.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/log/exception.h>
+#include <index/index.h>
 #include <search/aux_index_structures.h>
 #include <utils/distances/distances.h>
 

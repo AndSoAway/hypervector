@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <core/index.h>
+#include <index/index.h>
 
 #include <cstddef>
 

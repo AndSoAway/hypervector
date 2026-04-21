@@ -6,7 +6,7 @@
  * source tree.
  */
 
-#include <core/hypervec_assert.h>
+#include <utils/log/assert.h>
 #include <utils/simd/simd_levels.h>
 
 #include <cstdlib>
@@ -191,7 +191,7 @@ SIMDLevel SIMDConfig::auto_detect_simd_level() {
 }
 
 // Include private header for DISPATCH_SIMDLevel macro
-#include <core/simd_dispatch.h>
+#include <utils/simd/simd_dispatch.h>
 
 namespace {
 

@@ -11,7 +11,7 @@
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <index/index.h>
-#include <search/aux_index_structures.h>
+#include <utils/common/range_search_result.h>
 #include <utils/distances/distances.h>
 
 #include <cstring>

@@ -17,7 +17,7 @@
 
 #include <algo/auto_tune.h>
 // #include <hypervec/IndexIVF.h>  // not in HNSW-only build
-#include <search/result_handler.h>
+#include <utils/common/result_handler.h>
 #include <factory/index_factory.h>
 #include <utils/structures/random.h>
 

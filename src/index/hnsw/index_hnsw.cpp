@@ -13,8 +13,8 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <omp.h>
-#include <search/aux_index_structures.h>
-#include <search/result_handler.h>
+#include <utils/common/range_search_result.h>
+#include <utils/common/result_handler.h>
 #include <utils/structures/random.h>
 #include <utils/structures/sorting.h>
 

@@ -11,7 +11,7 @@
 #include <utils/distances/distance_computer.h>
 #include <utils/selector/id_selector.h>
 #include <omp.h>
-#include <search/aux_index_structures.h>
+#include <utils/common/range_search_result.h>
 #include <utils/distances/extra_distances.h>
 #include <utils/utils.h>
 

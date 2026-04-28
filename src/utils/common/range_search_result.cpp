@@ -6,10 +6,9 @@
  * source tree.
  */
 
-// -*- c++ -*-
 
-#include <utils/log/assert.h>
-#include <search/aux_index_structures.h>
+
+#include <utils/common/range_search_result.h>
 
 #include <algorithm>
 #include <cstring>
@@ -53,56 +52,6 @@ RangeSearchResult::~RangeSearchResult() {
   delete[] labels;
   delete[] distances;
   delete[] lims;
-}
-
-/***********************************************************************
- * BufferList
- ***********************************************************************/
-
-BufferList::BufferList(size_t buffer_size) : buffer_size(buffer_size) {
-  wp = buffer_size;
-}
-
-BufferList::~BufferList() {
-  for (int i = 0; i < buffers.size(); i++) {
-    delete[] buffers[i].ids;
-    delete[] buffers[i].dis;
-  }
-}
-
-void BufferList::Add(idx_t id, float dis) {
-  if (wp == buffer_size) {  // need new buffer
-    AppendBuffer();
-  }
-  Buffer& buf = buffers.back();
-  buf.ids[wp] = id;
-  buf.dis[wp] = dis;
-  wp++;
-}
-
-void BufferList::AppendBuffer() {
-  Buffer buf = {new idx_t[buffer_size], new float[buffer_size]};
-  buffers.push_back(buf);
-  wp = 0;
-}
-
-/// copy elements ofs:ofs+n-1 seen as linear data in the buffers to
-/// tables dest_ids, dest_dis
-void BufferList::CopyRange(size_t ofs, size_t n, idx_t* dest_ids,
-                            float* dest_dis) {
-  size_t bno = ofs / buffer_size;
-  ofs -= bno * buffer_size;
-  while (n > 0) {
-    size_t ncopy = ofs + n < buffer_size ? n : buffer_size - ofs;
-    Buffer buf = buffers[bno];
-    memcpy(dest_ids, buf.ids + ofs, ncopy * sizeof(*dest_ids));
-    memcpy(dest_dis, buf.dis + ofs, ncopy * sizeof(*dest_dis));
-    dest_ids += ncopy;
-    dest_dis += ncopy;
-    ofs = 0;
-    bno++;
-    n -= ncopy;
-  }
 }
 
 /***********************************************************************
@@ -193,68 +142,6 @@ void RangeSearchPartialResult::merge(
     result->lims[i] = result->lims[i - 1];
   }
   result->lims[0] = 0;
-}
-
-/***********************************************************
- * Interrupt callback
- ***********************************************************/
-
-std::unique_ptr<InterruptCallback> InterruptCallback::instance;
-
-std::mutex InterruptCallback::lock;
-
-void InterruptCallback::ClearInstance() {
-  delete instance.release();
-}
-
-void InterruptCallback::check() {
-  if (!instance.get()) {
-    return;
-  }
-  if (instance->WantInterrupt()) {
-    HYPERVEC_THROW_MSG("computation interrupted");
-  }
-}
-
-bool InterruptCallback::IsInterrupted() {
-  if (!instance.get()) {
-    return false;
-  }
-  std::lock_guard<std::mutex> guard(lock);
-  return instance->WantInterrupt();
-}
-
-size_t InterruptCallback::GetPeriodHint(size_t flops) {
-  if (!instance.get()) {
-    return (size_t)1 << 30;  // never check
-  }
-  // for 10M flops, it is reasonable to check once every 10 iterations
-  return std::max((size_t)10 * 10 * 1000 * 1000 / (flops + 1), (size_t)1);
-}
-
-void TimeoutCallback::SetTimeout(double timeout_in_seconds) {
-  timeout = timeout_in_seconds;
-  start = std::chrono::steady_clock::now();
-}
-
-bool TimeoutCallback::WantInterrupt() {
-  if (timeout == 0) {
-    return false;
-  }
-  auto end = std::chrono::steady_clock::now();
-  std::chrono::duration<float, std::milli> duration = end - start;
-  float elapsed_in_seconds = duration.count() / 1000.0;
-  if (elapsed_in_seconds > timeout) {
-    timeout = 0;
-    return true;
-  }
-  return false;
-}
-
-void TimeoutCallback::Reset(double timeout_in_seconds) {
-  auto tc(new hypervec::TimeoutCallback());
-  hypervec::InterruptCallback::instance.reset(tc);
-  tc->SetTimeout(timeout_in_seconds);
 }
 
 }  // namespace hypervec

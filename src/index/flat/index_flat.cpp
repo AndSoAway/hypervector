@@ -12,8 +12,8 @@
 #include <utils/simd/simd_dispatch.h>
 #include <index/flat/index_flat.h>
 #include <omp.h>
-#include <search/aux_index_structures.h>
-#include <search/result_handler.h>
+#include <utils/common/range_search_result.h>
+#include <utils/common/result_handler.h>
 #include <utils/distances/distances.h>
 #include <utils/distances/extra_distances.h>
 #include <utils/structures/heap.h>

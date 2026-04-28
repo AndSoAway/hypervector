@@ -8,7 +8,7 @@
 
 #include <utils/log/assert.h>
 #include <index/idmap/index_id_map.h>
-#include <search/aux_index_structures.h>
+#include <utils/common/range_search_result.h>
 #include <utils/structures/heap.h>
 
 #include <cinttypes>

@@ -21,7 +21,7 @@
 
 #pragma once
 
-#include <search/result_handler.h>
+#include <utils/common/result_handler.h>
 #include <utils/structures/heap.h>
 
 namespace hypervec {

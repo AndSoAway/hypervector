@@ -14,7 +14,7 @@
 
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
-#include <search/aux_index_structures.h>
+#include <utils/common/range_search_result.h>
 #include <utils/structures/heap.h>
 #include <utils/structures/partitioning.h>
 

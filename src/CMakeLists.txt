@@ -19,7 +19,9 @@ set(HYPERVEC_SRC
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
   persistence/index_clone.cpp
-  search/aux_index_structures.cpp
+  utils/common/interrupt_callback.cpp
+  utils/common/buffer_list.cpp
+  utils/common/range_search_result.cpp
   persistence/index_read.cpp
   persistence/index_write.cpp
   persistence/io.cpp
@@ -50,7 +52,9 @@ set(HYPERVEC_HEADERS
   include/index/hnsw/visited_table.h
   include/index/idmap/index_id_map.h
   include/persistence/index_clone.h
-  include/search/aux_index_structures.h
+  include/utils/common/interrupt_callback.h
+  include/utils/common/buffer_list.h
+  include/utils/common/range_search_result.h
   include/persistence/io.h
   include/persistence/io_macros.h
   include/persistence/index_read_utils.h

@@ -15,7 +15,7 @@
 
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/hnsw.h>
-#include <search/result_handler.h>
+#include <utils/common/result_handler.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/structures/random.h>
 

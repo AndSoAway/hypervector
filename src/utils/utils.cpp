@@ -28,7 +28,7 @@
 
 #include <utils/log/assert.h>
 #include <omp.h>
-#include <search/aux_index_structures.h>
+#include <utils/common/range_search_result.h>
 #include <utils/structures/random.h>
 
 #include <algorithm>

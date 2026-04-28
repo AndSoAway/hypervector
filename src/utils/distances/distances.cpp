@@ -24,8 +24,8 @@
 
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
-#include <search/aux_index_structures.h>
-#include <search/result_handler.h>
+#include <utils/common/range_search_result.h>
+#include <utils/common/result_handler.h>
 #include <utils/distances/distances_dispatch.h>
 #include <utils/distances/fused/distances_fused.h>
 

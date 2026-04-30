@@ -1,5 +1,7 @@
 /.claude/
 CLAUDE.md
+/.vscode/
+*.log
 *.swp
 *.swo
 *.o

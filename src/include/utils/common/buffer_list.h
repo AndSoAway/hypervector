@@ -9,6 +9,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <utils/distances/metric_type.h>
 
 #include <vector>
 

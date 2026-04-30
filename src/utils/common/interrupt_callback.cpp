@@ -9,6 +9,7 @@
 
 
 #include <utils/common/interrupt_callback.h>
+#include <utils/log/assert.h>
 
 #include <algorithm>
 

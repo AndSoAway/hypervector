@@ -7,6 +7,7 @@
  */
 
 #include <omp.h>
+#include <utils/common/interrupt_callback.h>
 #include <utils/distances/distances.h>
 
 #include <algorithm>

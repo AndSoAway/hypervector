@@ -28,8 +28,6 @@
 #include <queue>
 #include <random>
 
-#include "core/index.h"
-
 namespace hypervec {
 
 using MinimaxHeap = HNSW::MinimaxHeap;

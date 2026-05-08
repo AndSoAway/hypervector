@@ -12,12 +12,16 @@ project(hypervec VERSION 1.0.0)
 # =============================================================================
 
 set(HYPERVEC_SRC
+  index/index.cpp
+  index/ivf/index_ivf.cpp
+  index/ivf/index_ivf_flat.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
+  invlists/inverted_lists.cpp
   persistence/index_clone.cpp
   utils/common/interrupt_callback.cpp
   utils/common/buffer_list.cpp
@@ -40,6 +44,8 @@ set(HYPERVEC_SRC
 
 set(HYPERVEC_HEADERS
   include/index/index.h
+  include/index/ivf/index_ivf.h
+  include/index/ivf/index_ivf_flat.h
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
   include/utils/common/platform_macros.h

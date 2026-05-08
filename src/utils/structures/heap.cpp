@@ -13,6 +13,8 @@
 #include <utils/log/assert.h>
 #include <utils/structures/heap.h>
 
+#include <vector>
+
 namespace hypervec {
 
 template <typename C>

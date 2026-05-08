@@ -8,7 +8,7 @@
 
 #pragma once
 
-
+#include <utils/common/buffer_list.h>
 #include <utils/distances/metric_type.h>
 
 #include <memory>

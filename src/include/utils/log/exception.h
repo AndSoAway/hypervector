@@ -10,6 +10,8 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace hypervec {
 
@@ -26,5 +28,12 @@ struct HypervecException : std::exception {
 
   const char* what() const noexcept override { return msg.c_str(); }
 };
+
+/// Aggregate exceptions captured by worker threads (e.g. from an OpenMP
+/// parallel region) into a single HypervecException. If only one exception
+/// was captured, it is rethrown directly. The int in each pair identifies
+/// the worker / loop index that produced the exception.
+void handleExceptions(
+  std::vector<std::pair<int, std::exception_ptr>>& exceptions);
 
 }  // namespace hypervec

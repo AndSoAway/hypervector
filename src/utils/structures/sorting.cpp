@@ -14,6 +14,9 @@
 #include <utils/utils.h>
 
 #include <algorithm>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
 
 namespace hypervec {
 

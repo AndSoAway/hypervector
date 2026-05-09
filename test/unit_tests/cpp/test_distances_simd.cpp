@@ -7,12 +7,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <random>
 #include <vector>
 
-#include <hypervec/utils/distances.h>
+#include <utils/distances/distances.h>
 
 // reference implementations
 static void fvec_inner_products_ny_ref(

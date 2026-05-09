@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include <hypervec/impl/simdlib/simdlib_dispatch.h>
+#include <utils/simd/simdlib/simdlib_dispatch.h>
 
 using namespace hypervec;
 

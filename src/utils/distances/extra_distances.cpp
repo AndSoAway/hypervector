@@ -14,6 +14,7 @@
 #include <utils/common/interrupt_callback.h>
 #include <utils/common/range_search_result.h>
 #include <utils/distances/extra_distances.h>
+#include <utils/structures/heap.h>
 #include <utils/utils.h>
 
 #include <algorithm>

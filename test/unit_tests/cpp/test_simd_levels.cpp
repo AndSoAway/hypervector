@@ -12,9 +12,9 @@
 
 #include <gtest/gtest.h>
 
-#include <hypervec/impl/HypervecException.h>
-#include <hypervec/utils/simd_levels.h>
-#include <hypervec/utils/utils.h>
+#include <utils/log/exception.h>
+#include <utils/simd/simd_levels.h>
+#include <utils/utils.h>
 
 // Helper to check if we're in DD mode
 static bool is_dd_mode() {

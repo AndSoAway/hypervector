@@ -7,8 +7,8 @@
 
 #include <gtest/gtest.h>
 
-#include <hypervec/utils/AlignedTable.h>
-#include <hypervec/utils/partitioning.h>
+#include <utils/structures/aligned_table.h>
+#include <utils/structures/partitioning.h>
 
 using namespace hypervec;
 

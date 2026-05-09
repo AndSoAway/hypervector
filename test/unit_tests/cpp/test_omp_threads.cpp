@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include <hypervec/utils/utils.h>
+#include <utils/utils.h>
 
 TEST(Threading, openmp) {
     EXPECT_TRUE(hypervec::check_openmp());

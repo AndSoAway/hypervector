@@ -151,12 +151,6 @@ struct InvertedLists {
   /*************************
    * statistics            */
 
-  /// 1= perfectly balanced, >1: imbalanced
-  double imbalance_factor() const;
-
-  /// display some stats about the inverted lists
-  void print_stats() const;
-
   /// sum up list sizes
   size_t compute_ntotal() const;
 

@@ -12,6 +12,12 @@ set(HYPERVEC_TEST_SRC
   test_utils.cpp
   test_mmap.cpp
   test_factory_tools.cpp
+  test_distances_simd.cpp
+  test_omp_threads.cpp
+  test_partitioning.cpp
+  test_simd_levels.cpp
+  test_simdlib.cpp
+  test_kmeans.cpp
 )
 
 add_executable(hypervec_test ${HYPERVEC_TEST_SRC})

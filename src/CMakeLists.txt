@@ -26,6 +26,7 @@ set(HYPERVEC_SRC
   utils/common/interrupt_callback.cpp
   utils/common/buffer_list.cpp
   utils/common/range_search_result.cpp
+  utils/log/exception.cpp
   persistence/index_read.cpp
   persistence/index_write.cpp
   persistence/io.cpp
@@ -34,6 +35,7 @@ set(HYPERVEC_SRC
   utils/structures/random.cpp
   utils/structures/sorting.cpp
   utils/structures/partitioning.cpp
+  utils/algo/kmeans/kmeans.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_simd.cpp
@@ -48,6 +50,7 @@ set(HYPERVEC_HEADERS
   include/index/ivf/index_ivf_flat.h
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
+  include/utils/log/exception.h
   include/utils/common/platform_macros.h
   include/utils/distances/distance_computer.h
   include/utils/structures/maybe_owned_vector.h
@@ -63,12 +66,12 @@ set(HYPERVEC_HEADERS
   include/utils/common/range_search_result.h
   include/persistence/io.h
   include/persistence/io_macros.h
-  include/persistence/index_read_utils.h
   include/persistence/mapped_io.h
   include/utils/utils.h
   include/utils/structures/heap.h
   include/utils/structures/random.h
   include/utils/structures/sorting.h
+  include/utils/algo/kmeans/kmeans.h
   include/utils/distances/distances.h
   include/utils/simd/simd_levels.h
 )

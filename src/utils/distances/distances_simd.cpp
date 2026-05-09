@@ -61,16 +61,8 @@ template <>
 void fvec_inner_products_ny<SIMDLevel::NONE>(float* ip, const float* x,
                                              const float* y, size_t d,
                                              size_t ny) {
-// BLAS slower for the use cases here
-#if 0
-{
-    FINTEGER di = d;
-    FINTEGER nyi = ny;
-    float one = 1.0, zero = 0.0;
-    FINTEGER onei = 1;
-    sgemv_ ("T", &di, &nyi, &one, y, &di, x, &onei, &zero, ip, &onei);
-}
-#endif
+  // BLAS sgemv was tried here and was slower than the scalar loop
+  // for the typical sizes in this codebase.
   for (size_t i = 0; i < ny; i++) {
     ip[i] = fvec_inner_product(x, y, d);
     y += d;

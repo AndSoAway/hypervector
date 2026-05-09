@@ -11,9 +11,7 @@
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
-#include <invlists/block_inverted_lists.h>
 #include <persistence/index_io.h>
-#include <persistence/index_read_utils.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
 #include <persistence/mapped_io.h>

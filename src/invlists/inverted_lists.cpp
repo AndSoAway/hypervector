@@ -126,23 +126,6 @@ size_t InvertedLists::copy_subset_to(InvertedLists& other,
   return n_copied;
 }
 
-double InvertedLists::imbalance_factor() const {
-  double tot = 0, tot2 = 0;
-  for (size_t i = 0; i < nlist; i++) {
-    double sz = (double)list_size(i);
-    tot += sz;
-    tot2 += sz * sz;
-  }
-  if (tot == 0) {
-    return 1.0;
-  }
-  return (double)nlist * tot2 / (tot * tot);
-}
-
-void InvertedLists::print_stats() const {
-  // minimal stub
-}
-
 size_t InvertedLists::compute_ntotal() const {
   size_t n = 0;
   for (size_t i = 0; i < nlist; i++) {

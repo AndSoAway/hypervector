@@ -12,13 +12,29 @@
 #include <persistence/index_clone.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <quantization/pq/index_pq.h>
 
 namespace hypervec {
 
 // Clone IndexHNSW and its subclasses
 IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {
-  // Only support basic IndexHNSW and IndexHNSWFlat
+  // IndexHNSWPQ first — must precede IndexHNSWFlat / IndexHNSW because
+  // dynamic_cast matches the most-derived type and the base-class branches
+  // would otherwise swallow it.
+  if (auto* hnswpq = dynamic_cast<const IndexHNSWPQ*>(ihnsw)) {
+    auto* pq_storage = dynamic_cast<const IndexPQ*>(hnswpq->storage);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      pq_storage != nullptr,
+      "clone_IndexHNSW(IndexHNSWPQ): inner storage is not an IndexPQ");
+    // Untrained shell — symmetric with IndexHNSWFlat's clone behavior, except
+    // PQ requires a Train() call before Add(). M_hnsw = 32 to match the flat
+    // clone default; HNSW M is not recoverable from the original via
+    // public accessors.
+    return new IndexHNSWPQ(hnswpq->d, static_cast<int>(pq_storage->pq.M),
+                           pq_storage->pq.nbits, 32, hnswpq->metric_type);
+  }
   if (dynamic_cast<const IndexHNSWFlat*>(ihnsw)) {
     return new IndexHNSWFlat(ihnsw->d, 32, ihnsw->metric_type);
   }

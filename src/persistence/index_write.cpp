@@ -11,6 +11,7 @@
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
@@ -85,6 +86,20 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     if (hnswflat->storage) {
       WriteIndex(hnswflat->storage, f, 0);
     }
+    return;
+  }
+
+  // IHNp = IndexHNSWPQ. Persists only the PQ-compressed `storage`; the
+  // raw-vector scaffold is build-time only, so a deserialized index is
+  // implicitly frozen.
+  const IndexHNSWPQ* hnswpq = dynamic_cast<const IndexHNSWPQ*>(index);
+  if (hnswpq) {
+    uint32_t h = fourcc("IHNp");
+    WRITE1(h);
+    write_index_header(*hnswpq, f);
+    write_HNSW(hnswpq->hnsw, f);
+    HYPERVEC_THROW_IF_NOT(hnswpq->storage != nullptr);
+    WriteIndex(hnswpq->storage, f, 0);
     return;
   }
 

@@ -11,6 +11,7 @@
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
@@ -118,6 +119,23 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_index_header(*idxhnsw, f);
     read_HNSW(idxhnsw->hnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
+    return idxhnsw.release();
+  }
+
+  // IHNp = HNSW with PQ storage. Deserialized index is implicitly frozen
+  // (raw scaffold left null); the inherited storage owns the PQ codes.
+  if (h == fourcc("IHNp")) {
+    auto idxhnsw = std::make_unique<IndexHNSWPQ>();
+    read_index_header(*idxhnsw, f);
+    read_HNSW(idxhnsw->hnsw, f);
+    idxhnsw->storage = ReadIndex(f, 0);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
+      "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      idxhnsw->storage->is_trained,
+      "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
+    idxhnsw->own_fields = true;
     return idxhnsw.release();
   }
 

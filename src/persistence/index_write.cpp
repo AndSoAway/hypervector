@@ -14,6 +14,10 @@
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
+#include <invlists/inverted_lists.h>
+#include <quantization/pq/index_ivfpq.h>
+#include <quantization/pq/index_pq.h>
+#include <quantization/pq/pq.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +41,17 @@ static void write_index_header(const Index& idx, IOWriter* f) {
   if (idx.metric_type > 1) {
     WRITE1(idx.metric_arg);
   }
+}
+
+static void write_pq(const ProductQuantizer& pq, IOWriter* f) {
+  // Body of the PQ payload — used both standalone (after a PqPq magic) and
+  // embedded inside an IPQ8 / IVPQ index. The Index header carries d/metric,
+  // so when called from IPQ8 the d field is redundant but harmless; the
+  // standalone PqPq path needs it.
+  WRITE1(pq.d);
+  WRITE1(pq.M);
+  WRITE1(pq.nbits);
+  WRITEVECTOR(pq.centroids);
 }
 
 static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
@@ -103,7 +118,61 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     return;
   }
 
+  const IndexPQ* ipq = dynamic_cast<const IndexPQ*>(index);
+  if (ipq) {
+    uint32_t h = fourcc("IPQ8");
+    WRITE1(h);
+    write_index_header(*ipq, f);
+    write_pq(ipq->pq, f);
+    WRITEVECTOR(ipq->codes);
+    return;
+  }
+
+  const IndexIVFPQ* ivfpq = dynamic_cast<const IndexIVFPQ*>(index);
+  if (ivfpq) {
+    uint32_t h = fourcc("IVPQ");
+    WRITE1(h);
+    write_index_header(*ivfpq, f);
+    WRITE1(ivfpq->nlist);
+    WRITE1(ivfpq->nprobe);
+    WRITEVECTOR(ivfpq->centroids);
+    // by_residual / use_precomputed_table travel as fixed-width integers so
+    // the on-disk format isn't bool-ABI-dependent.
+    int8_t by_residual = ivfpq->by_residual ? 1 : 0;
+    int upt = ivfpq->use_precomputed_table;
+    WRITE1(by_residual);
+    WRITE1(upt);
+    write_pq(ivfpq->pq, f);
+    WRITEVECTOR(ivfpq->precomputed_table);
+
+    // Per-list payload: size, ids[], codes[]. Empty lists still write a
+    // zero size so the read loop stays symmetric.
+    for (size_t list_no = 0; list_no < ivfpq->nlist; list_no++) {
+      const size_t sz = ivfpq->invlists->list_size(list_no);
+      WRITE1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      InvertedLists::ScopedIds ids(ivfpq->invlists, list_no);
+      InvertedLists::ScopedCodes codes(ivfpq->invlists, list_no);
+      WRITEANDCHECK(ids.get(), sz);
+      WRITEANDCHECK(codes.get(), sz * ivfpq->pq.code_size);
+    }
+    return;
+  }
+
   HYPERVEC_THROW_MSG("unsupported index type for writing");
+}
+
+void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f) {
+  uint32_t h = fourcc("PqPq");
+  WRITE1(h);
+  write_pq(*pq, f);
+}
+
+void write_ProductQuantizer(const ProductQuantizer* pq, const char* fname) {
+  std::unique_ptr<IOWriter> f(new FileIOWriter(fname));
+  write_ProductQuantizer(pq, f.get());
 }
 
 void WriteIndex(const Index* index, const char* fname, int io_flags) {

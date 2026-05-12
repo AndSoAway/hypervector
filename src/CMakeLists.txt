@@ -18,6 +18,7 @@ set(HYPERVEC_SRC
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp
+  index/hnsw/index_hnsw_pq.cpp
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
@@ -36,6 +37,10 @@ set(HYPERVEC_SRC
   utils/structures/sorting.cpp
   utils/structures/partitioning.cpp
   utils/algo/kmeans/kmeans.cpp
+  quantization/pq/pq.cpp
+  quantization/pq/pq_distance_computer.cpp
+  quantization/pq/index_pq.cpp
+  quantization/pq/index_ivfpq.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_simd.cpp
@@ -57,6 +62,7 @@ set(HYPERVEC_HEADERS
   include/index/flat/index_flat.h
   include/index/flat/index_flat_codes.h
   include/index/hnsw/index_hnsw.h
+  include/index/hnsw/index_hnsw_pq.h
   include/index/hnsw/hnsw.h
   include/index/hnsw/visited_table.h
   include/index/idmap/index_id_map.h
@@ -72,6 +78,10 @@ set(HYPERVEC_HEADERS
   include/utils/structures/random.h
   include/utils/structures/sorting.h
   include/utils/algo/kmeans/kmeans.h
+  include/quantization/pq/pq.h
+  include/quantization/pq/pq_distance_computer.h
+  include/quantization/pq/index_pq.h
+  include/quantization/pq/index_ivfpq.h
   include/utils/distances/distances.h
   include/utils/simd/simd_levels.h
 )

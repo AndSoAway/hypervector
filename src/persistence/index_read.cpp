@@ -11,10 +11,15 @@
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
 #include <persistence/mapped_io.h>
+#include <invlists/inverted_lists.h>
+#include <quantization/pq/index_ivfpq.h>
+#include <quantization/pq/index_pq.h>
+#include <quantization/pq/pq.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -69,6 +74,18 @@ static void read_index_header(Index& idx, IOReader* f) {
   idx.verbose = false;
 }
 
+static void read_pq(ProductQuantizer& pq, IOReader* f) {
+  // Inverse of write_pq. SetDerivedValues validates (d, M, nbits) and
+  // resizes the centroid table; the subsequent READVECTOR reuses the same
+  // underlying std::vector storage.
+  READ1(pq.d);
+  READ1(pq.M);
+  READ1(pq.nbits);
+  pq.SetDerivedValues();
+  READVECTOR(pq.centroids);
+  pq.is_trained = true;
+}
+
 static void read_HNSW(HNSW& hnsw, IOReader* f) {
   // M is not directly stored, compute from cum_nneighbor_per_level
   int M;
@@ -105,6 +122,23 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     return idxhnsw.release();
   }
 
+  // IHNp = HNSW with PQ storage. Deserialized index is implicitly frozen
+  // (raw scaffold left null); the inherited storage owns the PQ codes.
+  if (h == fourcc("IHNp")) {
+    auto idxhnsw = std::make_unique<IndexHNSWPQ>();
+    read_index_header(*idxhnsw, f);
+    read_HNSW(idxhnsw->hnsw, f);
+    idxhnsw->storage = ReadIndex(f, 0);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
+      "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      idxhnsw->storage->is_trained,
+      "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
+    idxhnsw->own_fields = true;
+    return idxhnsw.release();
+  }
+
   // Basic indexes
   // IFlm = IndexFlatL2
   if (h == fourcc("IFlm") || h == fourcc("IFll")) {
@@ -122,7 +156,91 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     return idx.release();
   }
 
+  // IPQ8 = IndexPQ (any nbits in [1, 16] — magic name is historic)
+  if (h == fourcc("IPQ8")) {
+    auto idx = std::make_unique<IndexPQ>();
+    read_index_header(*idx, f);
+    read_pq(idx->pq, f);
+    HYPERVEC_THROW_IF_NOT_FMT(
+      idx->pq.d == idx->d,
+      "IndexPQ deserialize: pq.d (%lld) != index.d (%lld)",
+      static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+    READVECTOR(idx->codes);
+    return idx.release();
+  }
+
+  // IVPQ = IndexIVFPQ
+  if (h == fourcc("IVPQ")) {
+    auto idx = std::make_unique<IndexIVFPQ>();
+    read_index_header(*idx, f);
+    READ1(idx->nlist);
+    READ1(idx->nprobe);
+    READVECTOR(idx->centroids);
+    int8_t by_residual_raw;
+    int upt;
+    READ1(by_residual_raw);
+    READ1(upt);
+    idx->by_residual = (by_residual_raw != 0);
+    idx->use_precomputed_table = upt;
+    read_pq(idx->pq, f);
+    HYPERVEC_THROW_IF_NOT_FMT(
+      idx->pq.d == idx->d,
+      "IndexIVFPQ deserialize: pq.d (%lld) != index.d (%lld)",
+      static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+    READVECTOR(idx->precomputed_table);
+
+    // Replace the empty default ArrayInvertedLists installed by the base
+    // ctor with one sized to (nlist, pq.code_size).
+    delete idx->invlists;
+    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
+                                           idx->pq.code_size);
+    idx->own_invlists = true;
+
+    // Per-list payload — see the matching write loop.
+    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
+         list_no++) {
+      size_t sz;
+      READ1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      // Bounds-check against the configurable byte budget so a corrupted
+      // file can't trigger a giant allocation.
+      HYPERVEC_THROW_IF_NOT(sz < (get_deserialization_vector_byte_limit() /
+                                  sizeof(idx_t)));
+      std::vector<idx_t> ids(sz);
+      std::vector<uint8_t> codes(sz * idx->pq.code_size);
+      READANDCHECK(ids.data(), sz);
+      READANDCHECK(codes.data(), sz * idx->pq.code_size);
+      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
+    }
+    return idx.release();
+  }
+
   HYPERVEC_THROW_MSG("unknown index type");
+}
+
+ProductQuantizer* read_ProductQuantizer(IOReader* f) {
+  uint32_t h;
+  READ1(h);
+  HYPERVEC_THROW_IF_NOT_MSG(h == fourcc("PqPq"),
+                            "read_ProductQuantizer: bad magic");
+  auto pq = std::make_unique<ProductQuantizer>();
+  read_pq(*pq, f);
+  return pq.release();
+}
+
+ProductQuantizer* read_ProductQuantizer(const char* fname) {
+  std::unique_ptr<IOReader> f(new FileIOReader(fname));
+  return read_ProductQuantizer(f.get());
+}
+
+std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(IOReader* f) {
+  return std::unique_ptr<ProductQuantizer>(read_ProductQuantizer(f));
+}
+
+std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(const char* fname) {
+  return std::unique_ptr<ProductQuantizer>(read_ProductQuantizer(fname));
 }
 
 Index* ReadIndex(FILE* f, int io_flags) {

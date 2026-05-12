@@ -19,3 +19,9 @@ target_link_libraries(demo_hnsw_graph_search PRIVATE hypervec OpenMP::OpenMP_CXX
 
 add_executable(demo_ivf_indexing EXCLUDE_FROM_ALL demo_ivf_indexing.cpp)
 target_link_libraries(demo_ivf_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_ivfpq_indexing EXCLUDE_FROM_ALL demo_ivfpq_indexing.cpp)
+target_link_libraries(demo_ivfpq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_hnsw_pq_indexing EXCLUDE_FROM_ALL demo_hnsw_pq_indexing.cpp)
+target_link_libraries(demo_hnsw_pq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})

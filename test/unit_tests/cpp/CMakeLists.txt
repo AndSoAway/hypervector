@@ -18,6 +18,10 @@ set(HYPERVEC_TEST_SRC
   test_simd_levels.cpp
   test_simdlib.cpp
   test_kmeans.cpp
+  test_pq.cpp
+  test_index_pq.cpp
+  test_index_ivfpq.cpp
+  test_index_hnsw_pq.cpp
 )
 
 add_executable(hypervec_test ${HYPERVEC_TEST_SRC})

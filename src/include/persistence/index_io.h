@@ -29,6 +29,7 @@ namespace hypervec {
 
 struct Index;
 struct ProductQuantizer;
+struct LocalVectorQuantizer;
 struct IOReader;
 struct IOWriter;
 
@@ -53,6 +54,16 @@ std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(const char* fname);
 std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(IOReader* reader);
 void write_ProductQuantizer(const ProductQuantizer* pq, const char* fname);
 void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f);
+
+LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname);
+LocalVectorQuantizer* read_LocalVectorQuantizer(IOReader* reader);
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  const char* fname);
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  IOReader* reader);
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq,
+                                const char* fname);
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq, IOWriter* f);
 
 // Returns the current deserialization loop limit.
 // When nonzero, deserialization rejects loop-driving fields (nlist,

@@ -11,6 +11,7 @@
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -20,6 +21,9 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <quantization/lvq/index_lvq.h>
+#include <quantization/lvq/lvq.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +90,16 @@ static void read_pq(ProductQuantizer& pq, IOReader* f) {
   pq.is_trained = true;
 }
 
+static void read_lvq(LocalVectorQuantizer& lvq, IOReader* f) {
+  READ1(lvq.d);
+  READ1(lvq.nlocal);
+  READ1(lvq.nbits);
+  lvq.SetDerivedValues();
+  READVECTOR(lvq.local_centroids);
+  READVECTOR(lvq.residual_codebooks);
+  lvq.is_trained = true;
+}
+
 static void read_HNSW(HNSW& hnsw, IOReader* f) {
   // M is not directly stored, compute from cum_nneighbor_per_level
   int M;
@@ -139,6 +153,21 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     return idxhnsw.release();
   }
 
+  if (h == fourcc("IHNl")) {
+    auto idxhnsw = std::make_unique<IndexHNSWLVQ>();
+    read_index_header(*idxhnsw, f);
+    read_HNSW(idxhnsw->hnsw, f);
+    idxhnsw->storage = ReadIndex(f, 0);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexLVQ*>(idxhnsw->storage) != nullptr,
+      "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      idxhnsw->storage->is_trained,
+      "IndexHNSWLVQ deserialize: inner IndexLVQ is not trained");
+    idxhnsw->own_fields = true;
+    return idxhnsw.release();
+  }
+
   // Basic indexes
   // IFlm = IndexFlatL2
   if (h == fourcc("IFlm") || h == fourcc("IFll")) {
@@ -165,6 +194,18 @@ Index* ReadIndex(IOReader* f, int io_flags) {
       idx->pq.d == idx->d,
       "IndexPQ deserialize: pq.d (%lld) != index.d (%lld)",
       static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+    READVECTOR(idx->codes);
+    return idx.release();
+  }
+
+  if (h == fourcc("ILVQ")) {
+    auto idx = std::make_unique<IndexLVQ>();
+    read_index_header(*idx, f);
+    read_lvq(idx->lvq, f);
+    HYPERVEC_THROW_IF_NOT_FMT(
+      idx->lvq.d == idx->d,
+      "IndexLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
+      static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -217,6 +258,44 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     return idx.release();
   }
 
+  if (h == fourcc("IVLQ")) {
+    auto idx = std::make_unique<IndexIVFLVQ>();
+    read_index_header(*idx, f);
+    READ1(idx->nlist);
+    READ1(idx->nprobe);
+    READVECTOR(idx->centroids);
+    int8_t by_residual_raw;
+    READ1(by_residual_raw);
+    idx->by_residual = (by_residual_raw != 0);
+    read_lvq(idx->lvq, f);
+    HYPERVEC_THROW_IF_NOT_FMT(
+      idx->lvq.d == idx->d,
+      "IndexIVFLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
+      static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
+
+    delete idx->invlists;
+    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
+                                           idx->lvq.code_size);
+    idx->own_invlists = true;
+
+    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
+         list_no++) {
+      size_t sz;
+      READ1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT(sz < (get_deserialization_vector_byte_limit() /
+                                  sizeof(idx_t)));
+      std::vector<idx_t> ids(sz);
+      std::vector<uint8_t> codes(sz * idx->lvq.code_size);
+      READANDCHECK(ids.data(), sz);
+      READANDCHECK(codes.data(), sz * idx->lvq.code_size);
+      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
+    }
+    return idx.release();
+  }
+
   HYPERVEC_THROW_MSG("unknown index type");
 }
 
@@ -233,6 +312,32 @@ ProductQuantizer* read_ProductQuantizer(IOReader* f) {
 ProductQuantizer* read_ProductQuantizer(const char* fname) {
   std::unique_ptr<IOReader> f(new FileIOReader(fname));
   return read_ProductQuantizer(f.get());
+}
+
+LocalVectorQuantizer* read_LocalVectorQuantizer(IOReader* f) {
+  uint32_t h;
+  READ1(h);
+  HYPERVEC_THROW_IF_NOT_MSG(h == fourcc("LvQq"),
+                            "read_LocalVectorQuantizer: bad magic");
+  auto lvq = std::make_unique<LocalVectorQuantizer>();
+  read_lvq(*lvq, f);
+  return lvq.release();
+}
+
+LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname) {
+  std::unique_ptr<IOReader> f(new FileIOReader(fname));
+  return read_LocalVectorQuantizer(f.get());
+}
+
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  IOReader* f) {
+  return std::unique_ptr<LocalVectorQuantizer>(read_LocalVectorQuantizer(f));
+}
+
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  const char* fname) {
+  return std::unique_ptr<LocalVectorQuantizer>(
+    read_LocalVectorQuantizer(fname));
 }
 
 std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(IOReader* f) {

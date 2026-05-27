@@ -18,6 +18,7 @@ set(HYPERVEC_SRC
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp
+  index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
@@ -41,6 +42,10 @@ set(HYPERVEC_SRC
   quantization/pq/pq_distance_computer.cpp
   quantization/pq/index_pq.cpp
   quantization/pq/index_ivfpq.cpp
+  quantization/lvq/lvq.cpp
+  quantization/lvq/lvq_distance_computer.cpp
+  quantization/lvq/index_lvq.cpp
+  quantization/lvq/index_ivflvq.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_simd.cpp
@@ -62,6 +67,7 @@ set(HYPERVEC_HEADERS
   include/index/flat/index_flat.h
   include/index/flat/index_flat_codes.h
   include/index/hnsw/index_hnsw.h
+  include/index/hnsw/index_hnsw_lvq.h
   include/index/hnsw/index_hnsw_pq.h
   include/index/hnsw/hnsw.h
   include/index/hnsw/visited_table.h
@@ -82,6 +88,10 @@ set(HYPERVEC_HEADERS
   include/quantization/pq/pq_distance_computer.h
   include/quantization/pq/index_pq.h
   include/quantization/pq/index_ivfpq.h
+  include/quantization/lvq/lvq.h
+  include/quantization/lvq/lvq_distance_computer.h
+  include/quantization/lvq/index_lvq.h
+  include/quantization/lvq/index_ivflvq.h
   include/utils/distances/distances.h
   include/utils/simd/simd_levels.h
 )

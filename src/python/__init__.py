@@ -24,6 +24,7 @@ from hypervec.extra_wrappers import kmin, kmax, pairwise_distances, rand, randin
     ResultHeap, knn, Kmeans, checksum, matrix_bucket_sort_inplace, bucket_sort, \
     merge_knn_results, MapInt64ToInt64, knn_hamming, \
     pack_bitstrings, unpack_bitstrings
+from hypervec.hypervector_backend import HyperVectorIndexBackend
 
 
 __version__ = "%d.%d.%d" % (HYPERVEC_VERSION_MAJOR,

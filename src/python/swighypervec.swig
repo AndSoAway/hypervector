@@ -8,7 +8,11 @@
 %{
 #include <Python.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <index/flat/index_flat.h>
+#include <quantization/lvq/index_lvq.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <persistence/index_io.h>
 %}
 
 /* Index base class */
@@ -20,6 +24,15 @@
 
 /* HNSW Index - 只通过公共接口 */
 %include <index/hnsw/index_hnsw.h>
+%include <index/hnsw/index_hnsw_lvq.h>
+
+/* LVQ Indexes */
+%include <quantization/lvq/lvq.h>
+%include <quantization/lvq/index_lvq.h>
+%include <quantization/lvq/index_ivflvq.h>
+
+/* Index IO */
+%include <persistence/index_io.h>
 
 /* Python callbacks */
 %include <python/python_callbacks.h>
@@ -28,6 +41,10 @@
 %pythoncode %{
 __all__ = [
     'IndexHNSW',
+    'IndexHNSWLVQ',
+    'IndexLVQ',
+    'IndexIVFLVQ',
+    'HyperVectorIndexBackend',
     'IndexFlat',
     'Index',
     'read_index',

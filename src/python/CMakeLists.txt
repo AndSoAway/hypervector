@@ -264,6 +264,7 @@ configure_file(loader.py loader.py COPYONLY)
 configure_file(class_wrappers.py class_wrappers.py COPYONLY)
 configure_file(extra_wrappers.py extra_wrappers.py COPYONLY)
 configure_file(array_conversions.py array_conversions.py COPYONLY)
+configure_file(hypervector_backend.py hypervector_backend.py COPYONLY)
 
 # file(GLOB files "${CMAKE_SOURCE_DIR}/contrib/*.py")
 file(COPY ${CMAKE_SOURCE_DIR}/contrib  DESTINATION .)

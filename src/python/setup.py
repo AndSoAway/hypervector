@@ -20,6 +20,7 @@ shutil.copyfile("loader.py", "hypervec/loader.py")
 shutil.copyfile("class_wrappers.py", "hypervec/class_wrappers.py")
 shutil.copyfile("extra_wrappers.py", "hypervec/extra_wrappers.py")
 shutil.copyfile("array_conversions.py", "hypervec/array_conversions.py")
+shutil.copyfile("hypervector_backend.py", "hypervec/hypervector_backend.py")
 
 if os.path.exists("__init__.pyi"):
     shutil.copyfile("__init__.pyi", "hypervec/__init__.pyi")

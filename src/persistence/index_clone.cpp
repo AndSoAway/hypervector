@@ -2,9 +2,9 @@
  * Copyright (c) 2024 HyperVec Authors. All rights reserved.
  *
  * This source code is licensed under the Mulan Permissive Software License v2
- (the "License") found in the
- * LICENSE file in the root directory of this source tree.
-
+ * (the "License") found in the LICENSE file in the root directory of this
+ * source tree.
+ *
  * HNSW-only index clone implementation
  */
 
@@ -12,29 +12,36 @@
 #include <persistence/index_clone.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_pq.h>
 
 namespace hypervec {
 
-// Clone IndexHNSW and its subclasses
 IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {
-  // IndexHNSWPQ first — must precede IndexHNSWFlat / IndexHNSW because
-  // dynamic_cast matches the most-derived type and the base-class branches
-  // would otherwise swallow it.
   if (auto* hnswpq = dynamic_cast<const IndexHNSWPQ*>(ihnsw)) {
     auto* pq_storage = dynamic_cast<const IndexPQ*>(hnswpq->storage);
     HYPERVEC_THROW_IF_NOT_MSG(
       pq_storage != nullptr,
       "clone_IndexHNSW(IndexHNSWPQ): inner storage is not an IndexPQ");
-    // Untrained shell — symmetric with IndexHNSWFlat's clone behavior, except
-    // PQ requires a Train() call before Add(). M_hnsw = 32 to match the flat
-    // clone default; HNSW M is not recoverable from the original via
-    // public accessors.
     return new IndexHNSWPQ(hnswpq->d, static_cast<int>(pq_storage->pq.M),
                            pq_storage->pq.nbits, 32, hnswpq->metric_type);
   }
+
+  if (auto* hnswlvq = dynamic_cast<const IndexHNSWLVQ*>(ihnsw)) {
+    auto* lvq_storage = dynamic_cast<const IndexLVQ*>(hnswlvq->storage);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      lvq_storage != nullptr,
+      "clone_IndexHNSW(IndexHNSWLVQ): inner storage is not an IndexLVQ");
+    return new IndexHNSWLVQ(hnswlvq->d,
+                            static_cast<int>(lvq_storage->lvq.nlocal),
+                            lvq_storage->lvq.nbits, 32,
+                            hnswlvq->metric_type);
+  }
+
   if (dynamic_cast<const IndexHNSWFlat*>(ihnsw)) {
     return new IndexHNSWFlat(ihnsw->d, 32, ihnsw->metric_type);
   }
@@ -53,7 +60,6 @@ Index* clone_index(const Index* index) {
     return clone_IndexHNSW(ihnsw);
   }
 
-  // Try other index types that are still available
   const IndexFlat* iflat = dynamic_cast<const IndexFlat*>(index);
   if (iflat) {
     if (dynamic_cast<const IndexFlatL2*>(index)) {
@@ -69,6 +75,20 @@ Index* clone_index(const Index* index) {
   if (idxmap) {
     Index* underlying = clone_index(idxmap->index);
     auto* res = new IndexIDMap(underlying);
+    return res;
+  }
+
+  if (auto* ilvq = dynamic_cast<const IndexLVQ*>(index)) {
+    return new IndexLVQ(ilvq->d, ilvq->lvq.nlocal, ilvq->lvq.nbits,
+                        ilvq->metric_type);
+  }
+
+  if (auto* ivflvq = dynamic_cast<const IndexIVFLVQ*>(index)) {
+    auto* res = new IndexIVFLVQ(ivflvq->d, ivflvq->nlist,
+                                ivflvq->lvq.nlocal, ivflvq->lvq.nbits,
+                                ivflvq->metric_type);
+    res->by_residual = ivflvq->by_residual;
+    res->nprobe = ivflvq->nprobe;
     return res;
   }
 

@@ -2,20 +2,24 @@
  * Copyright (c) 2024 HyperVec Authors. All rights reserved.
  *
  * This source code is licensed under the Mulan Permissive Software License v2
- (the "License") found in the
- * LICENSE file in the root directory of this source tree.
-
+ * (the "License") found in the LICENSE file in the root directory of this
+ * source tree.
+ *
  * HNSW-only index write implementation
  */
 
 #include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
-#include <invlists/inverted_lists.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <quantization/lvq/index_lvq.h>
+#include <quantization/lvq/lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
@@ -23,12 +27,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 namespace hypervec {
-
-/*************************************************************
- * Write
- **************************************************************/
 
 static void write_index_header(const Index& idx, IOWriter* f) {
   WRITE1(idx.d);
@@ -45,14 +46,18 @@ static void write_index_header(const Index& idx, IOWriter* f) {
 }
 
 static void write_pq(const ProductQuantizer& pq, IOWriter* f) {
-  // Body of the PQ payload — used both standalone (after a PqPq magic) and
-  // embedded inside an IPQ8 / IVPQ index. The Index header carries d/metric,
-  // so when called from IPQ8 the d field is redundant but harmless; the
-  // standalone PqPq path needs it.
   WRITE1(pq.d);
   WRITE1(pq.M);
   WRITE1(pq.nbits);
   WRITEVECTOR(pq.centroids);
+}
+
+static void write_lvq(const LocalVectorQuantizer& lvq, IOWriter* f) {
+  WRITE1(lvq.d);
+  WRITE1(lvq.nlocal);
+  WRITE1(lvq.nbits);
+  WRITEVECTOR(lvq.local_centroids);
+  WRITEVECTOR(lvq.residual_codebooks);
 }
 
 static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
@@ -70,12 +75,8 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITEVECTOR(hnsw.offsets);
 }
 
-/*************************************************************
- * HNSW index writing
- *************************************************************/
-
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
-  (void)io_flags;  // not used in HNSW-only implementation
+  (void)io_flags;
 
   const IndexHNSWFlat* hnswflat = dynamic_cast<const IndexHNSWFlat*>(index);
   if (hnswflat) {
@@ -89,9 +90,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     return;
   }
 
-  // IHNp = IndexHNSWPQ. Persists only the PQ-compressed `storage`; the
-  // raw-vector scaffold is build-time only, so a deserialized index is
-  // implicitly frozen.
   const IndexHNSWPQ* hnswpq = dynamic_cast<const IndexHNSWPQ*>(index);
   if (hnswpq) {
     uint32_t h = fourcc("IHNp");
@@ -100,6 +98,17 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_HNSW(hnswpq->hnsw, f);
     HYPERVEC_THROW_IF_NOT(hnswpq->storage != nullptr);
     WriteIndex(hnswpq->storage, f, 0);
+    return;
+  }
+
+  const IndexHNSWLVQ* hnswlvq = dynamic_cast<const IndexHNSWLVQ*>(index);
+  if (hnswlvq) {
+    uint32_t h = fourcc("IHNl");
+    WRITE1(h);
+    write_index_header(*hnswlvq, f);
+    write_HNSW(hnswlvq->hnsw, f);
+    HYPERVEC_THROW_IF_NOT(hnswlvq->storage != nullptr);
+    WriteIndex(hnswlvq->storage, f, 0);
     return;
   }
 
@@ -143,6 +152,16 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     return;
   }
 
+  const IndexLVQ* ilvq = dynamic_cast<const IndexLVQ*>(index);
+  if (ilvq) {
+    uint32_t h = fourcc("ILVQ");
+    WRITE1(h);
+    write_index_header(*ilvq, f);
+    write_lvq(ilvq->lvq, f);
+    WRITEVECTOR(ilvq->codes);
+    return;
+  }
+
   const IndexIVFPQ* ivfpq = dynamic_cast<const IndexIVFPQ*>(index);
   if (ivfpq) {
     uint32_t h = fourcc("IVPQ");
@@ -151,8 +170,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     WRITE1(ivfpq->nlist);
     WRITE1(ivfpq->nprobe);
     WRITEVECTOR(ivfpq->centroids);
-    // by_residual / use_precomputed_table travel as fixed-width integers so
-    // the on-disk format isn't bool-ABI-dependent.
     int8_t by_residual = ivfpq->by_residual ? 1 : 0;
     int upt = ivfpq->use_precomputed_table;
     WRITE1(by_residual);
@@ -160,8 +177,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_pq(ivfpq->pq, f);
     WRITEVECTOR(ivfpq->precomputed_table);
 
-    // Per-list payload: size, ids[], codes[]. Empty lists still write a
-    // zero size so the read loop stays symmetric.
     for (size_t list_no = 0; list_no < ivfpq->nlist; list_no++) {
       const size_t sz = ivfpq->invlists->list_size(list_no);
       WRITE1(sz);
@@ -172,6 +187,31 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
       InvertedLists::ScopedCodes codes(ivfpq->invlists, list_no);
       WRITEANDCHECK(ids.get(), sz);
       WRITEANDCHECK(codes.get(), sz * ivfpq->pq.code_size);
+    }
+    return;
+  }
+
+  const IndexIVFLVQ* ivflvq = dynamic_cast<const IndexIVFLVQ*>(index);
+  if (ivflvq) {
+    uint32_t h = fourcc("IVLQ");
+    WRITE1(h);
+    write_index_header(*ivflvq, f);
+    WRITE1(ivflvq->nlist);
+    WRITE1(ivflvq->nprobe);
+    WRITEVECTOR(ivflvq->centroids);
+    int8_t by_residual = ivflvq->by_residual ? 1 : 0;
+    WRITE1(by_residual);
+    write_lvq(ivflvq->lvq, f);
+    for (size_t list_no = 0; list_no < ivflvq->nlist; list_no++) {
+      const size_t sz = ivflvq->invlists->list_size(list_no);
+      WRITE1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      InvertedLists::ScopedIds ids(ivflvq->invlists, list_no);
+      InvertedLists::ScopedCodes codes(ivflvq->invlists, list_no);
+      WRITEANDCHECK(ids.get(), sz);
+      WRITEANDCHECK(codes.get(), sz * ivflvq->lvq.code_size);
     }
     return;
   }
@@ -188,6 +228,23 @@ void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f) {
 void write_ProductQuantizer(const ProductQuantizer* pq, const char* fname) {
   std::unique_ptr<IOWriter> f(new FileIOWriter(fname));
   write_ProductQuantizer(pq, f.get());
+}
+
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq, IOWriter* f) {
+  uint32_t h = fourcc("LvQq");
+  WRITE1(h);
+  write_lvq(*lvq, f);
+}
+
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq,
+                                const char* fname) {
+  std::unique_ptr<IOWriter> f(new FileIOWriter(fname));
+  write_LocalVectorQuantizer(lvq, f.get());
+}
+
+void WriteIndex(const Index* index, FILE* f, int io_flags) {
+  FileIOWriter writer(f);
+  WriteIndex(index, &writer, io_flags);
 }
 
 void WriteIndex(const Index* index, const char* fname, int io_flags) {

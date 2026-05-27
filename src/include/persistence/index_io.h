@@ -29,6 +29,7 @@ namespace hypervec {
 
 struct Index;
 struct ProductQuantizer;
+struct LocalVectorQuantizer;
 struct IOReader;
 struct IOWriter;
 
@@ -46,13 +47,22 @@ std::unique_ptr<Index> ReadIndexUp(const char* fname, int io_flags = 0);
 std::unique_ptr<Index> ReadIndexUp(FILE* f, int io_flags = 0);
 std::unique_ptr<Index> ReadIndexUp(IOReader* reader, int io_flags = 0);
 
-// TODO(pq): implement alongside src/quantization/pq/
 ProductQuantizer* read_ProductQuantizer(const char* fname);
 ProductQuantizer* read_ProductQuantizer(IOReader* reader);
 std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(const char* fname);
 std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(IOReader* reader);
 void write_ProductQuantizer(const ProductQuantizer* pq, const char* fname);
 void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f);
+
+LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname);
+LocalVectorQuantizer* read_LocalVectorQuantizer(IOReader* reader);
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  const char* fname);
+std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
+  IOReader* reader);
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq,
+                                const char* fname);
+void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq, IOWriter* f);
 
 // Returns the current deserialization loop limit.
 // When nonzero, deserialization rejects loop-driving fields (nlist,

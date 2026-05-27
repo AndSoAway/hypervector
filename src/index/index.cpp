@@ -15,6 +15,7 @@
 #include <utils/distances/distances.h>
 
 #include <cstring>
+#include <mutex>
 
 namespace hypervec {
 

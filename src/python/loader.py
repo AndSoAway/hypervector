@@ -11,6 +11,14 @@ import sys
 
 from packaging.version import Version
 
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    for dll_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if dll_dir and os.path.isdir(dll_dir):
+            try:
+                os.add_dll_directory(dll_dir)
+            except OSError:
+                pass
+
 
 def supported_instruction_sets():
     """

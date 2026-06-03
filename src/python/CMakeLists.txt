@@ -160,13 +160,18 @@ elseif(NOT WIN32)
   set_target_properties(swighypervec_sve PROPERTIES SUFFIX .so)
   set_target_properties(hypervec_example_external_module PROPERTIES SUFFIX .so)
 else()
-  # we need bigobj for the swig wrapper
-  target_compile_options(swighypervec PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx2 PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx512 PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx512_spr PRIVATE /bigobj)
-  target_compile_options(swighypervec_sve PRIVATE /bigobj)
-  target_compile_options(hypervec_example_external_module PRIVATE /bigobj)
+  # we need bigobj for the swig wrapper (MSVC: /bigobj, MinGW GCC: -Wa,-mbig-obj)
+  if(MSVC)
+    set(_bigobj_flag /bigobj)
+  else()
+    set(_bigobj_flag -Wa,-mbig-obj)
+  endif()
+  target_compile_options(swighypervec PRIVATE ${_bigobj_flag})
+  target_compile_options(swighypervec_avx2 PRIVATE ${_bigobj_flag})
+  target_compile_options(swighypervec_avx512 PRIVATE ${_bigobj_flag})
+  target_compile_options(swighypervec_avx512_spr PRIVATE ${_bigobj_flag})
+  target_compile_options(swighypervec_sve PRIVATE ${_bigobj_flag})
+  target_compile_options(hypervec_example_external_module PRIVATE ${_bigobj_flag})
 endif()
 
 
@@ -249,6 +254,7 @@ endif()
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
 target_include_directories(hypervec_python_callbacks PRIVATE ${PROJECT_SOURCE_DIR}/..)
+target_include_directories(hypervec_python_callbacks PRIVATE ${PROJECT_SOURCE_DIR}/../include)
 target_include_directories(hypervec_python_callbacks PRIVATE ${Python_INCLUDE_DIRS})
 
 target_link_libraries(swighypervec PRIVATE hypervec_python_callbacks)

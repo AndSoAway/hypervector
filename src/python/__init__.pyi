@@ -217,39 +217,6 @@ class UInt64Vector:
 class IDSelector: ...
 class DistanceComputer: ...
 
-class HyperVectorIndexBackend:
-    def __init__(
-        self,
-        contents: Sequence[str],
-        config: dict[str, Any] | None,
-        logger: Any,
-        **kwargs: Any,
-    ) -> None: ...
-    def load_index(self, *, index_path: str | None = None) -> None: ...
-    def build_index(
-        self,
-        *,
-        embeddings: npt.NDArray[np.float32],
-        ids: npt.NDArray[Any],
-        index_path: str | None = None,
-        overwrite: bool = False,
-        index_chunk_size: int = 50000,
-        **kwargs: Any,
-    ) -> None: ...
-    def search(
-        self,
-        query_embeddings: npt.NDArray[np.float32],
-        top_k: int,
-        **kwargs: Any,
-    ) -> list[list[str]]: ...
-    def search_with_meta(
-        self,
-        query_embeddings: npt.NDArray[np.float32],
-        top_k: int,
-        **kwargs: Any,
-    ) -> list[list[dict[str, Any]]]: ...
-    def close(self) -> None: ...
-
 # Range Search result structure
 class RangeSearchResult:
     nq: int  # number of queries

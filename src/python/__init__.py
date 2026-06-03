@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 from .loader import *
-from .hypervector_backend import HyperVectorIndexBackend
 
 __all__ = [
-    "HyperVectorIndexBackend",
     "Index",
     "IndexFlatIP",
     "IndexFlatL2",

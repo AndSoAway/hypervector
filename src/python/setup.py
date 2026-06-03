@@ -24,7 +24,8 @@ shutil.copyfile("loader.py", "hypervec/loader.py")
 shutil.copyfile("class_wrappers.py", "hypervec/class_wrappers.py")
 shutil.copyfile("extra_wrappers.py", "hypervec/extra_wrappers.py")
 shutil.copyfile("array_conversions.py", "hypervec/array_conversions.py")
-shutil.copyfile("hypervector_backend.py", "hypervec/hypervector_backend.py")
+shutil.copyfile("hypervec_server_engine.py", "hypervec/hypervec_server_engine.py")
+shutil.copyfile("hypervec_http_server.py", "hypervec/hypervec_http_server.py")
 
 if os.path.exists("__init__.pyi"):
     shutil.copyfile("__init__.pyi", "hypervec/__init__.pyi")
@@ -129,6 +130,9 @@ setup(
     license="MIT",
     keywords="Search nearest neighbors",
     install_requires=["numpy", "packaging"],
+    extras_require={
+        "server": ["fastapi", "uvicorn"],
+    },
     packages=["hypervec"],
     package_data={
         "hypervec": ["*.so", "*.pyd", "*.a", "*.pyi", "py.typed"],

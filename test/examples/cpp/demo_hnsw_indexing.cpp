@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
 
 using namespace hypervec;
@@ -22,13 +23,14 @@ int main() {
     std::cout << "HNSW Index Demo" << std::endl;
     std::cout << "===============" << std::endl;
 
-    // Parameters
-    int d = 128;           // dimension
-    int n = 10000;         // number of vectors in database
-    int nb = 100;          // number of query vectors
-    int M = 32;            // HNSW parameter: number of connections
+    // Parameters (unified: d=128, 100K vectors, 1K queries per teacher spec)
+    int d = 128;            // dimension
+    int n = 100000;         // number of vectors in database
+    int nb = 1000;          // number of query vectors
+    int M = 32;             // HNSW parameter: number of connections
     int ef_search = 64;     // HNSW parameter: Search width
-    int k = 10;            // number of nearest neighbors to Search
+    int ef_construction = 40; // build-time search depth (higher = better graph, slower build)
+    int k = 10;             // number of nearest neighbors to Search
 
     // Generate random vectors
     std::cout << "Generating " << n << " random vectors of dimension " << d
@@ -50,67 +52,59 @@ int main() {
     ground_truth.Search(nb, query.data(), k, gt_distances.data(), gt_labels.data());
 
     // Create HNSW index
-    std::cout << "Creating HNSW index with M=" << M << ", ef_search=" << ef_search
-              << std::endl;
+    std::cout << "Creating HNSW index with M=" << M
+              << ", ef_construction=" << ef_construction << std::endl;
     IndexHNSWFlat index(d, M);
 
-    // Set Search parameters
-    index.hnsw.ef_search = ef_search;
+    // Set build-time parameter (ef_search is set per-sweep below)
+    index.hnsw.ef_construction = ef_construction;
 
     // Train (not strictly needed for HNSW, but can be called)
     std::cout << "Training index..." << std::endl;
     index.Train(n, database.data());
 
     // Add vectors to index
-    std::cout << "Adding " << n << " vectors to index..." << std::endl;
+    std::cout << "Adding " << n << " vectors to index (building graph)..." << std::endl;
+    auto t0 = std::chrono::high_resolution_clock::now();
     index.Add(n, database.data());
-    std::cout << "Index size: " << index.n_total << std::endl;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double add_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::cout << "Index size: " << index.n_total << ", build time: " << add_ms << " ms" << std::endl;
 
-    // Search
-    std::cout << "Searching for " << k << " nearest neighbors for " << nb
-              << " queries..." << std::endl;
+    // Sweep ef_search to find recall vs speed trade-off
+    std::cout << "\n================================================" << std::endl;
+    std::cout << "ef_search   Recall@" << k << "    Search ms   ms/query" << std::endl;
+    std::cout << "------------------------------------------------" << std::endl;
+
     std::vector<float> hnsw_distances(nb * k);
     std::vector<idx_t> hnsw_labels(nb * k);
 
-    index.Search(nb, query.data(), k, hnsw_distances.data(), hnsw_labels.data());
+    for (int ef : {16, 32, 64, 128, 256, 512}) {
+        index.hnsw.ef_search = ef;
 
-    // Calculate recall rate
-    int correct = 0;
-    int total = nb * k;
-    for (int i = 0; i < nb; i++) {
-        for (int j = 0; j < k; j++) {
-            // Check if HNSW result matches ground truth
-            for (int l = 0; l < k; l++) {
-                if (hnsw_labels[i * k + j] == gt_labels[i * k + l]) {
-                    correct++;
-                    break;
+        auto s0 = std::chrono::high_resolution_clock::now();
+        index.Search(nb, query.data(), k, hnsw_distances.data(), hnsw_labels.data());
+        auto s1 = std::chrono::high_resolution_clock::now();
+        double search_ms = std::chrono::duration<double, std::milli>(s1 - s0).count();
+
+        // Calculate recall rate
+        int correct = 0;
+        int total = nb * k;
+        for (int i = 0; i < nb; i++) {
+            for (int j = 0; j < k; j++) {
+                for (int l = 0; l < k; l++) {
+                    if (hnsw_labels[i * k + j] == gt_labels[i * k + l]) {
+                        correct++;
+                        break;
+                    }
                 }
             }
         }
+        float recall = (float)correct / (float)total;
+        printf("  %4d        %5.1f%%    %8.2f    %8.3f\n",
+               ef, recall * 100.0f, search_ms, search_ms / nb);
     }
-    float recall = (float)correct / total;
-
-    // Print results
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "Results:" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "Recall@" << k << ": " << recall * 100 << "%" << std::endl;
-    std::cout << "Correct matches: " << correct << "/" << total << std::endl;
-
-    std::cout << "\nFirst 5 queries (ground truth vs HNSW):" << std::endl;
-    for (int i = 0; i < 5; i++) {
-        std::cout << "Query " << i << ":" << std::endl;
-        std::cout << "  GT:    ";
-        for (int j = 0; j < k; j++) {
-            std::cout << gt_labels[i * k + j] << "(" << gt_distances[i * k + j] << ") ";
-        }
-        std::cout << std::endl;
-        std::cout << "  HNSW:  ";
-        for (int j = 0; j < k; j++) {
-            std::cout << hnsw_labels[i * k + j] << "(" << hnsw_distances[i * k + j] << ") ";
-        }
-        std::cout << std::endl;
-    }
+    std::cout << "================================================" << std::endl;
 
     std::cout << "\nDone!" << std::endl;
     return 0;

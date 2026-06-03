@@ -48,6 +48,7 @@ set(HYPERVEC_SRC
   quantization/lvq/index_ivflvq.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
+  utils/distances/distances_fused.cpp
   utils/distances/distances_simd.cpp
   utils/distances/extra_distances.cpp
   utils/selector/id_selector.cpp

@@ -83,6 +83,13 @@ bash scripts/build_arm_pyhypervec_server.sh
 HYPERVEC_OPT_LEVEL=sve bash scripts/build_arm_pyhypervec_server.sh
 ```
 
+如果系统默认 `python3` 不是 Python 3.10+，显式指定 Python 3.12：
+
+```bash
+PYTHON_BIN=$HOME/opt/python-3.12/bin/python3.12 \
+bash scripts/build_arm_pyhypervec_server.sh
+```
+
 如果只想编译安装服务端，不安装 `pyhypervec`：
 
 ```bash

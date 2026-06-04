@@ -25,3 +25,12 @@ target_link_libraries(demo_ivfpq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${
 
 add_executable(demo_hnsw_pq_indexing EXCLUDE_FROM_ALL demo_hnsw_pq_indexing.cpp)
 target_link_libraries(demo_hnsw_pq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_lvq_indexing EXCLUDE_FROM_ALL demo_lvq_indexing.cpp)
+target_link_libraries(demo_lvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_ivflvq_indexing EXCLUDE_FROM_ALL demo_ivflvq_indexing.cpp)
+target_link_libraries(demo_ivflvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_hnsw_lvq_indexing EXCLUDE_FROM_ALL demo_hnsw_lvq_indexing.cpp)
+target_link_libraries(demo_hnsw_lvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})

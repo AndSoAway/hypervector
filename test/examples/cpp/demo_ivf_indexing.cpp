@@ -43,11 +43,11 @@ int main() {
   std::cout << "IVF Flat Index Demo" << std::endl;
   std::cout << "===================" << std::endl;
 
-  // Parameters
+  // Unified params (d=128, 100K vectors, 1K queries per teacher spec)
   const int d = 128;      // vector dimension
-  const int nb = 10000;   // database size
-  const int nq = 200;     // number of queries
-  const int nlist = 128;  // number of IVF clusters
+  const int nb = 100000;  // database size
+  const int nq = 1000;    // number of queries
+  const int nlist = 256;  // number of IVF clusters (sqrt(nb) ≈ 316)
   const int k = 10;       // nearest neighbours to retrieve
 
   // Generate random vectors
@@ -94,7 +94,7 @@ int main() {
   std::vector<float> ivf_distances(nq * k);
   std::vector<idx_t> ivf_labels(nq * k);
 
-  for (int nprobe : {1, 4, 8, 16, 32, nlist}) {
+  for (int nprobe : {1, 4, 8, 16, 32, 64, 128, nlist}) {
     params.nprobe = nprobe;
 
     t0 = std::chrono::high_resolution_clock::now();

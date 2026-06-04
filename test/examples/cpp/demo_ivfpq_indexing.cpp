@@ -45,12 +45,12 @@ int main() {
   std::cout << "IVFPQ Index Demo" << std::endl;
   std::cout << "================" << std::endl;
 
-  // Parameters chosen so dsub = d / M = 8 (decent subspace size for k-means)
+  // Unified params (d=128, 100K vectors, 1K queries per teacher spec)
   const int d = 128;       // vector dimension
-  const int nb = 10000;    // database size
-  const int nq = 200;      // number of queries
-  const int nlist = 128;   // IVF clusters
-  const int M = 16;        // PQ subquantizers
+  const int nb = 100000;   // database size
+  const int nq = 1000;     // number of queries
+  const int nlist = 256;   // IVF clusters
+  const int M = 128;        // PQ subquantizers (dsub=1, near lossless)
   const int nbits = 8;     // bits per code → ksub = 256
   const int k = 10;
 
@@ -130,7 +130,7 @@ int main() {
   std::vector<float> d_b(nq * k), d_p(nq * k);
   std::vector<idx_t> l_b(nq * k), l_p(nq * k);
 
-  for (int nprobe : {1, 4, 8, 16, 32, nlist}) {
+  for (int nprobe : {1, 4, 8, 16, 32, 64, 128, nlist}) {
     params.nprobe = nprobe;
 
     t0 = std::chrono::high_resolution_clock::now();

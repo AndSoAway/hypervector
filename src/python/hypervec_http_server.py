@@ -3,8 +3,6 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the License) found in the
 # LICENSE file in the root directory of this source tree.
 
-from __future__ import annotations
-
 import argparse
 import logging
 from typing import Any

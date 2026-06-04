@@ -11,6 +11,7 @@
 #include <index/index.h>
 
 #include <cstddef>
+#include <cstring>
 
 namespace hypervec {
 

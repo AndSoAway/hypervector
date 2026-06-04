@@ -9,7 +9,10 @@ find_package(OpenMP REQUIRED)
 find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
 
-set(OMP_LIB "gomp")
+set(OMP_LIB "")
+if(NOT MSVC)
+  set(OMP_LIB "gomp")
+endif()
 
 add_executable(demo_hnsw_indexing EXCLUDE_FROM_ALL demo_hnsw_indexing.cpp)
 target_link_libraries(demo_hnsw_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
@@ -25,3 +28,12 @@ target_link_libraries(demo_ivfpq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${
 
 add_executable(demo_hnsw_pq_indexing EXCLUDE_FROM_ALL demo_hnsw_pq_indexing.cpp)
 target_link_libraries(demo_hnsw_pq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_lvq_indexing EXCLUDE_FROM_ALL demo_lvq_indexing.cpp)
+target_link_libraries(demo_lvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_ivflvq_indexing EXCLUDE_FROM_ALL demo_ivflvq_indexing.cpp)
+target_link_libraries(demo_ivflvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})
+
+add_executable(demo_hnsw_lvq_indexing EXCLUDE_FROM_ALL demo_hnsw_lvq_indexing.cpp)
+target_link_libraries(demo_hnsw_lvq_indexing PRIVATE hypervec OpenMP::OpenMP_CXX ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OMP_LIB})

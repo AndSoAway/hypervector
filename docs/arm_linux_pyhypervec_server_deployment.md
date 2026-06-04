@@ -90,6 +90,17 @@ PYTHON_BIN=$HOME/opt/python-3.12/bin/python3.12 \
 bash scripts/build_arm_pyhypervec_server.sh
 ```
 
+如果要构建完成后直接拉起 HyperVec HTTP Server：
+
+```bash
+START_SERVER=1 \
+PYTHON_BIN=$HOME/opt/python-3.12/bin/python3.12 \
+DATA_ROOT=$HOME/hypervec_data \
+SERVER_HOST=0.0.0.0 \
+SERVER_PORT=8080 \
+bash scripts/build_arm_pyhypervec_server.sh
+```
+
 如果只想编译安装服务端，不安装 `pyhypervec`：
 
 ```bash
@@ -101,7 +112,7 @@ INSTALL_PYHYPERVEC=0 bash scripts/build_arm_pyhypervec_server.sh
 ```bash
 source .venv/bin/activate
 python -m hypervec.hypervec_http_server \
-  --data-root /data/hypervec \
+  --data-root $HOME/hypervec_data \
   --host 0.0.0.0 \
   --port 8080
 ```
@@ -193,8 +204,7 @@ PY
 ## 6. 准备服务端数据目录
 
 ```bash
-sudo mkdir -p /data/hypervec
-sudo chown -R "$USER":"$USER" /data/hypervec
+mkdir -p $HOME/hypervec_data
 ```
 
 ## 7. 拉起 HyperVec HTTP Server
@@ -202,7 +212,7 @@ sudo chown -R "$USER":"$USER" /data/hypervec
 ```bash
 source .venv/bin/activate
 python -m hypervec.hypervec_http_server \
-  --data-root /data/hypervec \
+  --data-root $HOME/hypervec_data \
   --host 0.0.0.0 \
   --port 8080
 ```
@@ -295,7 +305,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/path/to/hypervector
 Environment=PATH=/path/to/hypervector/.venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/path/to/hypervector/.venv/bin/python -m hypervec.hypervec_http_server --data-root /data/hypervec --host 0.0.0.0 --port 8080
+ExecStart=/path/to/hypervector/.venv/bin/python -m hypervec.hypervec_http_server --data-root /home/ubuntu/hypervec_data --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=3
 

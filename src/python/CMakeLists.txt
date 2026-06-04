@@ -18,6 +18,12 @@ include(${SWIG_USE_FILE})
 set(UseSWIG_TARGET_NAME_PREFERENCE STANDARD)
 set(SWIG_SOURCE_FILE_EXTENSIONS swig)
 
+function(configure_swig_doxygen target)
+  if(SWIG_VERSION VERSION_GREATER_EQUAL 4.0)
+    set_property(TARGET ${target} PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+  endif()
+endfunction()
+
 macro(configure_swighypervec source)
   set_source_files_properties(${source} PROPERTIES
     CPLUSPLUS ON
@@ -89,7 +95,7 @@ if(TARGET swighypervec AND NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
   )
 endif()
 
-set_property(TARGET swighypervec PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(swighypervec)
 
 set_property(SOURCE swighypervec_avx2.swig
   PROPERTY SWIG_MODULE_NAME swighypervec_avx2)
@@ -98,7 +104,7 @@ swig_add_library(swighypervec_avx2
   LANGUAGE python
   SOURCES swighypervec_avx2.swig
 )
-set_property(TARGET swighypervec_avx2 PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(swighypervec_avx2)
 if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx2" AND NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512" AND NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512_spr")
   set_target_properties(swighypervec_avx2 PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
@@ -110,7 +116,7 @@ swig_add_library(swighypervec_avx512
   LANGUAGE python
   SOURCES swighypervec_avx512.swig
 )
-set_property(TARGET swighypervec_avx512 PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(swighypervec_avx512)
 if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512")
   set_target_properties(swighypervec_avx512 PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
@@ -122,7 +128,7 @@ swig_add_library(swighypervec_avx512_spr
   LANGUAGE python
   SOURCES swighypervec_avx512_spr.swig
 )
-set_property(TARGET swighypervec_avx512_spr PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(swighypervec_avx512_spr)
 if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512_spr")
   set_target_properties(swighypervec_avx512_spr PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
@@ -134,7 +140,7 @@ swig_add_library(swighypervec_sve
   LANGUAGE python
   SOURCES swighypervec_sve.swig
 )
-set_property(TARGET swighypervec_sve PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(swighypervec_sve)
 if(NOT HYPERVEC_OPT_LEVEL STREQUAL "sve")
   set_target_properties(swighypervec_sve PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
@@ -146,7 +152,7 @@ swig_add_library(hypervec_example_external_module
   LANGUAGE python
   SOURCES hypervec_example_external_module.swig
 )
-set_property(TARGET hypervec_example_external_module PROPERTY SWIG_COMPILE_OPTIONS -doxygen)
+configure_swig_doxygen(hypervec_example_external_module)
 
 if(AIX)
   set_target_properties(swighypervec PROPERTIES SUFFIX .a)

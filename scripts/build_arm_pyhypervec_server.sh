@@ -8,6 +8,11 @@ OPT_LEVEL="${HYPERVEC_OPT_LEVEL:-generic}"
 GENERATOR="${CMAKE_GENERATOR:-Ninja}"
 INSTALL_PYHYPERVEC="${INSTALL_PYHYPERVEC:-1}"
 INSTALL_SERVER_DEPS="${INSTALL_SERVER_DEPS:-1}"
+INSTALL_CMAKE="${INSTALL_CMAKE:-1}"
+DATA_ROOT="${DATA_ROOT:-${HOME}/hypervec_data}"
+SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
+SERVER_PORT="${SERVER_PORT:-8080}"
+START_SERVER="${START_SERVER:-0}"
 
 cd "${ROOT_DIR}"
 
@@ -15,6 +20,8 @@ echo "[hypervec] source root: ${ROOT_DIR}"
 echo "[hypervec] build dir: ${BUILD_DIR}"
 echo "[hypervec] venv dir: ${VENV_DIR}"
 echo "[hypervec] opt level: ${OPT_LEVEL}"
+echo "[hypervec] data root: ${DATA_ROOT}"
+echo "[hypervec] server: ${SERVER_HOST}:${SERVER_PORT}"
 
 if command -v uname >/dev/null 2>&1; then
   ARCH="$(uname -m)"
@@ -32,16 +39,6 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v cmake >/dev/null 2>&1; then
-  echo "[hypervec] cmake is required." >&2
-  exit 1
-fi
-
-if [[ "${GENERATOR}" == "Ninja" ]] && ! command -v ninja >/dev/null 2>&1; then
-  echo "[hypervec] ninja is required when CMAKE_GENERATOR=Ninja." >&2
-  exit 1
-fi
-
 if [[ ! -d "${VENV_DIR}" ]]; then
   echo "[hypervec] creating virtualenv..."
   python3 -m venv "${VENV_DIR}"
@@ -53,10 +50,41 @@ source "${VENV_DIR}/bin/activate"
 echo "[hypervec] upgrading Python build dependencies..."
 python -m pip install --upgrade pip setuptools wheel packaging numpy
 
+if [[ "${INSTALL_CMAKE}" == "1" ]]; then
+  echo "[hypervec] installing CMake into virtualenv..."
+  python -m pip install "cmake>=3.24"
+fi
+
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "[hypervec] cmake is required." >&2
+  exit 1
+fi
+
+CMAKE_VERSION="$(cmake --version | head -1 | awk '{print $3}')"
+echo "[hypervec] cmake version: ${CMAKE_VERSION}"
+python - "${CMAKE_VERSION}" <<'PY'
+import sys
+from packaging.version import Version
+if Version(sys.argv[1]) < Version("3.24"):
+    raise SystemExit(f"cmake >= 3.24 is required; got {sys.argv[1]}")
+PY
+
 if [[ "${INSTALL_SERVER_DEPS}" == "1" ]]; then
   echo "[hypervec] installing server dependencies..."
   python -m pip install fastapi uvicorn
 fi
+
+if [[ "${GENERATOR}" == "Ninja" ]] && ! command -v ninja >/dev/null 2>&1; then
+  echo "[hypervec] ninja is required when CMAKE_GENERATOR=Ninja." >&2
+  exit 1
+fi
+
+if ! command -v swig >/dev/null 2>&1; then
+  echo "[hypervec] swig is required." >&2
+  exit 1
+fi
+echo "[hypervec] swig: $(command -v swig)"
+swig -version | head -2
 
 echo "[hypervec] configuring CMake..."
 cmake -S . -B "${BUILD_DIR}" \
@@ -89,6 +117,8 @@ if [[ "${INSTALL_PYHYPERVEC}" == "1" ]]; then
   python -m pip install ./pyhypervec
 fi
 
+mkdir -p "${DATA_ROOT}"
+
 echo "[hypervec] verifying installation..."
 python - <<'PY'
 import hypervec
@@ -100,6 +130,14 @@ from pyhypervec import HypervecClient, DataType
 print("pyhypervec:", HypervecClient, DataType.FLOAT_VECTOR)
 PY
 
+if [[ "${START_SERVER}" == "1" ]]; then
+  echo "[hypervec] starting HyperVec HTTP server..."
+  exec python -m hypervec.hypervec_http_server \
+    --data-root "${DATA_ROOT}" \
+    --host "${SERVER_HOST}" \
+    --port "${SERVER_PORT}"
+fi
+
 cat <<EOF
 
 [hypervec] build complete.
@@ -108,6 +146,9 @@ Activate the environment:
   source ${VENV_DIR}/bin/activate
 
 Start the server:
-  python -m hypervec.hypervec_http_server --data-root /data/hypervec --host 0.0.0.0 --port 8080
+  python -m hypervec.hypervec_http_server --data-root ${DATA_ROOT} --host ${SERVER_HOST} --port ${SERVER_PORT}
+
+Build and start in one command:
+  START_SERVER=1 PYTHON_BIN=${PYTHON_BIN} bash scripts/build_arm_pyhypervec_server.sh
 
 EOF

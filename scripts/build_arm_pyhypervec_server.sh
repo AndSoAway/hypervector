@@ -12,6 +12,7 @@ INSTALL_CMAKE="${INSTALL_CMAKE:-1}"
 DATA_ROOT="${DATA_ROOT:-${HOME}/hypervec_data}"
 SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
 SERVER_PORT="${SERVER_PORT:-8080}"
+SERVER_IMPL="${SERVER_IMPL:-hypercorn}"
 START_SERVER="${START_SERVER:-0}"
 
 cd "${ROOT_DIR}"
@@ -22,6 +23,7 @@ echo "[hypervec] venv dir: ${VENV_DIR}"
 echo "[hypervec] opt level: ${OPT_LEVEL}"
 echo "[hypervec] data root: ${DATA_ROOT}"
 echo "[hypervec] server: ${SERVER_HOST}:${SERVER_PORT}"
+echo "[hypervec] server impl: ${SERVER_IMPL}"
 
 if command -v uname >/dev/null 2>&1; then
   ARCH="$(uname -m)"
@@ -71,7 +73,7 @@ PY
 
 if [[ "${INSTALL_SERVER_DEPS}" == "1" ]]; then
   echo "[hypervec] installing server dependencies..."
-  python -m pip install fastapi uvicorn
+  python -m pip install fastapi uvicorn hypercorn h2
 fi
 
 if [[ "${GENERATOR}" == "Ninja" ]] && ! command -v ninja >/dev/null 2>&1; then
@@ -131,10 +133,14 @@ import hypervec.hypervec_index_io as index_io
 import hypervec.hypervec_meta_store as meta_store
 import hypervec.hypervec_scalar_store as scalar_store
 import hypervec.hypervec_http_server as server
+import hypercorn
+import h2
 print("index io module:", index_io.__file__)
 print("meta store module:", meta_store.__file__)
 print("scalar store module:", scalar_store.__file__)
 print("server module:", server.__file__)
+print("hypercorn:", hypercorn.__file__)
+print("h2:", h2.__file__)
 
 app = server.create_app(data_root=tempfile.mkdtemp())
 print("server app:", app.title)
@@ -150,7 +156,10 @@ missing = [name for name in required_methods if not hasattr(HypervecClient, name
 if missing:
     raise RuntimeError(f"missing HypervecClient methods: {missing}")
 print("pyhypervec:", HypervecClient, DataType.FLOAT_VECTOR)
+HypervecClient("http://127.0.0.1:8080", http2=True)
+HypervecClient("https://127.0.0.1:8443", http2=True)
 print("pyhypervec sync methods: ok")
+print("pyhypervec http2 mode: ok")
 PY
 
 if [[ "${START_SERVER}" == "1" ]]; then
@@ -158,7 +167,8 @@ if [[ "${START_SERVER}" == "1" ]]; then
   exec python -m hypervec.hypervec_http_server \
     --data-root "${DATA_ROOT}" \
     --host "${SERVER_HOST}" \
-    --port "${SERVER_PORT}"
+    --port "${SERVER_PORT}" \
+    --server "${SERVER_IMPL}"
 fi
 
 cat <<EOF
@@ -169,7 +179,7 @@ Activate the environment:
   source ${VENV_DIR}/bin/activate
 
 Start the server:
-  python -m hypervec.hypervec_http_server --data-root ${DATA_ROOT} --host ${SERVER_HOST} --port ${SERVER_PORT}
+  python -m hypervec.hypervec_http_server --data-root ${DATA_ROOT} --host ${SERVER_HOST} --port ${SERVER_PORT} --server ${SERVER_IMPL}
 
 Build and start in one command:
   START_SERVER=1 PYTHON_BIN=${PYTHON_BIN} bash scripts/build_arm_pyhypervec_server.sh

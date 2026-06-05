@@ -128,7 +128,7 @@ setup(
     keywords="Search nearest neighbors",
     install_requires=["numpy", "packaging"],
     extras_require={
-        "server": ["fastapi", "uvicorn"],
+        "server": ["fastapi", "uvicorn", "hypercorn", "h2"],
     },
     packages=["hypervec"],
     package_data={

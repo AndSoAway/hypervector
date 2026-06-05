@@ -67,3 +67,63 @@ def test_pyhypervec_client_search_uses_milvus_like_payload(monkeypatch):
             },
         )
     ]
+
+
+def test_pyhypervec_client_version_and_sync_payload(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        if path.endswith("/version"):
+            return {"version": 2}
+        return {"needs_sync": True}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    assert client.get_version("demo")["version"] == 2
+    assert client.sync_check("demo", 1, "sha256:abc")["needs_sync"]
+    assert calls == [
+        ("GET", "/collections/demo/version", None),
+        (
+            "POST",
+            "/collections/demo/sync-check",
+            {"client_version": 1, "client_checksum": "sha256:abc"},
+        ),
+    ]
+
+
+def test_pyhypervec_client_download_and_upload_index(monkeypatch, tmp_path):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+    source = tmp_path / "source.hypervec"
+    target = tmp_path / "target.hypervec"
+    source.write_bytes(b"index-bytes")
+
+    def fake_request_bytes(method, path, *, body=None, content_type="application/octet-stream"):
+        calls.append((method, path, body, content_type))
+        if method == "GET":
+            return b"downloaded", {
+                "X-Hypervec-Collection-Version": "2",
+                "X-Hypervec-Index-Checksum": "sha256:abc",
+                "X-Hypervec-Index-Size": "10",
+            }
+        return b'{"uploaded":true,"version":3}', {}
+
+    monkeypatch.setattr(client, "_request_bytes", fake_request_bytes)
+
+    downloaded = client.download_index("demo", target)
+    assert target.read_bytes() == b"downloaded"
+    assert downloaded["version"] == "2"
+
+    uploaded = client.upload_index("demo", source, version=3, checksum="sha256:def")
+    assert uploaded["uploaded"]
+    assert calls == [
+        ("GET", "/collections/demo/index", None, "application/octet-stream"),
+        (
+            "PUT",
+            "/collections/demo/index?version=3&checksum=sha256%3Adef",
+            b"index-bytes",
+            "application/octet-stream",
+        ),
+    ]

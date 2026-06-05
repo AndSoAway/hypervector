@@ -5,20 +5,29 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import shutil
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+try:
+    from .hypervec_index_io import index_file_info
+    from .hypervec_meta_store import CollectionMeta, MetaStore
+    from .hypervec_scalar_store import ScalarStore
+except ImportError:  # pragma: no cover - supports direct file loading in tests
+    sys.path.insert(0, str(Path(__file__).parent))
+    from hypervec_index_io import index_file_info
+    from hypervec_meta_store import CollectionMeta, MetaStore
+    from hypervec_scalar_store import ScalarStore
+
 
 class HypervecServerEngine:
-    MANIFEST_FILE = "manifest.json"
-    ROWS_FILE = "rows.jsonl"
     INDEX_FILE = "index.hypervec"
 
     def __init__(
@@ -27,15 +36,20 @@ class HypervecServerEngine:
         *,
         logger: logging.Logger | None = None,
         hypervec_module: Any | None = None,
+        meta_store: MetaStore | None = None,
+        scalar_store: ScalarStore | None = None,
     ) -> None:
         self.data_root = Path(data_root).expanduser()
         self.data_root.mkdir(parents=True, exist_ok=True)
+        self.collections_root = self.data_root / "collections"
+        self.collections_root.mkdir(parents=True, exist_ok=True)
         self.logger = logger or logging.getLogger("hypervec.server")
         if hypervec_module is None:
             import hypervec as hypervec_module
         self.hypervec = hypervec_module
+        self.meta_store = meta_store or MetaStore(self.data_root / "collections.json")
+        self.scalar_store = scalar_store or ScalarStore(self.data_root / "scalar.db")
         self._indexes: dict[str, Any] = {}
-        self._rows: dict[str, list[dict[str, Any]]] = {}
         self._locks: dict[str, threading.RLock] = {}
         self._global_lock = threading.RLock()
 
@@ -58,93 +72,58 @@ class HypervecServerEngine:
             return self._locks.setdefault(collection_name, threading.RLock())
 
     def _collection_dir(self, collection_name: str) -> Path:
-        return self.data_root / self.validate_collection_name(collection_name)
-
-    def _manifest_path(self, collection_name: str) -> Path:
-        return self._collection_dir(collection_name) / self.MANIFEST_FILE
-
-    def _rows_path(self, collection_name: str) -> Path:
-        return self._collection_dir(collection_name) / self.ROWS_FILE
+        return self.collections_root / self.validate_collection_name(collection_name)
 
     def _index_path(self, collection_name: str) -> Path:
         return self._collection_dir(collection_name) / self.INDEX_FILE
 
-    def _read_manifest(self, collection_name: str) -> dict[str, Any]:
-        path = self._manifest_path(collection_name)
-        if not path.exists():
-            raise FileNotFoundError(f"collection '{collection_name}' does not exist.")
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-
-    def _write_manifest(self, collection_name: str, manifest: dict[str, Any]) -> None:
-        path = self._manifest_path(collection_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
-
-    def _load_rows_from_disk(self, collection_name: str) -> list[dict[str, Any]]:
-        rows_path = self._rows_path(collection_name)
-        if not rows_path.exists():
-            return []
-        rows = []
-        with rows_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    rows.append(json.loads(line))
-        return rows
-
-    def _save_rows(self, collection_name: str, rows: list[dict[str, Any]]) -> None:
-        rows_path = self._rows_path(collection_name)
-        rows_path.parent.mkdir(parents=True, exist_ok=True)
-        with rows_path.open("w", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
-                f.write("\n")
-
-    def _schema_fields(self, manifest: dict[str, Any]) -> list[dict[str, Any]]:
-        return list((manifest.get("schema") or {}).get("fields") or [])
+    def _schema_fields(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> list[dict[str, Any]]:
+        schema = meta_or_manifest.schema if isinstance(meta_or_manifest, CollectionMeta) else meta_or_manifest.get("schema", {})
+        return list((schema or {}).get("fields") or [])
 
     def _field_name_by_datatype(
         self,
-        manifest: dict[str, Any],
+        meta_or_manifest: CollectionMeta | dict[str, Any],
         datatype: str,
         *,
         default: str,
     ) -> str:
-        for field in self._schema_fields(manifest):
+        for field in self._schema_fields(meta_or_manifest):
             if str(field.get("datatype", "")).upper() == datatype.upper():
                 return str(field.get("name"))
         return default
 
-    def _id_field(self, manifest: dict[str, Any]) -> str:
-        for field in self._schema_fields(manifest):
+    def _id_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str:
+        for field in self._schema_fields(meta_or_manifest):
             if bool(field.get("is_primary", False)):
                 return str(field.get("name"))
-        return str(manifest.get("id_field") or "id")
+        if isinstance(meta_or_manifest, CollectionMeta):
+            return meta_or_manifest.id_field
+        return str(meta_or_manifest.get("id_field") or "id")
 
-    def _vector_field(self, manifest: dict[str, Any]) -> str:
-        return str(
-            manifest.get("vector_field")
-            or self._field_name_by_datatype(
-                manifest, "FLOAT_VECTOR", default="vector"
-            )
-        )
+    def _vector_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str:
+        if isinstance(meta_or_manifest, CollectionMeta) and meta_or_manifest.vector_field:
+            return meta_or_manifest.vector_field
+        if isinstance(meta_or_manifest, dict) and meta_or_manifest.get("vector_field"):
+            return str(meta_or_manifest["vector_field"])
+        return self._field_name_by_datatype(meta_or_manifest, "FLOAT_VECTOR", default="vector")
 
-    def _text_field(self, manifest: dict[str, Any]) -> str:
-        for field in self._schema_fields(manifest):
+    def _text_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str:
+        for field in self._schema_fields(meta_or_manifest):
             if str(field.get("name")) == "contents":
                 return "contents"
-        return str(manifest.get("text_field") or "contents")
+        if isinstance(meta_or_manifest, CollectionMeta):
+            return meta_or_manifest.text_field
+        return str(meta_or_manifest.get("text_field") or "contents")
 
-    def _index_config(self, manifest: dict[str, Any]) -> dict[str, Any]:
-        indexes = (manifest.get("index_params") or {}).get("indexes") or []
+    def _index_config(self, meta: CollectionMeta) -> dict[str, Any]:
+        indexes = (meta.index_params or {}).get("indexes") or []
         if indexes:
             return dict(indexes[0])
         return {
-            "field_name": self._vector_field(manifest),
-            "metric_type": manifest.get("metric_type", "L2"),
-            "index_type": manifest.get("index_type", "HNSWFlat"),
+            "field_name": meta.vector_field,
+            "metric_type": "L2",
+            "index_type": "HNSWFlat",
             "params": {},
         }
 
@@ -175,11 +154,25 @@ class HypervecServerEngine:
             return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, hnsw_m, metric)
         raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
 
+    def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
+        if hasattr(index, "Add"):
+            index.Add(vectors)
+        else:
+            index.add(vectors)
+
+    def _search_index(self, index: Any, query: np.ndarray, k: int) -> tuple[Any, Any]:
+        if hasattr(index, "Search"):
+            return index.Search(query, k)
+        return index.search(query, k)
+
     def _write_index(self, index: Any, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
         if hasattr(self.hypervec, "write_index"):
-            self.hypervec.write_index(index, str(path))
-            return
-        self.hypervec.WriteIndex(index, str(path))
+            self.hypervec.write_index(index, str(tmp))
+        else:
+            self.hypervec.WriteIndex(index, str(tmp))
+        tmp.replace(path)
 
     def _read_index(self, path: Path) -> Any:
         if hasattr(self.hypervec, "read_index"):
@@ -207,15 +200,36 @@ class HypervecServerEngine:
                 return False
         return True
 
+    def _meta_or_raise(self, collection_name: str) -> CollectionMeta:
+        meta = self.meta_store.get(collection_name)
+        if meta is None:
+            raise FileNotFoundError(f"collection '{collection_name}' does not exist.")
+        return meta
+
+    def _meta_response(self, meta: CollectionMeta) -> dict[str, Any]:
+        fields = self._schema_fields(meta)
+        manifest = meta.to_dict()
+        manifest["backend"] = "hypervec-server"
+        return {
+            "collection_name": meta.collection_name,
+            "schema": meta.schema,
+            "index_params": meta.index_params,
+            "fields": fields,
+            "dim": meta.dim,
+            "total": meta.total,
+            "version": meta.version,
+            "updated_at": meta.updated_at,
+            "index_checksum": meta.index_checksum,
+            "index_size_bytes": meta.index_size_bytes,
+            "manifest": manifest,
+        }
+
     def list_collections(self) -> list[str]:
-        return sorted(
-            path.name
-            for path in self.data_root.iterdir()
-            if path.is_dir() and (path / self.MANIFEST_FILE).exists()
-        )
+        return sorted(meta.collection_name for meta in self.meta_store.list_all())
 
     def has_collection(self, collection_name: str) -> bool:
-        return self._manifest_path(collection_name).exists()
+        collection_name = self.validate_collection_name(collection_name)
+        return self.meta_store.get(collection_name) is not None
 
     def create_collection(
         self,
@@ -226,139 +240,125 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
-            collection_dir = self._collection_dir(collection_name)
-            if collection_dir.exists() and self._manifest_path(collection_name).exists():
+            if self.meta_store.get(collection_name) is not None:
                 raise FileExistsError(f"collection '{collection_name}' already exists.")
-            collection_dir.mkdir(parents=True, exist_ok=True)
-
-            manifest = {
-                "backend": "hypervec-server",
-                "version": 1,
-                "collection_name": collection_name,
-                "schema": dict(schema),
-                "index_params": dict(index_params or {"indexes": []}),
-                "id_field": "id",
-                "vector_field": "vector",
-                "text_field": "contents",
-                "dim": None,
-                "total": 0,
-            }
-            manifest["id_field"] = self._id_field(manifest)
-            manifest["vector_field"] = self._vector_field(manifest)
-            manifest["text_field"] = self._text_field(manifest)
-            index_config = self._index_config(manifest)
-            manifest["metric_type"] = str(index_config.get("metric_type", "L2"))
-            manifest["index_type"] = str(index_config.get("index_type", "HNSWFlat"))
-            self._write_manifest(collection_name, manifest)
-            self._save_rows(collection_name, [])
-            return self.describe_collection(collection_name)
+            self._collection_dir(collection_name).mkdir(parents=True, exist_ok=True)
+            manifest = {"schema": dict(schema)}
+            meta = self.meta_store.create(
+                collection_name,
+                schema=dict(schema),
+                index_params=dict(index_params or {"indexes": []}),
+                id_field=self._id_field(manifest),
+                vector_field=self._vector_field(manifest),
+                text_field=self._text_field(manifest),
+                index_path=str(self._index_path(collection_name)),
+            )
+            self.scalar_store.ensure_table(collection_name)
+            return self._meta_response(meta)
 
     def drop_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
+            existed = self.meta_store.delete(collection_name)
             self._indexes.pop(collection_name, None)
-            self._rows.pop(collection_name, None)
+            self.scalar_store.drop_table(collection_name)
             collection_dir = self._collection_dir(collection_name)
             if collection_dir.exists():
                 shutil.rmtree(collection_dir)
-            return {"dropped": True, "collection_name": collection_name}
+            return {"dropped": True, "collection_name": collection_name, "existed": existed}
 
     def describe_collection(self, collection_name: str) -> dict[str, Any]:
-        manifest = self._read_manifest(collection_name)
-        fields = self._schema_fields(manifest)
-        return {
-            "collection_name": collection_name,
-            "schema": manifest.get("schema", {}),
-            "index_params": manifest.get("index_params", {}),
-            "fields": fields,
-            "dim": manifest.get("dim"),
-            "total": manifest.get("total", 0),
-            "manifest": manifest,
-        }
+        collection_name = self.validate_collection_name(collection_name)
+        return self._meta_response(self._meta_or_raise(collection_name))
 
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
-            manifest = self._read_manifest(collection_name)
-            vector_field = self._vector_field(manifest)
-            rows = self._load_rows_from_disk(collection_name)
-            dim = manifest.get("dim")
-            for row in data:
-                if vector_field not in row:
-                    raise ValueError(f"row is missing vector field '{vector_field}'.")
-                vec = list(row[vector_field])
+            meta = self._meta_or_raise(collection_name)
+            self.scalar_store.ensure_table(collection_name)
+            dim = meta.dim
+            rows = []
+            next_row_id = self.scalar_store.next_row_id(collection_name)
+            for i, row in enumerate(data):
+                if meta.vector_field not in row:
+                    raise ValueError(f"row is missing vector field '{meta.vector_field}'.")
+                vector = np.asarray(row[meta.vector_field], dtype=np.float32)
+                if vector.ndim != 1:
+                    raise ValueError(f"row vector field '{meta.vector_field}' must be 1-D.")
                 if dim is None:
-                    dim = len(vec)
-                    manifest["dim"] = int(dim)
-                elif int(dim) != len(vec):
+                    dim = int(vector.size)
+                elif int(dim) != int(vector.size):
                     raise ValueError(
-                        f"vector dimension {len(vec)} does not match collection dim {dim}."
+                        f"vector dimension {vector.size} does not match collection dim {dim}."
                     )
-                rows.append(dict(row))
-            manifest["total"] = len(rows)
-            self._save_rows(collection_name, rows)
-            self._write_manifest(collection_name, manifest)
+                doc_id = row.get(meta.id_field, str(next_row_id + i))
+                text_content = row.get(meta.text_field, "")
+                metadata = {
+                    key: value for key, value in row.items() if key != meta.vector_field
+                }
+                rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
+            self.scalar_store.insert_batch(collection_name, rows)
+            total = self.scalar_store.count(collection_name)
+            self.meta_store.update(collection_name, dim=dim, total=total)
             self._indexes.pop(collection_name, None)
-            self._rows.pop(collection_name, None)
-            return {"insert_count": len(data), "total": len(rows)}
+            return {"insert_count": len(data), "total": total}
 
     def flush(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
-            manifest = self._read_manifest(collection_name)
-            rows = self._load_rows_from_disk(collection_name)
-            vector_field = self._vector_field(manifest)
-            if not rows:
+            meta = self._meta_or_raise(collection_name)
+            if meta.dim is None:
                 raise ValueError(f"collection '{collection_name}' has no rows.")
-            vectors = np.asarray(
-                [row[vector_field] for row in rows],
-                dtype=np.float32,
-                order="C",
-            )
-            if vectors.ndim != 2:
-                raise ValueError("inserted vectors must form a 2-D matrix.")
-            index = self._make_index(int(vectors.shape[1]), self._index_config(manifest))
+            vectors = self.scalar_store.get_vectors(collection_name, int(meta.dim))
+            if vectors.size == 0:
+                raise ValueError(f"collection '{collection_name}' has no rows.")
+            index = self._make_index(int(vectors.shape[1]), self._index_config(meta))
             if not getattr(index, "is_trained", True):
                 index.Train(vectors)
-            index.Add(vectors)
-            self._write_index(index, self._index_path(collection_name))
-            manifest["dim"] = int(vectors.shape[1])
-            manifest["total"] = len(rows)
-            self._write_manifest(collection_name, manifest)
+            self._add_vectors(index, vectors)
+            index_path = Path(meta.index_path)
+            self._write_index(index, index_path)
+            file_info = index_file_info(index_path)
+            updated = self.meta_store.bump_version(
+                collection_name,
+                dim=int(vectors.shape[1]),
+                total=int(vectors.shape[0]),
+                flushed_at=time.time(),
+                **file_info,
+            )
             self._indexes[collection_name] = index
-            self._rows[collection_name] = rows
             return {
                 "flushed": True,
                 "collection_name": collection_name,
-                "total": len(rows),
-                "dim": int(vectors.shape[1]),
+                "total": updated.total,
+                "dim": updated.dim,
+                "version": updated.version,
+                "index_checksum": updated.index_checksum,
+                "index_size_bytes": updated.index_size_bytes,
             }
 
     def load_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
-            index_path = self._index_path(collection_name)
+            meta = self._meta_or_raise(collection_name)
+            index_path = Path(meta.index_path)
             if not index_path.exists():
                 raise FileNotFoundError(
                     f"collection '{collection_name}' index has not been flushed."
                 )
-            index = self._read_index(index_path)
-            rows = self._load_rows_from_disk(collection_name)
-            self._indexes[collection_name] = index
-            self._rows[collection_name] = rows
-            manifest = self._read_manifest(collection_name)
+            self._indexes[collection_name] = self._read_index(index_path)
             return {
                 "loaded": True,
                 "collection_name": collection_name,
-                "total": len(rows),
-                "dim": manifest.get("dim"),
+                "total": meta.total,
+                "dim": meta.dim,
+                "version": meta.version,
             }
 
     def close_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             self._indexes.pop(collection_name, None)
-            self._rows.pop(collection_name, None)
             return {"closed": True, "collection_name": collection_name}
 
     def search(
@@ -379,47 +379,43 @@ class HypervecServerEngine:
         with self._lock_for(collection_name):
             if collection_name not in self._indexes:
                 self.load_collection(collection_name)
-            index = self._indexes[collection_name]
-            rows = self._rows[collection_name]
-            manifest = self._read_manifest(collection_name)
-            vector_field = self._vector_field(manifest)
+            meta = self._meta_or_raise(collection_name)
+            if meta.dim is None:
+                raise ValueError(f"collection '{collection_name}' has no vector dimension.")
             query = np.asarray(data, dtype=np.float32, order="C")
             if query.ndim != 2:
                 raise ValueError("search data must be a 2-D matrix.")
-            if int(query.shape[1]) != int(manifest.get("dim")):
-                raise ValueError(
-                    f"query dim {query.shape[1]} != collection dim {manifest.get('dim')}."
-                )
+            if int(query.shape[1]) != int(meta.dim):
+                raise ValueError(f"query dim {query.shape[1]} != collection dim {meta.dim}.")
 
-            candidate_k = min(len(rows), max(int(limit), int(limit) * 8))
-            distances, labels = index.Search(query, candidate_k)
+            index = self._indexes[collection_name]
+            candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
+            distances, labels = self._search_index(index, query, candidate_k)
             requested = set(output_fields or [])
             results: list[list[dict[str, Any]]] = []
             for q_labels, q_distances in zip(labels, distances):
+                row_ids = [int(label) for label in q_labels if int(label) >= 0]
+                scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
                 hits = []
-                for label, distance in zip(q_labels, q_distances):
-                    label_i = int(label)
-                    if label_i < 0 or label_i >= len(rows):
+                for rank, (row_id, scalar) in enumerate(zip(row_ids, scalars)):
+                    if scalar is None:
                         continue
-                    row = rows[label_i]
+                    row = {
+                        **dict(scalar["metadata"] or {}),
+                        meta.id_field: scalar["doc_id"],
+                        meta.text_field: scalar["text_content"],
+                    }
                     if not self._filter_match(row, filter):
                         continue
                     if requested:
-                        entity = {
-                            key: value
-                            for key, value in row.items()
-                            if key in requested and key != vector_field
-                        }
+                        entity = {key: value for key, value in row.items() if key in requested}
                     else:
-                        entity = {
-                            key: value
-                            for key, value in row.items()
-                            if key != vector_field
-                        }
+                        entity = dict(row)
+                    distance_index = list(q_labels).index(row_id)
                     hits.append(
                         {
-                            "id": row.get(self._id_field(manifest), label_i),
-                            "distance": float(distance),
+                            "id": row.get(meta.id_field, row_id),
+                            "distance": float(q_distances[distance_index]),
                             "entity": entity,
                         }
                     )
@@ -427,3 +423,86 @@ class HypervecServerEngine:
                         break
                 results.append(hits)
             return results
+
+    def get_version(self, collection_name: str) -> dict[str, Any]:
+        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
+        return {
+            "collection_name": meta.collection_name,
+            "version": meta.version,
+            "updated_at": meta.updated_at,
+            "total": meta.total,
+            "dim": meta.dim,
+            "index_checksum": meta.index_checksum,
+            "index_size_bytes": meta.index_size_bytes,
+        }
+
+    def sync_check(
+        self,
+        collection_name: str,
+        *,
+        client_version: int,
+        client_checksum: str | None = None,
+    ) -> dict[str, Any]:
+        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
+        needs_sync = int(client_version) != int(meta.version)
+        if client_checksum and meta.index_checksum:
+            needs_sync = needs_sync or client_checksum != meta.index_checksum
+        return {
+            "needs_sync": needs_sync,
+            "server_version": meta.version,
+            "client_version": int(client_version),
+            "download_url": f"/collections/{collection_name}/index",
+            "index_checksum": meta.index_checksum,
+            "index_size_bytes": meta.index_size_bytes,
+        }
+
+    def index_path_for_download(self, collection_name: str) -> Path:
+        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
+        path = Path(meta.index_path)
+        if not path.exists():
+            raise FileNotFoundError(f"collection '{collection_name}' index is not available.")
+        return path
+
+    def upload_index(
+        self,
+        collection_name: str,
+        source_path: str | Path,
+        *,
+        version: int | None = None,
+        checksum: str | None = None,
+    ) -> dict[str, Any]:
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name):
+            meta = self._meta_or_raise(collection_name)
+            if version is not None and int(version) < int(meta.version):
+                raise ValueError(
+                    f"uploaded index version {version} is older than server version {meta.version}."
+                )
+            source = Path(source_path)
+            if not source.exists():
+                raise FileNotFoundError(f"uploaded index file does not exist: {source}")
+            actual_checksum = index_file_info(source)["index_checksum"]
+            if checksum and checksum != actual_checksum:
+                raise ValueError("uploaded index checksum does not match request checksum.")
+            loaded = self._read_index(source)
+            target = Path(meta.index_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".upload.tmp")
+            shutil.copyfile(source, tmp)
+            tmp.replace(target)
+            file_info = index_file_info(target)
+            new_version = int(version) if version is not None else meta.version + 1
+            updated = self.meta_store.set_version(
+                collection_name,
+                max(new_version, meta.version),
+                flushed_at=time.time(),
+                **file_info,
+            )
+            self._indexes[collection_name] = loaded
+            return {
+                "uploaded": True,
+                "collection_name": collection_name,
+                "version": updated.version,
+                "index_checksum": updated.index_checksum,
+                "index_size_bytes": updated.index_size_bytes,
+            }

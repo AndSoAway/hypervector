@@ -132,13 +132,36 @@ mkdir -p "${DATA_ROOT}"
 
 echo "[hypervec] verifying installation..."
 python - <<'PY'
+import tempfile
+
 import hypervec
 print("hypervec:", hypervec.__file__)
 print("has IndexHNSWFlat:", hasattr(hypervec, "IndexHNSWFlat"))
+
+import hypervec.hypervec_index_io as index_io
+import hypervec.hypervec_meta_store as meta_store
+import hypervec.hypervec_scalar_store as scalar_store
 import hypervec.hypervec_http_server as server
+print("index io module:", index_io.__file__)
+print("meta store module:", meta_store.__file__)
+print("scalar store module:", scalar_store.__file__)
 print("server module:", server.__file__)
+
+app = server.create_app(data_root=tempfile.mkdtemp())
+print("server app:", app.title)
+
 from pyhypervec import HypervecClient, DataType
+required_methods = [
+    "get_version",
+    "sync_check",
+    "download_index",
+    "upload_index",
+]
+missing = [name for name in required_methods if not hasattr(HypervecClient, name)]
+if missing:
+    raise RuntimeError(f"missing HypervecClient methods: {missing}")
 print("pyhypervec:", HypervecClient, DataType.FLOAT_VECTOR)
+print("pyhypervec sync methods: ok")
 PY
 
 if [[ "${START_SERVER}" == "1" ]]; then

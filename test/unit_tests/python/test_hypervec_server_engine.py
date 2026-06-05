@@ -94,12 +94,17 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
         ],
     )
     assert inserted["total"] == 3
+    assert engine.get_version("demo")["version"] == 1
     flushed = engine.flush("demo")
     assert flushed["dim"] == 2
+    assert flushed["version"] == 2
+    assert engine.sync_check("demo", client_version=1)["needs_sync"]
+    assert not engine.sync_check("demo", client_version=2)["needs_sync"]
 
     engine.close_collection("demo")
     loaded = engine.load_collection("demo")
     assert loaded["loaded"]
+    assert loaded["version"] == 2
 
     results = engine.search(
         "demo",

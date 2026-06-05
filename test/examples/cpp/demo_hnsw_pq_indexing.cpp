@@ -43,12 +43,13 @@ int main() {
   std::cout << "IndexHNSWPQ Demo (dual-storage build)" << std::endl;
   std::cout << "=====================================" << std::endl;
 
-  const int d = 64;
-  const int nb = 10000;
-  const int nq = 200;
-  const int M_pq = 8;     // PQ subquantizers; dsub = d / M_pq = 8
+  // Unified params (d=128, 100K vectors, 1K queries per teacher spec)
+  const int d = 128;
+  const int nb = 100000;  // 10万向量
+  const int nq = 1000;
+  const int M_pq = 128;   // PQ subquantizers; dsub = 1 (near lossless)
   const int nbits = 8;    // ksub = 256
-  const int M_hnsw = 16;  // HNSW out-degree
+  const int M_hnsw = 64;  // HNSW out-degree (more connections = better recall)
   const int k = 10;
 
   std::cout << "d=" << d << " nb=" << nb << " nq=" << nq
@@ -98,7 +99,7 @@ int main() {
 
   std::vector<float> ds(nq * k);
   std::vector<idx_t> ls(nq * k);
-  for (int ef : {16, 32, 64, 128, 256}) {
+  for (int ef : {16, 32, 64, 128, 256, 512, 1024}) {
     SearchParametersHNSW params;
     params.ef_search = ef;
 

@@ -5,7 +5,11 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the License) found in the
 # LICENSE file in the root directory of this source tree.
 
-cmake_minimum_required(VERSION 3.24.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.16.0 FATAL_ERROR)
+if(CMAKE_VERSION VERSION_LESS 3.24.0)
+  message(WARNING "CMake version ${CMAKE_VERSION} is less than 3.24.0. "
+                  "Consider upgrading CMake to avoid potential issues.")
+endif()
 
 set(HYPERVEC_LANGUAGES CXX)
 
@@ -16,16 +20,16 @@ project(HYPERVEC
   LANGUAGES CXX)
 include(GNUInstallDirs)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # Valid values are generic, avx2, avx512, avx512_spr, sve.
 option(HYPERVEC_OPT_LEVEL "generic" "")
-option(HYPERVEC_ENABLE_MKL "Enable MKL." ON)
-option(HYPERVEC_ENABLE_PYTHON "Build Python extension." ON)
+option(HYPERVEC_ENABLE_MKL "Enable MKL." OFF)
+option(HYPERVEC_ENABLE_PYTHON "Build Python extension." OFF)
 option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
-option(HYPERVEC_ENABLE_EXTRAS "Build extras like benchmarks and demos" ON)
+option(HYPERVEC_ENABLE_EXTRAS "Build extras like benchmarks and demos" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
 
 add_subdirectory(src)

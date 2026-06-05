@@ -135,7 +135,7 @@ bash scripts/build_arm_pyhypervec_server.sh
 - 创建 `.venv`
 - 安装 Python build 依赖
 - 安装 `cmake>=3.24` 到 venv
-- 安装 `fastapi` 和 `uvicorn`
+- 安装 `fastapi`、`uvicorn`、`hypercorn` 和 `h2`
 - 配置 `build-arm`
 - 编译 HyperVec C++ core
 - 编译 Python binding
@@ -188,13 +188,38 @@ source .venv/bin/activate
 python -m hypervec.hypervec_http_server \
   --data-root $HOME/hypervec_data \
   --host 0.0.0.0 \
-  --port 8080
+  --port 8080 \
+  --server hypercorn
 ```
 
 本机健康检查：
 
 ```bash
 curl http://127.0.0.1:8080/health
+```
+
+HTTP/2 明文 prior-knowledge 检查：
+
+```bash
+curl --http2-prior-knowledge http://127.0.0.1:8080/health
+```
+
+如果使用 TLS 和 ALPN，可以这样启动：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --data-root $HOME/hypervec_data \
+  --host 0.0.0.0 \
+  --port 8443 \
+  --server hypercorn \
+  --certfile /path/to/cert.pem \
+  --keyfile /path/to/key.pem
+```
+
+TLS HTTP/2 检查：
+
+```bash
+curl --http2 https://127.0.0.1:8443/health
 ```
 
 远程 client 检查：
@@ -226,6 +251,7 @@ nohup python -m hypervec.hypervec_http_server \
   --data-root $HOME/hypervec_data \
   --host 0.0.0.0 \
   --port 8080 \
+  --server hypercorn \
   > $HOME/hypervector/hypervec_server.log 2>&1 &
 echo $! > $HOME/hypervector/hypervec_server.pid
 ```
@@ -268,6 +294,7 @@ $HOME/hypervec_data/
 - `index.hypervec`：HyperVec 序列化索引文件。
 
 当前第一版按单进程 server 设计，不建议 uvicorn 多 worker。
+默认启动器是 Hypercorn，用于支持 HTTP/2。`--server uvicorn` 仅作为 HTTP/1.1 兼容模式使用。
 
 ## 9. pyhypervec client 示例
 
@@ -316,6 +343,20 @@ results = client.search(
 )
 print(results)
 ```
+
+如果客户前端或 Python client 必须使用 HTTP/2，创建 client 时打开 `http2=True`：
+
+```python
+from pyhypervec import HypervecClient
+
+# h2c：明文 HTTP/2 prior knowledge。
+client = HypervecClient("http://127.0.0.1:8080", http2=True)
+
+# h2：TLS + ALPN 协商 HTTP/2。
+client = HypervecClient("https://server.example.com:8443", http2=True)
+```
+
+`http://` 会走 h2c，`https://` 会走 h2/TLS。
 
 ## 10. 索引版本同步
 

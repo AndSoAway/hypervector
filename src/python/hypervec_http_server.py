@@ -18,7 +18,7 @@ def _require_fastapi():
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "HyperVec HTTP server requires fastapi, pydantic, and uvicorn."
+            "HyperVec HTTP server requires fastapi and pydantic."
         ) from exc
     return FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field
 
@@ -231,21 +231,61 @@ def main() -> None:
     parser.add_argument("--data-root", required=True, help="Collection data root.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", default=8080, type=int, help="Bind port.")
-    parser.add_argument("--log-level", default="info", help="uvicorn log level.")
+    parser.add_argument(
+        "--server",
+        choices=("hypercorn", "uvicorn"),
+        default="hypercorn",
+        help="ASGI server implementation. Hypercorn is the default because it supports HTTP/2.",
+    )
+    parser.add_argument("--log-level", default="info", help="ASGI server log level.")
+    parser.add_argument("--certfile", default=None, help="TLS certificate file for HTTP/2 over TLS.")
+    parser.add_argument("--keyfile", default=None, help="TLS private key file for HTTP/2 over TLS.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-    try:
-        import uvicorn
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("HyperVec HTTP server requires uvicorn.") from exc
+    app = create_app(data_root=args.data_root)
 
-    uvicorn.run(
-        create_app(data_root=args.data_root),
-        host=args.host,
-        port=args.port,
-        log_level=args.log_level,
-    )
+    if args.server == "uvicorn":
+        try:
+            import uvicorn
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("HyperVec HTTP server requires uvicorn.") from exc
+
+        if args.certfile or args.keyfile:
+            if not (args.certfile and args.keyfile):
+                raise RuntimeError("--certfile and --keyfile must be provided together.")
+            uvicorn.run(
+                app,
+                host=args.host,
+                port=args.port,
+                log_level=args.log_level,
+                ssl_certfile=args.certfile,
+                ssl_keyfile=args.keyfile,
+            )
+        else:
+            uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+        return
+
+    try:
+        import asyncio
+        from hypercorn.asyncio import serve
+        from hypercorn.config import Config
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "HyperVec HTTP/2 server requires hypercorn. Install hypervec[server] "
+            "or run: python -m pip install hypercorn h2"
+        ) from exc
+
+    if bool(args.certfile) != bool(args.keyfile):
+        raise RuntimeError("--certfile and --keyfile must be provided together.")
+
+    config = Config()
+    config.bind = [f"{args.host}:{args.port}"]
+    config.loglevel = args.log_level
+    config.certfile = args.certfile
+    config.keyfile = args.keyfile
+    config.alpn_protocols = ["h2", "http/1.1"]
+    asyncio.run(serve(app, config))
 
 
 if __name__ == "__main__":

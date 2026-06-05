@@ -127,3 +127,38 @@ def test_pyhypervec_client_download_and_upload_index(monkeypatch, tmp_path):
             "application/octet-stream",
         ),
     ]
+
+
+def test_pyhypervec_client_http2_json_requests(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080", http2=True)
+
+    def fake_request_http2(method, path, *, body=None, content_type="application/octet-stream"):
+        calls.append((method, path, body, content_type))
+        return b'{"status":"ok"}', {}
+
+    monkeypatch.setattr(client, "_request_http2", fake_request_http2)
+
+    assert client.health()["status"] == "ok"
+    assert calls == [
+        ("GET", "/health", None, "application/json"),
+    ]
+
+
+def test_pyhypervec_client_http2_download_uses_case_insensitive_headers(monkeypatch, tmp_path):
+    client = HypervecClient("http://localhost:8080", http2=True)
+    target = tmp_path / "target.hypervec"
+
+    def fake_request_http2(method, path, *, body=None, content_type="application/octet-stream"):
+        return b"downloaded", {
+            "x-hypervec-collection-version": "5",
+            "x-hypervec-index-checksum": "sha256:abc",
+            "x-hypervec-index-size": "10",
+        }
+
+    monkeypatch.setattr(client, "_request_http2", fake_request_http2)
+
+    downloaded = client.download_index("demo", target)
+    assert downloaded["version"] == "5"
+    assert downloaded["index_checksum"] == "sha256:abc"
+    assert downloaded["index_size_bytes"] == "10"

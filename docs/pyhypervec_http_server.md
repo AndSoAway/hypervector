@@ -64,6 +64,21 @@ results = client.search(
 )
 ```
 
+Enable HTTP/2 in the client:
+
+```python
+from pyhypervec import HypervecClient
+
+# h2c: cleartext HTTP/2 prior knowledge.
+client = HypervecClient("http://127.0.0.1:8080", http2=True)
+
+# h2: HTTP/2 over TLS through ALPN.
+client = HypervecClient("https://server.example.com:8443", http2=True)
+```
+
+`pyhypervec` uses h2c when the URI scheme is `http://` and h2/TLS when the URI
+scheme is `https://`.
+
 ## Server
 
 Install the compiled `hypervec` package with server dependencies:
@@ -78,11 +93,36 @@ Start the HTTP server:
 python -m hypervec.hypervec_http_server \
   --data-root /data/hypervec \
   --host 0.0.0.0 \
-  --port 8080
+  --port 8080 \
+  --server hypercorn
 ```
 
 Use one worker for the first implementation. The engine keeps loaded indexes in
 process memory.
+
+Hypercorn is the default server implementation because it supports HTTP/2. The
+same FastAPI routes work for HTTP/1.1 and HTTP/2 clients. Uvicorn remains
+available only as an HTTP/1.1 compatibility mode:
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --data-root /data/hypervec \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --server uvicorn
+```
+
+For production HTTP/2, prefer TLS with ALPN:
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --data-root /data/hypervec \
+  --host 0.0.0.0 \
+  --port 8443 \
+  --server hypercorn \
+  --certfile /path/to/cert.pem \
+  --keyfile /path/to/key.pem
+```
 
 Runtime data is stored under `--data-root`:
 
@@ -129,6 +169,19 @@ Health check:
 
 ```bash
 curl "$SERVER/health"
+```
+
+HTTP/2 health check over TLS:
+
+```bash
+curl --http2 https://127.0.0.1:8443/health
+```
+
+HTTP/2 cleartext prior-knowledge check, useful when a client sends
+`PRI * HTTP/2.0` directly to the service:
+
+```bash
+curl --http2-prior-knowledge http://127.0.0.1:8080/health
 ```
 
 List collections:

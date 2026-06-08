@@ -32,7 +32,7 @@ def create_app(
     engine = engine or HypervecServerEngine(data_root)
 
     class CreateCollectionRequest(BaseModel):
-        schema: dict[str, Any]
+        collection_schema: dict[str, Any] = Field(alias="schema")
         index_params: dict[str, Any] = Field(default_factory=lambda: {"indexes": []})
 
     class InsertRequest(BaseModel):
@@ -95,7 +95,7 @@ def create_app(
         try:
             return engine.create_collection(
                 collection_name,
-                schema=request.schema,
+                schema=request.collection_schema,
                 index_params=request.index_params,
             )
         except Exception as exc:

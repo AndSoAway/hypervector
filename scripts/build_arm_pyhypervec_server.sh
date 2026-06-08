@@ -16,6 +16,18 @@ SERVER_PORT="${SERVER_PORT:-8080}"
 SERVER_IMPL="${SERVER_IMPL:-hypercorn}"
 START_SERVER="${START_SERVER:-0}"
 
+clean_python_build_artifacts() {
+  local package_dir="$1"
+
+  if [[ ! -d "${package_dir}" ]]; then
+    echo "[hypervec] Python package directory '${package_dir}' was not found." >&2
+    exit 1
+  fi
+
+  echo "[hypervec] cleaning stale Python build artifacts in ${package_dir}..."
+  rm -rf "${package_dir}/build" "${package_dir}"/*.egg-info
+}
+
 cd "${ROOT_DIR}"
 
 echo "[hypervec] source root: ${ROOT_DIR}"
@@ -127,6 +139,7 @@ popd >/dev/null
 
 if [[ "${INSTALL_PYHYPERVEC}" == "1" ]]; then
   echo "[hypervec] installing pyhypervec client package..."
+  clean_python_build_artifacts "./pyhypervec"
   python -m pip install ./pyhypervec
 fi
 

@@ -14,7 +14,11 @@ from setuptools import setup
 # make the hypervec python package dir
 shutil.rmtree("hypervec", ignore_errors=True)
 os.mkdir("hypervec")
-shutil.copyfile("contrib", "hypervec/contrib")
+if os.path.exists("contrib"):
+    if os.path.isdir("contrib"):
+        shutil.copytree("contrib", "hypervec/contrib")
+    else:
+        shutil.copyfile("contrib", "hypervec/contrib")
 shutil.copyfile("__init__.py", "hypervec/__init__.py")
 shutil.copyfile("loader.py", "hypervec/loader.py")
 shutil.copyfile("class_wrappers.py", "hypervec/class_wrappers.py")
@@ -35,13 +39,15 @@ if platform.system() != "AIX":
     ext = ".pyd" if platform.system() == "Windows" else ".so"
 else:
     ext = ".a"
-prefix = "Release/" * (platform.system() == "Windows")
+prefix = "Release/" * (
+    platform.system() == "Windows" and os.path.exists(os.path.join("Release", "_swighypervec.pyd"))
+)
 
 swighypervec_generic_lib = f"{prefix}_swighypervec{ext}"
 swighypervec_avx2_lib = f"{prefix}_swighypervec_avx2{ext}"
 swighypervec_avx512_lib = f"{prefix}_swighypervec_avx512{ext}"
 swighypervec_avx512_spr_lib = f"{prefix}_swighypervec_avx512_spr{ext}"
-callbacks_lib = f"{prefix}libHypervec_python_callbacks{ext}"
+callbacks_lib = f"{prefix}libhypervec_python_callbacks{ext}"
 swighypervec_sve_lib = f"{prefix}_swighypervec_sve{ext}"
 Hypervec_example_external_module_lib = f"_Hypervec_example_external_module{ext}"
 

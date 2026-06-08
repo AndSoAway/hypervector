@@ -165,7 +165,7 @@ elseif(NOT WIN32)
   set_target_properties(swighypervec_avx512_spr PROPERTIES SUFFIX .so)
   set_target_properties(swighypervec_sve PROPERTIES SUFFIX .so)
   set_target_properties(hypervec_example_external_module PROPERTIES SUFFIX .so)
-else()
+elseif(MSVC)
   # we need bigobj for the swig wrapper
   target_compile_options(swighypervec PRIVATE /bigobj)
   target_compile_options(swighypervec_avx2 PRIVATE /bigobj)
@@ -228,6 +228,15 @@ target_link_libraries(hypervec_example_external_module PRIVATE
   hypervec
 )
 
+if(MINGW)
+  target_link_libraries(swighypervec PRIVATE gomp)
+  target_link_libraries(swighypervec_avx2 PRIVATE gomp)
+  target_link_libraries(swighypervec_avx512 PRIVATE gomp)
+  target_link_libraries(swighypervec_avx512_spr PRIVATE gomp)
+  target_link_libraries(swighypervec_sve PRIVATE gomp)
+  target_link_libraries(hypervec_example_external_module PRIVATE gomp)
+endif()
+
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
 target_include_directories(swighypervec PRIVATE ${PROJECT_SOURCE_DIR}/..)
@@ -255,6 +264,7 @@ endif()
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
 target_include_directories(hypervec_python_callbacks PRIVATE ${PROJECT_SOURCE_DIR}/..)
+target_include_directories(hypervec_python_callbacks PRIVATE ${hypervec_SOURCE_DIR}/include)
 target_include_directories(hypervec_python_callbacks PRIVATE ${Python_INCLUDE_DIRS})
 
 target_link_libraries(swighypervec PRIVATE hypervec_python_callbacks)
@@ -277,4 +287,6 @@ configure_file(hypervec_server_engine.py hypervec_server_engine.py COPYONLY)
 configure_file(hypervec_http_server.py hypervec_http_server.py COPYONLY)
 
 # file(GLOB files "${CMAKE_SOURCE_DIR}/contrib/*.py")
-file(COPY ${CMAKE_SOURCE_DIR}/contrib  DESTINATION .)
+if(EXISTS ${CMAKE_SOURCE_DIR}/contrib)
+  file(COPY ${CMAKE_SOURCE_DIR}/contrib DESTINATION .)
+endif()

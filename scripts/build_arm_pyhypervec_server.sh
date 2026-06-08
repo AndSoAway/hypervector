@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-build-arm}"
 VENV_DIR="${VENV_DIR:-.venv}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 OPT_LEVEL="${HYPERVEC_OPT_LEVEL:-generic}"
 GENERATOR="${CMAKE_GENERATOR:-Ninja}"
 INSTALL_PYHYPERVEC="${INSTALL_PYHYPERVEC:-1}"
@@ -32,6 +33,7 @@ cd "${ROOT_DIR}"
 echo "[hypervec] source root: ${ROOT_DIR}"
 echo "[hypervec] build dir: ${BUILD_DIR}"
 echo "[hypervec] venv dir: ${VENV_DIR}"
+echo "[hypervec] python bin: ${PYTHON_BIN}"
 echo "[hypervec] opt level: ${OPT_LEVEL}"
 echo "[hypervec] data root: ${DATA_ROOT}"
 echo "[hypervec] server: ${SERVER_HOST}:${SERVER_PORT}"
@@ -48,14 +50,23 @@ if command -v uname >/dev/null 2>&1; then
   esac
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "[hypervec] python3 is required." >&2
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "[hypervec] Python executable '${PYTHON_BIN}' was not found." >&2
+  exit 1
+fi
+
+PYTHON_VERSION="$("${PYTHON_BIN}" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+PYTHON_MAJOR="$("${PYTHON_BIN}" -c 'import sys; print(sys.version_info[0])')"
+PYTHON_MINOR="$("${PYTHON_BIN}" -c 'import sys; print(sys.version_info[1])')"
+echo "[hypervec] python version: ${PYTHON_VERSION}"
+if (( PYTHON_MAJOR < 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR < 10) )); then
+  echo "[hypervec] Python >= 3.10 is required; got ${PYTHON_VERSION}." >&2
   exit 1
 fi
 
 if [[ ! -d "${VENV_DIR}" ]]; then
   echo "[hypervec] creating virtualenv..."
-  python3 -m venv "${VENV_DIR}"
+  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 fi
 
 # shellcheck source=/dev/null

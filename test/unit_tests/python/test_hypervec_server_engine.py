@@ -12,10 +12,10 @@ class FakeIndexFlatL2:
         self.is_trained = True
         self.vectors = np.empty((0, d), dtype=np.float32)
 
-    def Add(self, x) -> None:
+    def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
 
-    def Search(self, x, k: int):
+    def search(self, x, k: int):
         x = np.asarray(x, dtype=np.float32)
         distances = ((x[:, None, :] - self.vectors[None, :, :]) ** 2).sum(axis=2)
         labels = np.argsort(distances, axis=1)[:, :k].astype(np.int64)

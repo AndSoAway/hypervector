@@ -155,29 +155,19 @@ class HypervecServerEngine:
         raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
-        if hasattr(index, "Add"):
-            index.Add(vectors)
-        else:
-            index.add(vectors)
+        index.add(vectors)
 
     def _search_index(self, index: Any, query: np.ndarray, k: int) -> tuple[Any, Any]:
-        if hasattr(index, "Search"):
-            return index.Search(query, k)
         return index.search(query, k)
 
     def _write_index(self, index: Any, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        if hasattr(self.hypervec, "write_index"):
-            self.hypervec.write_index(index, str(tmp))
-        else:
-            self.hypervec.WriteIndex(index, str(tmp))
+        self.hypervec.write_index(index, str(tmp))
         tmp.replace(path)
 
     def _read_index(self, path: Path) -> Any:
-        if hasattr(self.hypervec, "read_index"):
-            return self.hypervec.read_index(str(path))
-        return self.hypervec.ReadIndex(str(path))
+        return self.hypervec.read_index(str(path))
 
     def _filter_match(self, row: dict[str, Any], filter_expr: str) -> bool:
         expr = (filter_expr or "").strip()
@@ -314,7 +304,7 @@ class HypervecServerEngine:
                 raise ValueError(f"collection '{collection_name}' has no rows.")
             index = self._make_index(int(vectors.shape[1]), self._index_config(meta))
             if not getattr(index, "is_trained", True):
-                index.Train(vectors)
+                index.train(vectors)
             self._add_vectors(index, vectors)
             index_path = Path(meta.index_path)
             self._write_index(index, index_path)

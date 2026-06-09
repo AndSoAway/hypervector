@@ -1,7 +1,61 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
 build/
-.git/
+.eggs/
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Build artifacts
+build/
+build-*/
 *.o
 *.a
-*.so
-__pycache__/
-*.pyc
+*.lo
+*.la
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+docs/
+DEPLOYMENT_STATUS.md
+
+# Test files
+test/
+tests/
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp

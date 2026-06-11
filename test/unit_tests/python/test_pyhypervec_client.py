@@ -69,6 +69,31 @@ def test_pyhypervec_client_search_uses_milvus_like_payload(monkeypatch):
     ]
 
 
+def test_pyhypervec_client_collection_description_and_stats_are_milvus_compatible(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {
+            "collection_name": "demo",
+            "schema": {"description": "HyperVec demo backend | display_name=Demo"},
+            "total": 1846,
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    desc = client.describe_collection("demo")
+    stats = client.get_collection_stats("demo")
+
+    assert desc["description"] == "HyperVec demo backend | display_name=Demo"
+    assert stats == {"row_count": 1846}
+    assert calls == [
+        ("GET", "/collections/demo/describe", None),
+        ("GET", "/collections/demo/describe", None),
+    ]
+
+
 def test_pyhypervec_client_version_and_sync_payload(monkeypatch):
     calls = []
     client = HypervecClient("http://localhost:8080")

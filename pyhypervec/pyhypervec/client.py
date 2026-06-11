@@ -305,7 +305,21 @@ class HypervecClient:
         return bool(res.get("exists", False))
 
     def describe_collection(self, collection_name: str) -> dict[str, Any]:
-        return self._request("GET", f"/collections/{collection_name}/describe")
+        desc = self._request("GET", f"/collections/{collection_name}/describe")
+        if isinstance(desc, dict) and "description" not in desc:
+            schema = desc.get("schema")
+            if isinstance(schema, dict):
+                desc["description"] = str(schema.get("description") or "")
+        return desc
+
+    def get_collection_stats(
+        self,
+        collection_name: str,
+        timeout: float | None = None,
+    ) -> dict[str, int]:
+        del timeout
+        desc = self.describe_collection(collection_name)
+        return {"row_count": int(desc.get("total") or 0)}
 
     def create_collection(
         self,

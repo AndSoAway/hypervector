@@ -181,10 +181,18 @@ IndexHNSWFlat::IndexHNSWFlat() {
   is_trained = true;
 }
 
+static Index* make_hnsw_flat_storage(int d, MetricType metric) {
+  if (metric == kMetricL2) {
+    return new IndexFlatL2(d);
+  }
+  if (metric == kMetricInnerProduct) {
+    return new IndexFlatIP(d);
+  }
+  return new IndexFlat(d, metric);
+}
+
 IndexHNSWFlat::IndexHNSWFlat(int d, int M, MetricType metric)
-  : IndexHNSW(
-      (metric == kMetricL2) ? new IndexFlatL2(d) : new IndexFlat(d, metric),
-      M) {
+  : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
   own_fields = true;
   is_trained = true;
 }

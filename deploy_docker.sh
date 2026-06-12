@@ -56,7 +56,7 @@ build_image() {
         --build-arg BUILDKIT_INLINE_CACHE=1 \
         -t hypervector:intel-x86 \
         -t hypervector:latest \
-        -f Dockerfile \
+        -f docker/Dockerfile \
         . || {
         log_error "Docker 镜像构建失败"
         exit 1

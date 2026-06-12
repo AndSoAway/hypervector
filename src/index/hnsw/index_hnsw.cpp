@@ -127,8 +127,10 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   // Get distance computer from storage
   auto dis = storage->GetDistanceComputer();
 
-  // Set number of threads to 1 for reproducibility in demo
-  omp_set_num_threads(1);
+  // NOTE: Do NOT call omp_set_num_threads() here. It mutates a process-global
+  // OpenMP setting and would race when multiple threads run Search()
+  // concurrently (after the SWIG layer releases the GIL). Thread count, if
+  // needed, should be controlled by the caller via OMP_NUM_THREADS.
 
   // Create result handler
   using RH = HeapBlockResultHandler<HNSW::C>;

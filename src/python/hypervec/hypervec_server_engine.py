@@ -32,134 +32,6 @@ except ImportError:  # pragma: no cover - supports direct file loading in tests
 class HypervecServerEngine:
     INDEX_FILE = "index.hypervec"
 
-    _INDEX_EXAMPLES: tuple[dict[str, Any], ...] = (
-        {
-            "index_type": "IndexIVFFlat",
-            "name": "IVFFlat",
-            "full_name": "Inverted File Flat Index",
-            "description": "倒排聚类索引，通过只搜索部分聚类降低查询开销。",
-            "use_case": ["大规模向量粗召回", "可接受近似结果的搜索"],
-            "advantages": ["查询成本可控", "适合大规模数据"],
-            "limitations": ["需要训练", "召回受 nprobe 影响"],
-            "parameters": [
-                {"name": "nlist", "type": "int", "default": 1024, "required": False, "description": "聚类中心数"},
-                {"name": "nprobe", "type": "int", "default": 10, "required": False, "description": "查询探测聚类数"},
-            ],
-            "example_code": {
-                "Python": {
-                    "create": "index_params.add_index(field_name='vector', index_type='IVFFlat', metric_type='L2', params={'nlist': 1024})",
-                    "search": "client.search(collection_name='demo_ivf_flat', data=[query], limit=10, search_params={'nprobe': 16})",
-                }
-            },
-            "performance_tips": ["提高 nprobe 可提升召回但增加延迟", "提高 nlist 可提升粗聚类粒度但增加训练和索引开销"],
-            "metric_types": ["L2", "IP", "COSINE"],
-        },
-        {
-            "index_type": "IndexIVFLVQ",
-            "name": "IVFLVQ",
-            "full_name": "Inverted File with LVQ",
-            "description": "倒排索引结合 LVQ 量化，兼顾压缩和查询效率。",
-            "use_case": ["大规模压缩检索", "内存受限场景"],
-            "advantages": ["压缩率高", "适合批量检索"],
-            "limitations": ["参数调优复杂", "存在量化误差"],
-            "parameters": [
-                {"name": "nlist", "type": "int", "default": 1024, "required": False, "description": "聚类中心数"},
-                {"name": "nlocal", "type": "int", "default": 16, "required": False, "description": "局部量化参数"},
-                {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "量化位数"},
-            ],
-            "example_code": {
-                "Python": {
-                    "create": "index_params.add_index(field_name='vector', index_type='IVFLVQ', metric_type='L2', params={'nlist': 1024, 'nlocal': 16, 'nbits': 8})",
-                    "search": "client.search(collection_name='demo_ivf_lvq', data=[query], limit=10, search_params={'nprobe': 16})",
-                }
-            },
-            "performance_tips": ["提高 nprobe 可提升召回但增加延迟", "提高 nlocal 和 nbits 会影响压缩率与精度的平衡"],
-            "metric_types": ["L2"],
-        },
-        {
-            "index_type": "IndexIVFPQ",
-            "name": "IVFPQ",
-            "full_name": "Inverted File with Product Quantization",
-            "description": "倒排索引结合乘积量化，降低内存占用。",
-            "use_case": ["超大规模向量检索", "内存敏感场景"],
-            "advantages": ["内存占用低", "查询速度快"],
-            "limitations": ["量化会损失精度", "需要训练"],
-            "parameters": [
-                {"name": "nlist", "type": "int", "default": 1024, "required": False, "description": "聚类中心数"},
-                {"name": "m_pq", "type": "int", "default": 8, "required": False, "description": "子量化器数量"},
-                {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "编码位数"},
-            ],
-            "example_code": {
-                "Python": {
-                    "create": "index_params.add_index(field_name='vector', index_type='IVFPQ', metric_type='L2', params={'nlist': 1024, 'm_pq': 8, 'nbits': 8})",
-                    "search": "client.search(collection_name='demo_ivf_pq', data=[query], limit=10, search_params={'nprobe': 16})",
-                }
-            },
-            "performance_tips": ["提高 nprobe 可提升召回但增加延迟", "提高 m_pq 会降低单码压缩比并改善重构精度"],
-            "metric_types": ["L2"],
-        },
-        {
-            "index_type": "IndexHNSWFlat",
-            "full_name": "Hierarchical Navigable Small World with Flat Vectors",
-            "description": "基于多层小世界图的近似最近邻索引，适合高召回、低延迟向量检索。",
-            "use_case": ["百万级以上向量检索", "低延迟在线搜索", "高召回召回阶段"],
-            "advantages": ["查询速度快", "召回率高", "无需训练"],
-            "limitations": ["索引内存占用较高", "构建耗时随 M 和 ef_construction 增加"],
-            "parameters": [
-                {"name": "m_hnsw", "type": "int", "default": 32, "required": False, "description": "图连接数"},
-                {"name": "ef_construction", "type": "int", "default": 100, "required": False, "description": "构建搜索宽度"},
-                {"name": "ef_search", "type": "int", "default": 100, "required": False, "description": "查询搜索宽度"},
-            ],
-            "example_code": {"Python": {"create": "index_params.add_index(field_name='vector', index_type='HNSW', metric_type='L2', params={'m_hnsw': 32, 'ef_construction': 200})", "search": "client.search(collection_name='wiki_hnsw_1m', data=[query], limit=10, search_params={'ef_search': 128})"}},
-            "performance_tips": ["提高 ef_search 可提升召回但增加延迟", "提高 m_hnsw 可提升图质量但增加内存"],
-            "metric_types": ["L2", "IP", "COSINE"],
-        },
-        {
-            "index_type": "IndexHNSWLVQ",
-            "name": "HNSWLVQ",
-            "full_name": "Hierarchical Navigable Small World with LVQ",
-            "description": "基于多层小世界图的近似最近邻索引，结合 LVQ 压缩以降低内存占用，适合高召回、较低内存场景。",
-            "use_case": ["大规模向量近似检索", "内存受限场景", "高召回检索"],
-            "advantages": ["查询速度快", "召回率高", "索引占用低于纯浮点 HNSW"],
-            "limitations": ["仅支持 L2", "存在量化误差", "构建耗时随 m_hnsw 增加"],
-            "parameters": [
-                {"name": "nlocal", "type": "int", "default": 16, "required": False, "description": "局部量化参数"},
-                {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "量化位数"},
-                {"name": "m_hnsw", "type": "int", "default": 32, "required": False, "description": "图连接数"},
-            ],
-            "example_code": {
-                "Python": {
-                    "create": "index_params.add_index(field_name='vector', index_type='HNSWLVQ', metric_type='L2', params={'nlocal': 16, 'nbits': 8, 'm_hnsw': 32})",
-                    "search": "client.search(collection_name='wiki_hnsw_lvq', data=[query], limit=10, search_params={'ef_search': 128})",
-                }
-            },
-            "performance_tips": ["提高 ef_search 可提升召回但增加延迟", "提高 m_hnsw 可提升图质量但增加内存"],
-            "metric_types": ["L2"],
-        },
-        {
-            "index_type": "IndexHNSWPQ",
-            "name": "HNSWPQ",
-            "full_name": "Hierarchical Navigable Small World with Product Quantization",
-            "description": "基于多层小世界图的近似最近邻索引，结合 PQ 压缩以降低内存占用，适合超大规模向量检索。",
-            "use_case": ["超大规模向量检索", "内存敏感场景", "高召回检索"],
-            "advantages": ["内存占用低", "查询速度快", "索引规模可扩展"],
-            "limitations": ["仅支持 L2", "量化会损失精度", "要求维度可被 m_pq 整除"],
-            "parameters": [
-                {"name": "m_pq", "type": "int", "default": 8, "required": False, "description": "子量化器数量"},
-                {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "编码位数"},
-                {"name": "m_hnsw", "type": "int", "default": 32, "required": False, "description": "图连接数"},
-            ],
-            "example_code": {
-                "Python": {
-                    "create": "index_params.add_index(field_name='vector', index_type='HNSWPQ', metric_type='L2', params={'m_pq': 8, 'nbits': 8, 'm_hnsw': 32})",
-                    "search": "client.search(collection_name='wiki_hnsw_pq', data=[query], limit=10, search_params={'ef_search': 128})",
-                }
-            },
-            "performance_tips": ["提高 ef_search 可提升召回但增加延迟", "提高 m_hnsw 可提升图质量但增加内存"],
-            "metric_types": ["L2"],
-        },
-    )
-
     def __init__(
         self,
         data_root: str,
@@ -258,13 +130,6 @@ class HypervecServerEngine:
             "params": {},
         }
 
-    def supported_index_examples(self) -> list[dict[str, Any]]:
-        examples = []
-        for example in self._INDEX_EXAMPLES:
-            if hasattr(self.hypervec, example["index_type"]):
-                examples.append(dict(example))
-        return examples
-
     def _metric(self, metric_type: str) -> int:
         metric = str(metric_type or "L2").upper()
         if metric in {"IP", "INNER_PRODUCT", "COSINE"}:
@@ -277,57 +142,19 @@ class HypervecServerEngine:
         metric = self._metric(str(index_config.get("metric_type", "L2")))
         index_type = str(index_config.get("index_type") or "HNSWFlat").upper()
         params = dict(index_config.get("params") or {})
-        deprecated = sorted(set(params) & {"M", "m", "M_hnsw", "M_pq"})
-        if deprecated:
-            raise ValueError(
-                "unsupported index parameter(s) "
-                f"{', '.join(deprecated)}; use explicit m_hnsw or m_pq."
-            )
-
-        def positive_int(name: str, default: int) -> int:
-            value = int(params.get(name, default))
-            if value <= 0:
-                raise ValueError(f"index parameter '{name}' must be positive.")
-            return value
-
-        def validate_pq_dim(m_pq: int) -> None:
-            if int(dim) % int(m_pq) != 0:
-                raise ValueError(
-                    f"vector dim {dim} must be divisible by m_pq {m_pq}."
-                )
 
         if index_type in {"FLAT", "INDEXFLAT"}:
             if metric == int(self.hypervec.kMetricInnerProduct):
                 return self.hypervec.IndexFlatIP(dim)
             return self.hypervec.IndexFlatL2(dim)
-        if index_type in {"IVF", "IVFFLAT", "INDEXIVFFLAT"}:
-            nlist = positive_int("nlist", 1024)
-            return self.hypervec.IndexIVFFlat(dim, nlist, metric)
-        if index_type in {"IVFLVQ", "INDEXIVFLVQ"}:
-            nlist = positive_int("nlist", 1024)
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            return self.hypervec.IndexIVFLVQ(dim, nlist, nlocal, nbits, metric)
-        if index_type in {"IVFPQ", "INDEXIVFPQ"}:
-            nlist = positive_int("nlist", 1024)
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexIVFPQ(dim, nlist, m_pq, nbits, metric)
         if index_type in {"HNSW", "HNSWFLAT", "INDEXHNSWFLAT", "AUTOINDEX"}:
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWFlat(dim, m_hnsw, metric)
+            hnsw_m = int(params.get("M", params.get("m", 32)))
+            return self.hypervec.IndexHNSWFlat(dim, hnsw_m, metric)
         if index_type in {"HNSWLVQ", "INDEXHNSWLVQ"}:
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, m_hnsw, metric)
-        if index_type in {"HNSWPQ", "INDEXHNSWPQ"}:
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexHNSWPQ(dim, m_pq, nbits, m_hnsw, metric)
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            hnsw_m = int(params.get("M_hnsw", params.get("M", 32)))
+            return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, hnsw_m, metric)
         raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
@@ -336,17 +163,7 @@ class HypervecServerEngine:
         else:
             index.add(vectors)
 
-    def _search_index(
-        self,
-        index: Any,
-        query: np.ndarray,
-        k: int,
-        search_params: dict[str, Any] | None = None,
-    ) -> tuple[Any, Any]:
-        params = dict(search_params or {})
-        ef_search = params.get("ef_search", params.get("ef"))
-        if ef_search is not None and hasattr(index, "search_with_ef"):
-            return index.search_with_ef(query, k, int(ef_search))
+    def _search_index(self, index: Any, query: np.ndarray, k: int) -> tuple[Any, Any]:
         if hasattr(index, "Search"):
             return index.Search(query, k)
         return index.search(query, k)
@@ -458,15 +275,6 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         return self._meta_response(self._meta_or_raise(collection_name))
 
-    def describe_collections(self) -> list[dict[str, Any]]:
-        return [
-            self._meta_response(meta)
-            for meta in sorted(
-                self.meta_store.list_all(),
-                key=lambda item: item.collection_name,
-            )
-        ]
-
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name).write_lock():
@@ -489,9 +297,8 @@ class HypervecServerEngine:
                     )
                 doc_id = row.get(meta.id_field, str(next_row_id + i))
                 text_content = row.get(meta.text_field, "")
-                structured_fields = {meta.id_field, meta.vector_field, meta.text_field}
                 metadata = {
-                    key: value for key, value in row.items() if key not in structured_fields
+                    key: value for key, value in row.items() if key != meta.vector_field
                 }
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
             self.scalar_store.insert_batch(collection_name, rows)
@@ -582,7 +389,7 @@ class HypervecServerEngine:
         filter: str = "",
         consistency_level: str | None = None,
     ) -> list[list[dict[str, Any]]]:
-        del consistency_level
+        del search_params, consistency_level
         collection_name = self.validate_collection_name(collection_name)
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
@@ -613,7 +420,7 @@ class HypervecServerEngine:
                 candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
             else:
                 candidate_k = min(meta.total, int(limit))
-            distances, labels = self._search_index(index, query, candidate_k, search_params)
+            distances, labels = self._search_index(index, query, candidate_k)
             requested = set(output_fields or [])
             cache = self._scalar_cache.get(collection_name)
             results: list[list[dict[str, Any]]] = []

@@ -93,7 +93,9 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
+  Py_BEGIN_ALLOW_THREADS
   index->Search(n, data, k, distances.data(), labels.data(), params);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);

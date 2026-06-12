@@ -29,6 +29,8 @@ shutil.copyfile("hypervec_meta_store.py", "hypervec/hypervec_meta_store.py")
 shutil.copyfile("hypervec_scalar_store.py", "hypervec/hypervec_scalar_store.py")
 shutil.copyfile("hypervec_server_engine.py", "hypervec/hypervec_server_engine.py")
 shutil.copyfile("hypervec_http_server.py", "hypervec/hypervec_http_server.py")
+shutil.copyfile("rwlock.py", "hypervec/rwlock.py")
+shutil.copyfile("examples_data.py", "hypervec/examples_data.py")
 
 if os.path.exists("__init__.pyi"):
     shutil.copyfile("__init__.pyi", "hypervec/__init__.pyi")

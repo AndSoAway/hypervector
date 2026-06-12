@@ -1,28 +1,37 @@
-/.claude/
-CLAUDE.md
-AGENTS.md
-/.vscode/
-*.log
-*.swp
-*.swo
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Build artifacts
+build/
+build-*/
 *.o
 *.a
-*.dSYM
-*.so
-*.dylib
-*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 *~
-/build/
-/config.*
-/aclocal.m4
-/autom4te.cache/
-/makefile.inc
-/bin/
-/c_api/bin/
-/c_api/gpu/bin/
-/test/unit_tests/cpp/hypervec_test
-/test/unit_tests/cpp/gtest/
-hypervec/python/swighypervec_avx2.swig
-hypervec/python/swighypervec_avx512.swig
-hypervec/python/swighypervec_avx512_spr.swig
-hypervec/python/swighypervec_sve.swig
+.DS_Store
+
+# Data
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log

@@ -84,6 +84,11 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     created = engine.create_collection("demo", schema=schema, index_params=index_params)
     assert created["collection_name"] == "demo"
     assert engine.has_collection("demo")
+    engine.create_collection("alpha", schema=schema, index_params=index_params)
+    described = engine.describe_collections()
+    assert [desc["collection_name"] for desc in described] == ["alpha", "demo"]
+    assert described[0]["schema"] == schema
+    engine.drop_collection("alpha")
 
     inserted = engine.insert(
         "demo",

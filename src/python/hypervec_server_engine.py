@@ -261,6 +261,15 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         return self._meta_response(self._meta_or_raise(collection_name))
 
+    def describe_collections(self) -> list[dict[str, Any]]:
+        return [
+            self._meta_response(meta)
+            for meta in sorted(
+                self.meta_store.list_all(),
+                key=lambda item: item.collection_name,
+            )
+        ]
+
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):

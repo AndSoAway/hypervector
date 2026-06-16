@@ -70,6 +70,13 @@ def create_app(
     def list_collections() -> dict[str, list[str]]:
         return {"collections": engine.list_collections()}
 
+    @app.get("/collections/describe")
+    def describe_collections() -> dict[str, Any]:
+        try:
+            return {"collections": engine.describe_collections()}
+        except Exception as exc:
+            raise fail(exc)
+
     @app.get("/collections/{collection_name}/exists")
     def has_collection(collection_name: str) -> dict[str, Any]:
         try:

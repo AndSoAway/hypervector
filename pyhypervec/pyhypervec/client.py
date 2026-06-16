@@ -304,13 +304,24 @@ class HypervecClient:
         res = self._request("GET", f"/collections/{collection_name}/exists")
         return bool(res.get("exists", False))
 
-    def describe_collection(self, collection_name: str) -> dict[str, Any]:
-        desc = self._request("GET", f"/collections/{collection_name}/describe")
+    @staticmethod
+    def _normalize_description(desc: dict[str, Any]) -> dict[str, Any]:
         if isinstance(desc, dict) and "description" not in desc:
             schema = desc.get("schema")
             if isinstance(schema, dict):
                 desc["description"] = str(schema.get("description") or "")
         return desc
+
+    def describe_collection(self, collection_name: str) -> dict[str, Any]:
+        desc = self._request("GET", f"/collections/{collection_name}/describe")
+        return self._normalize_description(desc)
+
+    def describe_collections(self) -> list[dict[str, Any]]:
+        res = self._request("GET", "/collections/describe")
+        return [
+            self._normalize_description(desc)
+            for desc in list(res.get("collections", []))
+        ]
 
     def get_collection_stats(
         self,

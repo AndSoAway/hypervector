@@ -1,0 +1,156 @@
+// Copyright (c) 2024 HyperVec Authors. All rights reserved.
+//
+// HyperVec gRPC service definition.
+// Complex types (schema, data, results) are serialized as JSON strings
+// to avoid a large number of nested message types in the first version.
+
+syntax = "proto3";
+
+package hypervec;
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service HyperVec {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+  rpc HasCollection(HasCollectionRequest) returns (HasCollectionResponse);
+  rpc DescribeCollection(DescribeCollectionRequest) returns (DescribeCollectionResponse);
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
+  rpc Insert(InsertRequest) returns (InsertResponse);
+  rpc Flush(FlushRequest) returns (FlushResponse);
+  rpc LoadCollection(LoadCollectionRequest) returns (LoadCollectionResponse);
+  rpc CloseCollection(CloseCollectionRequest) returns (CloseCollectionResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+  rpc SyncCheck(SyncCheckRequest) returns (SyncCheckResponse);
+  rpc DownloadIndex(DownloadIndexRequest) returns (DownloadIndexResponse);
+  rpc UploadIndex(UploadIndexRequest) returns (UploadIndexResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+message HealthRequest {}
+message HealthResponse {
+  string status = 1;
+}
+
+message ListCollectionsRequest {}
+message ListCollectionsResponse {
+  repeated string collections = 1;
+}
+
+message HasCollectionRequest {
+  string collection_name = 1;
+}
+message HasCollectionResponse {
+  string collection_name = 1;
+  bool exists = 2;
+}
+
+message DescribeCollectionRequest {
+  string collection_name = 1;
+}
+message DescribeCollectionResponse {
+  // JSON-encoded dict matching HTTP describe_collection response.
+  string json_payload = 1;
+}
+
+message CreateCollectionRequest {
+  string collection_name = 1;
+  string schema_json = 2;       // JSON-encoded CollectionSchema.to_dict()
+  string index_params_json = 3; // JSON-encoded IndexParams.to_dict()
+}
+message CreateCollectionResponse {
+  string json_payload = 1;
+}
+
+message DropCollectionRequest {
+  string collection_name = 1;
+}
+message DropCollectionResponse {
+  string json_payload = 1;
+}
+
+message InsertRequest {
+  string collection_name = 1;
+  string data_json = 2; // JSON-encoded list[dict]
+}
+message InsertResponse {
+  string json_payload = 1;
+}
+
+message FlushRequest {
+  string collection_name = 1;
+}
+message FlushResponse {
+  string json_payload = 1;
+}
+
+message LoadCollectionRequest {
+  string collection_name = 1;
+}
+message LoadCollectionResponse {
+  string json_payload = 1;
+}
+
+message CloseCollectionRequest {
+  string collection_name = 1;
+}
+message CloseCollectionResponse {
+  string json_payload = 1;
+}
+
+message SearchRequest {
+  string collection_name = 1;
+  string query_json = 2;        // JSON-encoded list[list[float]]
+  int32 limit = 3;
+  string search_params_json = 4; // JSON-encoded dict
+  repeated string output_fields = 5;
+  string filter = 6;
+  string consistency_level = 7;
+}
+message SearchResponse {
+  // JSON-encoded list[list[dict]] matching HTTP search results.
+  string results_json = 1;
+}
+
+message GetVersionRequest {
+  string collection_name = 1;
+}
+message GetVersionResponse {
+  string json_payload = 1;
+}
+
+message SyncCheckRequest {
+  string collection_name = 1;
+  int64 client_version = 2;
+  string client_checksum = 3;
+}
+message SyncCheckResponse {
+  string json_payload = 1;
+}
+
+message DownloadIndexRequest {
+  string collection_name = 1;
+}
+message DownloadIndexResponse {
+  bytes data = 1;
+  int64 version = 2;
+  string checksum = 3;
+  int64 size_bytes = 4;
+}
+
+message UploadIndexRequest {
+  string collection_name = 1;
+  bytes data = 2;
+  int64 version = 3;    // 0 means "not specified"
+  string checksum = 4;  // empty means "not specified"
+}
+message UploadIndexResponse {
+  string json_payload = 1;
+}

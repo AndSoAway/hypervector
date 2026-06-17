@@ -22,6 +22,12 @@ import pytest
 os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
 os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
 
+# On Windows with MinGW-built extension, add the MinGW runtime DLL directory so
+# that _swighypervec.pyd can resolve libstdc++/libopenblas at import time.
+_MINGW_BIN = Path(r"C:\msys64\mingw64\bin")
+if _MINGW_BIN.is_dir() and hasattr(os, "add_dll_directory"):
+    os.add_dll_directory(str(_MINGW_BIN))
+
 _REPO_ROOT = Path(__file__).parents[3]
 _SRC_PYTHON = _REPO_ROOT / "src" / "python"
 _PYHYPERVEC = _REPO_ROOT / "pyhypervec"

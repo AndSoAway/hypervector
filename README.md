@@ -1,53 +1,84 @@
-# HyperVec
+## 快速启动
 
-HyperVec is a library for efficient similarity search and clustering of dense vectors. It contains algorithms that search in sets of vectors of any size, up to ones that possibly do not fit in RAM. It also contains supporting code for evaluation and parameter tuning. HyperVec is written in C++ with complete wrappers for Python/numpy.
+### 第一步：安装依赖
 
-## News
+```bash
+# 服务端依赖
+pip install fastapi uvicorn grpcio grpcio-tools
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed information about latest features.
+# 客户端依赖
+pip install -e pyhypervec/
+```
 
-## Introduction
+### 第二步：启动服务
 
-HyperVec contains several methods for similarity search. It assumes that the instances are represented as vectors and are identified by an integer, and that the vectors can be compared with L2 (Euclidean) distances or dot products. Vectors that are similar to a query vector are those that have the lowest L2 distance or the highest dot product with the query vector. It also supports cosine similarity, since this is a dot product on normalized vectors.
+**只启动 gRPC server（默认端口 50051）：**
 
-Some of the methods, like those based on binary vectors and compact quantization codes, solely use a compressed representation of the vectors and do not require to keep the original vectors. This generally comes at the cost of a less precise search but these methods can scale to billions of vectors in main memory on a single server. Other methods, like HNSW and NSG add an indexing structure on top of the raw vectors to make searching more efficient.
+```bash
+./scripts/start_grpc_server.sh --data-root ./data
+```
 
-## Installing
+**只启动 HTTP server（默认端口 8080）：**
 
-HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-cpu](https://anaconda.org/pytorch/hypervec-cpu). The library is mostly implemented in C++, the only dependency is a [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms) implementation. The Python interface is also optional. It compiles with cmake. See [INSTALL.md](INSTALL.md) for details.
+```bash
+cd src/python
+uvicorn hypervec_http_server:app --host 0.0.0.0 --port 8080
+```
 
-## How HyperVec works
+**同时启动 gRPC + HTTP（共享同一数据目录）：**
 
-HyperVec is built around an index type that stores a set of vectors, and provides a function to search in them with L2 and/or dot product vector comparison. Some index types are simple baselines, such as exact search. Most of the available indexing structures correspond to various trade-offs with respect to
+```bash
+./scripts/start_all_servers.sh --data-root ./data
+```
 
-- search time
-- search quality
-- memory used per index vector
-- training time
-- adding time
-- need for external data for unsupervised training
+### 第三步：连接并使用
 
-## Full documentation of HyperVec
+```python
+from pyhypervec import HypervecClient
+from pyhypervec.schema import CollectionSchema
+import numpy as np
 
-The following are entry points for documentation:
+# 连接 gRPC（推荐）或 HTTP，接口完全一致
+client = HypervecClient("tcp://localhost:50051")   # gRPC
+# client = HypervecClient("http://localhost:8080") # HTTP
 
-- the full documentation can be found on the [wiki page](http://github.com/QY-Graph/hypervec/wiki), including a [tutorial](https://github.com/QY-Graph/hypervec/wiki/Getting-started), a [FAQ](https://github.com/QY-Graph/hypervec/wiki/FAQ) and a [troubleshooting section](https://github.com/QY-Graph/hypervec/wiki/Troubleshooting)
-- the [doxygen documentation](https://hypervec.ai/) gives per-class information extracted from code comments
-- to reproduce results from our research papers, [Polysemous codes](https://arxiv.org/abs/1609.01882), refer to the [benchmarks README](benchs/README.md). For [Link and code: Fast indexing with graphs and compact regression codes](https://arxiv.org/abs/1804.09996), see the [link_and_code README](benchs/link_and_code)
+# 创建集合
+schema = CollectionSchema()
+schema.add_field("id", "VARCHAR", is_primary=True, max_length=64)
+schema.add_field("vector", "FLOAT_VECTOR", dim=128)
+client.create_collection("my_collection", schema=schema)
 
-## Authors
+# 写入数据
+rows = [{"id": f"v{i}", "vector": np.random.rand(128).tolist()} for i in range(100)]
+client.insert("my_collection", rows)
+client.flush("my_collection")
+client.load_collection("my_collection")
 
-HyperVec is developed by the open source community. Contributions are welcome!
+# 搜索
+results = client.search(
+    collection_name="my_collection",
+    data=[np.random.rand(128).tolist()],
+    limit=5,
+)
+print(results)
+```
 
-## Join the HyperVec community
+### 第四步：运行测试
 
-For public discussion of HyperVec or for questions, visit https://github.com/QY-Graph/hypervec/discussions.
+```bash
+# 运行所有 Python 测试（不依赖编译的 C++ extension）
+python -m pytest test/unit_tests/python/ \
+  --ignore=test/unit_tests/python/external_module_test.py \
+  --ignore=test/unit_tests/python/test_io.py \
+  -v
 
-We monitor the [issues page](http://github.com/QY-Graph/hypervec/issues) of the repository.
-You can report bugs, ask questions, etc.
+# 只跑 gRPC 相关测试
+python -m pytest test/unit_tests/python/test_hypervec_grpc_server.py \
+                 test/unit_tests/python/test_grpc_integration.py \
+                 test/unit_tests/python/test_uri.py -v
+```
 
-## Legal
+预期结果：**54 passed, 1 skipped**（skipped 的 1 个是 `test_hypervec_http_server_sync_routes`，该测试依赖尚未实现的 HTTP `/sync` 路由，在 `main` 分支上原本就是 skip 状态，非本次引入）。
 
-HyperVec is Mulan Permissive Software License v2 licensed, refer to the [LICENSE file](LICENSE) in the top level directory.
+详细说明见 [docs/pyhypervec_grpc_server.md](docs/pyhypervec_grpc_server.md) 和 [docs/pyhypervec_http_server.md](docs/pyhypervec_http_server.md)。
 
-Copyright (c) 2024 HyperVec Authors. All rights reserved.

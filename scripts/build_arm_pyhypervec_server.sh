@@ -73,7 +73,7 @@ fi
 source "${VENV_DIR}/bin/activate"
 
 echo "[hypervec] upgrading Python build dependencies..."
-python -m pip install --upgrade pip setuptools wheel packaging numpy
+python -m pip install --upgrade pip setuptools wheel packaging numpy build
 
 if [[ "${INSTALL_CMAKE}" == "1" ]]; then
   echo "[hypervec] installing CMake into virtualenv..."
@@ -117,6 +117,7 @@ cmake -S . -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DHYPERVEC_ENABLE_PYTHON=ON \
   -DHYPERVEC_ENABLE_EXTRAS=OFF \
+  -DBUILD_TESTING=OFF \
   -DHYPERVEC_OPT_LEVEL="${OPT_LEVEL}" \
   -DPython_EXECUTABLE="$(command -v python)"
 
@@ -133,8 +134,9 @@ fi
 
 echo "[hypervec] building hypervec wheel..."
 pushd "${BUILD_DIR}/src/python" >/dev/null
-python setup.py bdist_wheel
-python -m pip install --force-reinstall dist/*.whl
+rm -rf dist
+python -m build --wheel --no-isolation
+python -m pip install --force-reinstall --no-deps dist/*.whl
 popd >/dev/null
 
 if [[ "${INSTALL_PYHYPERVEC}" == "1" ]]; then

@@ -99,6 +99,8 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
         ],
     )
     assert inserted["total"] == 3
+    stored = engine.scalar_store.get_by_row_ids("demo", [0])[0]
+    assert stored["metadata"] == {"source": "manual"}
     assert engine.get_version("demo")["version"] == 1
     flushed = engine.flush("demo")
     assert flushed["dim"] == 2

@@ -70,13 +70,6 @@ def create_app(
     def list_collections() -> dict[str, list[str]]:
         return {"collections": engine.list_collections()}
 
-    @app.get("/collections/describe")
-    def describe_collections() -> dict[str, Any]:
-        try:
-            return {"collections": engine.describe_collections()}
-        except Exception as exc:
-            raise fail(exc)
-
     @app.get("/collections/{collection_name}/exists")
     def has_collection(collection_name: str) -> dict[str, Any]:
         try:
@@ -229,29 +222,6 @@ def create_app(
                     pass
         except Exception as exc:
             raise fail(exc)
-
-    # Examples endpoints
-    @app.get("/examples")
-    def list_examples() -> dict[str, Any]:
-        """List all supported index types"""
-        from .examples_data import EXAMPLES_DATA
-        return {
-            "supported_indexes": list(EXAMPLES_DATA.keys()),
-            "description": "Get detailed examples for each index type via /examples/{index_type}"
-        }
-
-    @app.get("/examples/{index_type}")
-    def get_example(index_type: str) -> dict[str, Any]:
-        """Get detailed example for a specific index type"""
-        from .examples_data import EXAMPLES_DATA
-
-        if index_type not in EXAMPLES_DATA:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Index type '{index_type}' not found. Supported types: {list(EXAMPLES_DATA.keys())}"
-            )
-
-        return EXAMPLES_DATA[index_type]
 
     return app
 

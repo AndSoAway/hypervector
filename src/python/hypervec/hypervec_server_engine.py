@@ -275,15 +275,6 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         return self._meta_response(self._meta_or_raise(collection_name))
 
-    def describe_collections(self) -> list[dict[str, Any]]:
-        return [
-            self._meta_response(meta)
-            for meta in sorted(
-                self.meta_store.list_all(),
-                key=lambda item: item.collection_name,
-            )
-        ]
-
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name).write_lock():
@@ -306,9 +297,8 @@ class HypervecServerEngine:
                     )
                 doc_id = row.get(meta.id_field, str(next_row_id + i))
                 text_content = row.get(meta.text_field, "")
-                structured_fields = {meta.id_field, meta.vector_field, meta.text_field}
                 metadata = {
-                    key: value for key, value in row.items() if key not in structured_fields
+                    key: value for key, value in row.items() if key != meta.vector_field
                 }
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
             self.scalar_store.insert_batch(collection_name, rows)

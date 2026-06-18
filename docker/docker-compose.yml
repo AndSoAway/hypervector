@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  hypervector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hypervector:intel-x86
+    container_name: hypervector-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - hypervec-data:/data/hypervec_data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  hypervec-data:
+    driver: local

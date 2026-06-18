@@ -451,3 +451,29 @@ class HypervecClient:
         body.update(kwargs)
         res = self._request("POST", f"/collections/{collection_name}/search", body=body)
         return list(res.get("results", []))
+
+    def get_examples(self, index_type: str | None = None) -> dict[str, Any]:
+        """
+        Get usage examples for index types.
+
+        Args:
+            index_type: The index type (e.g., "HNSW", "Flat").
+                       If None, returns list of all supported index types.
+
+        Returns:
+            dict: Example data including description, parameters, and code samples.
+
+        Example:
+            # List all supported index types
+            examples = client.get_examples()
+            print(examples["supported_indexes"])
+
+            # Get HNSW examples
+            hnsw_examples = client.get_examples("HNSW")
+            print(hnsw_examples["description"])
+            print(hnsw_examples["example_code"]["python"]["create"])
+        """
+        if index_type:
+            return self._request("GET", f"/examples/{index_type}")
+        else:
+            return self._request("GET", "/examples")

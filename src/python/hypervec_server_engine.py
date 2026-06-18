@@ -292,8 +292,9 @@ class HypervecServerEngine:
                     )
                 doc_id = row.get(meta.id_field, str(next_row_id + i))
                 text_content = row.get(meta.text_field, "")
+                structured_fields = {meta.id_field, meta.vector_field, meta.text_field}
                 metadata = {
-                    key: value for key, value in row.items() if key != meta.vector_field
+                    key: value for key, value in row.items() if key not in structured_fields
                 }
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
             self.scalar_store.insert_batch(collection_name, rows)

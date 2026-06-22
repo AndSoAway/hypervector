@@ -157,7 +157,17 @@ class HypervecServerEngine:
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
         index.add(vectors)
 
-    def _search_index(self, index: Any, query: np.ndarray, k: int) -> tuple[Any, Any]:
+    def _search_index(
+        self,
+        index: Any,
+        query: np.ndarray,
+        k: int,
+        search_params: dict[str, Any] | None = None,
+    ) -> tuple[Any, Any]:
+        params = dict(search_params or {})
+        ef_search = params.get("ef_search", params.get("ef"))
+        if ef_search is not None and hasattr(index, "search_with_ef"):
+            return index.search_with_ef(query, k, int(ef_search))
         return index.search(query, k)
 
     def _write_index(self, index: Any, path: Path) -> None:
@@ -372,7 +382,7 @@ class HypervecServerEngine:
         filter: str = "",
         consistency_level: str | None = None,
     ) -> list[list[dict[str, Any]]]:
-        del search_params, consistency_level
+        del consistency_level
         collection_name = self.validate_collection_name(collection_name)
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
@@ -390,7 +400,7 @@ class HypervecServerEngine:
 
             index = self._indexes[collection_name]
             candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
-            distances, labels = self._search_index(index, query, candidate_k)
+            distances, labels = self._search_index(index, query, candidate_k, search_params)
             requested = set(output_fields or [])
             results: list[list[dict[str, Any]]] = []
             for q_labels, q_distances in zip(labels, distances):

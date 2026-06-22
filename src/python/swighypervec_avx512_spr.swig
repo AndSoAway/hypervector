@@ -61,7 +61,9 @@ void index_train(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  Py_BEGIN_ALLOW_THREADS
   index->Train(n, data);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
@@ -71,12 +73,15 @@ void index_add(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  Py_BEGIN_ALLOW_THREADS
   index->Add(n, data);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
-PyObject* index_search(const hypervec::Index* index, PyObject* obj,
-                       hypervec::idx_t k) {
+PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
+                                   hypervec::idx_t k,
+                                   const hypervec::SearchParameters* params) {
   if (k <= 0) {
     throw std::runtime_error("k must be positive");
   }
@@ -89,7 +94,7 @@ PyObject* index_search(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
-  index->Search(n, data, k, distances.data(), labels.data());
+  index->Search(n, data, k, distances.data(), labels.data(), params);
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);
@@ -203,7 +208,13 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
   }
 
   PyObject* search(PyObject* x, hypervec::idx_t k) {
-    return index_search($self, x, k);
+    return index_search_with_params($self, x, k, nullptr);
+  }
+
+  PyObject* search_with_ef(PyObject* x, hypervec::idx_t k, int ef_search) {
+    hypervec::SearchParametersHNSW params;
+    params.ef_search = ef_search;
+    return index_search_with_params($self, x, k, &params);
   }
 }
 

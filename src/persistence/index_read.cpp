@@ -120,6 +120,14 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_index_header(*idxhnsw, f);
     read_HNSW(idxhnsw->hnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexFlat*>(idxhnsw->storage) != nullptr,
+      "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      idxhnsw->storage->is_trained,
+      "IndexHNSWFlat deserialize: inner IndexFlat is not trained");
+    idxhnsw->own_fields = true;
+    idxhnsw->is_trained = true;
     return idxhnsw.release();
   }
 
@@ -156,6 +164,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("IFlm") || h == fourcc("IFll")) {
     auto idx = std::make_unique<IndexFlatL2>();
     read_index_header(*idx, f);
+    idx->code_size = sizeof(float) * idx->d;
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -163,6 +172,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("IFlp")) {
     auto idx = std::make_unique<IndexFlatIP>();
     read_index_header(*idx, f);
+    idx->code_size = sizeof(float) * idx->d;
     READVECTOR(idx->codes);
     return idx.release();
   }

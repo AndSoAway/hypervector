@@ -451,3 +451,86 @@ class HypervecClient:
         body.update(kwargs)
         res = self._request("POST", f"/collections/{collection_name}/search", body=body)
         return list(res.get("results", []))
+
+    # ------------------------------------------------------------------
+    # Bundle download / upload / purge-data
+    # ------------------------------------------------------------------
+
+    def download_collection_bundle(
+        self,
+        collection_name: str,
+        target_path: str | Path,
+    ) -> dict[str, Any]:
+        """Download a collection data bundle and save it to target_path.
+
+        The bundle contains the vector index, all scalar rows, and a manifest.
+        Call this before purge_collection_data() so data can be restored later.
+
+        NOTE: v1 loads the entire bundle into memory.  For collections larger
+        than a few GB, consider switching to streaming (future improvement).
+
+        Returns a dict with path / bytes / version / bundle_format / bundle_checksum.
+        """
+        raw, headers = self._request_bytes("GET", f"/collections/{collection_name}/bundle")
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        return {
+            "collection_name": collection_name,
+            "path": str(target),
+            "bytes": len(raw),
+            "version": self._header_value(headers, "X-Hypervec-Collection-Version"),
+            "bundle_format": self._header_value(headers, "X-Hypervec-Bundle-Format"),
+            "bundle_checksum": self._header_value(headers, "X-Hypervec-Bundle-Checksum"),
+        }
+
+    def upload_collection_bundle(
+        self,
+        collection_name: str,
+        bundle_path: str | Path,
+        checksum: str | None = None,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        """Upload a bundle to restore a collection's data.
+
+        The collection metadata entry must already exist on the server.
+        Use mode="replace" (default) to overwrite existing data.
+
+        checksum: optional sha256: prefixed checksum for server-side
+        verification of the bundle's integrity.
+
+        NOTE: v1 reads the entire bundle into memory before sending.
+        """
+        params: dict[str, Any] = {"mode": mode}
+        if checksum:
+            params["checksum"] = checksum
+        query = f"?{urlencode(params)}"
+        raw_body = Path(bundle_path).read_bytes()
+        body, _ = self._request_bytes(
+            "PUT",
+            f"/collections/{collection_name}/bundle{query}",
+            body=raw_body,
+        )
+        if not body:
+            return {}
+        return json.loads(body.decode("utf-8"))
+
+    def purge_collection_data(
+        self,
+        collection_name: str,
+        require_exported: bool = True,
+    ) -> dict[str, Any]:
+        """Delete server-side user data while keeping collection metadata.
+
+        Deletes the vector index file and all scalar rows from the server.
+        The collection entry in collections.json is preserved so the user
+        can re-upload a bundle on next login.
+
+        require_exported=True (default): the server refuses to purge unless
+        a successful export (download_collection_bundle) was recorded.
+        """
+        return self._request(
+            "POST",
+            f"/collections/{collection_name}/purge-data",
+            body={"require_exported": require_exported},
+        )

@@ -138,3 +138,175 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     dropped = engine.drop_collection("demo")
     assert dropped["dropped"]
     assert not engine.has_collection("demo")
+
+
+# ---------------------------------------------------------------------------
+# Bundle / purge tests
+# ---------------------------------------------------------------------------
+
+_SCHEMA = {
+    "auto_id": False,
+    "enable_dynamic_field": True,
+    "fields": [
+        {"name": "id", "datatype": "VARCHAR", "is_primary": True},
+        {"name": "vector", "datatype": "FLOAT_VECTOR", "dim": 2},
+        {"name": "contents", "datatype": "VARCHAR"},
+    ],
+}
+_INDEX_PARAMS = {
+    "indexes": [
+        {"field_name": "vector", "metric_type": "L2", "index_type": "Flat", "params": {}}
+    ]
+}
+
+
+def make_engine(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    return module.HypervecServerEngine(str(tmp_path), hypervec_module=fake), fake
+
+
+def test_engine_export_bundle_creates_zip(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+
+    result = engine.export_collection_bundle("col1")
+    assert result["bundle_format"].startswith("hypervector.collection.bundle")
+    assert result["bytes"] > 0
+
+    import zipfile
+
+    with zipfile.ZipFile(result["path"]) as zf:
+        names = zf.namelist()
+    assert "manifest.json" in names
+    assert "index.hypervec" in names
+    assert "scalar.jsonl" in names
+
+    meta = engine.meta_store.get("col1")
+    assert meta.last_exported_at is not None
+    assert meta.bundle_format is not None
+
+
+def test_engine_purge_removes_data_keeps_metadata(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+
+    result = engine.purge_collection_data("col1")
+    assert result["purged"] is True
+    assert result["metadata_preserved"] is True
+    assert result["data_state"] == "purged"
+
+    # Metadata still exists
+    assert engine.has_collection("col1")
+    meta = engine.meta_store.get("col1")
+    assert meta.data_state == "purged"
+    assert meta.last_purged_at is not None
+
+    # Index file gone
+    from pathlib import Path
+    assert not Path(meta.index_path).exists()
+
+    # Scalar count = 0
+    assert engine.scalar_store.count("col1") == 0
+
+
+def test_engine_purge_requires_export_by_default(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except ValueError as exc:
+        assert "no recorded export" in str(exc)
+    else:
+        raise AssertionError("should have raised ValueError")
+
+
+def test_engine_import_bundle_restores_data(tmp_path):
+    engine, fake = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    # Verify purged state
+    assert engine.scalar_store.count("col1") == 0
+
+    # Restore
+    restore_result = engine.import_collection_bundle("col1", export_result["path"])
+    assert restore_result["uploaded"] is True
+    assert restore_result["total"] == 2
+    assert restore_result["data_state"] == "ready"
+
+    meta = engine.meta_store.get("col1")
+    assert meta.data_state == "ready"
+    assert engine.scalar_store.count("col1") == 2
+
+
+def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+
+    engine.create_collection("other", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    try:
+        engine.import_collection_bundle("other", export_result["path"])
+    except ValueError as exc:
+        assert "does not match" in str(exc)
+    else:
+        raise AssertionError("should have raised ValueError")
+
+
+def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+
+    engine.purge_collection_data("col1")
+    try:
+        engine.import_collection_bundle(
+            "col1",
+            export_result["path"],
+            checksum="sha256:deadbeef",
+        )
+    except ValueError as exc:
+        assert "checksum mismatch" in str(exc)
+    else:
+        raise AssertionError("should have raised ValueError")
+
+
+def test_engine_describe_includes_data_state(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+
+    described = engine.describe_collection("col1")
+    assert described["data_state"] == "ready"
+    assert "last_exported_at" in described
+    assert "last_purged_at" in described
+
+    version = engine.get_version("col1")
+    assert "data_state" in version

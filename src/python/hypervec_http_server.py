@@ -13,14 +13,14 @@ from .hypervec_server_engine import HypervecServerEngine
 
 def _require_fastapi():
     try:
-        from fastapi import FastAPI, HTTPException, Query, Request
+        from fastapi import FastAPI, HTTPException, Query, Request, Response
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "HyperVec HTTP server requires fastapi and pydantic."
         ) from exc
-    return FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field
+    return FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field
 
 
 def create_app(
@@ -28,7 +28,7 @@ def create_app(
     data_root: str,
     engine: HypervecServerEngine | None = None,
 ) -> Any:
-    FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field = _require_fastapi()
+    FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field = _require_fastapi()
     engine = engine or HypervecServerEngine(data_root)
 
     class CreateCollectionRequest(BaseModel):
@@ -227,6 +227,96 @@ def create_app(
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+        except Exception as exc:
+            raise fail(exc)
+
+    # ------------------------------------------------------------------
+    # Bundle download / upload / purge-data
+    # ------------------------------------------------------------------
+
+    class PurgeDataRequest(BaseModel):
+        require_exported: bool = True
+
+    @app.get("/collections/{collection_name}/bundle")
+    def download_bundle(collection_name: str) -> Response:
+        """Download a collection data bundle (scalar rows + index).
+
+        Returns a ZIP file with manifest.json, index.hypervec, scalar.jsonl.
+        The bundle is generated on-the-fly into the collection's directory.
+        """
+        try:
+            result = engine.export_collection_bundle(collection_name)
+        except Exception as exc:
+            raise fail(exc)
+        bundle_path = result["path"]
+        with open(bundle_path, "rb") as f:
+            data = f.read()
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{collection_name}.hypervec-bundle"'
+            ),
+            "X-Hypervec-Collection-Version": str(result["version"]),
+            "X-Hypervec-Bundle-Format": result["bundle_format"],
+            "X-Hypervec-Bundle-Checksum": result["bundle_checksum"],
+            "X-Hypervec-Bundle-Size": str(result["bytes"]),
+        }
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    @app.put("/collections/{collection_name}/bundle")
+    async def upload_bundle(
+        collection_name: str,
+        request: Request,
+        checksum: str | None = Query(default=None),
+        mode: str = Query(default="replace"),
+    ) -> dict[str, Any]:
+        """Upload (restore) a collection data bundle.
+
+        Restores scalar rows and index.hypervec from the uploaded bundle.
+        The collection metadata entry must already exist (created beforehand).
+        """
+        try:
+            body = await request.body()
+            if not body:
+                raise ValueError("uploaded bundle body is empty.")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".hypervec-bundle") as f:
+                f.write(body)
+                tmp_path = f.name
+            try:
+                return engine.import_collection_bundle(
+                    collection_name,
+                    tmp_path,
+                    checksum=checksum,
+                    mode=mode,
+                )
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except Exception as exc:
+            raise fail(exc)
+
+    @app.post("/collections/{collection_name}/purge-data")
+    def purge_data(
+        collection_name: str,
+        request: PurgeDataRequest = PurgeDataRequest(),
+    ) -> dict[str, Any]:
+        """Purge user data (index + scalar rows) while keeping collection metadata.
+
+        Safe for UltraRAG user-exit flow: call download_bundle first, then
+        purge-data.  Set require_exported=false only if you intentionally want
+        to destroy data without a prior bundle export.
+        """
+        try:
+            return engine.purge_collection_data(
+                collection_name,
+                require_exported=request.require_exported,
+            )
         except Exception as exc:
             raise fail(exc)
 

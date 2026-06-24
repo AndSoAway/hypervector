@@ -218,3 +218,111 @@ def test_pyhypervec_client_http2_download_uses_case_insensitive_headers(monkeypa
     assert downloaded["version"] == "5"
     assert downloaded["index_checksum"] == "sha256:abc"
     assert downloaded["index_size_bytes"] == "10"
+
+
+def test_pyhypervec_download_collection_bundle_writes_file(tmp_path, monkeypatch):
+    import json
+
+    client = HypervecClient("http://localhost:8080")
+    bundle_bytes = b"PK\x03\x04fake-bundle-content"
+
+    def fake_request_bytes(method, path, *, body=None, content_type="application/octet-stream"):
+        assert method == "GET"
+        assert path == "/collections/demo/bundle"
+        return bundle_bytes, {
+            "x-hypervec-collection-version": "3",
+            "x-hypervec-bundle-format": "hypervector.collection.bundle.v1",
+            "x-hypervec-bundle-checksum": "sha256:abc123",
+        }
+
+    monkeypatch.setattr(client, "_request_bytes", fake_request_bytes)
+
+    target = tmp_path / "demo.hypervec-bundle"
+    result = client.download_collection_bundle("demo", target)
+
+    assert target.read_bytes() == bundle_bytes
+    assert result["collection_name"] == "demo"
+    assert result["path"] == str(target)
+    assert result["bytes"] == len(bundle_bytes)
+    assert result["version"] == "3"
+    assert result["bundle_format"] == "hypervector.collection.bundle.v1"
+    assert result["bundle_checksum"] == "sha256:abc123"
+
+
+def test_pyhypervec_upload_collection_bundle_sends_put(tmp_path, monkeypatch):
+    import json
+
+    client = HypervecClient("http://localhost:8080")
+    bundle_bytes = b"fake-bundle-bytes"
+    bundle_path = tmp_path / "demo.hypervec-bundle"
+    bundle_path.write_bytes(bundle_bytes)
+
+    calls = []
+
+    def fake_request_bytes(method, path, *, body=None, content_type="application/octet-stream"):
+        calls.append((method, path, body))
+        return json.dumps({"uploaded": True, "total": 2, "data_state": "ready"}).encode(), {}
+
+    monkeypatch.setattr(client, "_request_bytes", fake_request_bytes)
+
+    result = client.upload_collection_bundle("demo", bundle_path)
+    assert result["uploaded"] is True
+    assert result["data_state"] == "ready"
+
+    assert len(calls) == 1
+    method, path, body = calls[0]
+    assert method == "PUT"
+    assert "/collections/demo/bundle" in path
+    assert body == bundle_bytes
+
+
+def test_pyhypervec_upload_collection_bundle_passes_checksum(tmp_path, monkeypatch):
+    import json
+
+    client = HypervecClient("http://localhost:8080")
+    bundle_path = tmp_path / "demo.hypervec-bundle"
+    bundle_path.write_bytes(b"x")
+
+    calls = []
+
+    def fake_request_bytes(method, path, *, body=None, content_type="application/octet-stream"):
+        calls.append(path)
+        return json.dumps({"uploaded": True}).encode(), {}
+
+    monkeypatch.setattr(client, "_request_bytes", fake_request_bytes)
+    client.upload_collection_bundle("demo", bundle_path, checksum="sha256:abc")
+
+    assert "checksum=sha256%3Aabc" in calls[0]
+
+
+def test_pyhypervec_purge_collection_data_sends_correct_payload(monkeypatch):
+    client = HypervecClient("http://localhost:8080")
+
+    calls = []
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"purged": True, "data_state": "purged"}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    result = client.purge_collection_data("demo")
+
+    assert result["purged"] is True
+    assert calls == [
+        ("POST", "/collections/demo/purge-data", {"require_exported": True})
+    ]
+
+
+def test_pyhypervec_purge_collection_data_require_exported_false(monkeypatch):
+    client = HypervecClient("http://localhost:8080")
+
+    calls = []
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"purged": True}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client.purge_collection_data("demo", require_exported=False)
+
+    assert calls[0][2]["require_exported"] is False

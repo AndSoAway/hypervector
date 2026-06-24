@@ -27,6 +27,15 @@ except ImportError:  # pragma: no cover - supports direct file loading in tests
     from hypervec_scalar_store import ScalarStore
 
 
+def _load_bundle_module():
+    try:
+        from .hypervec_bundle import create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from hypervec_bundle import create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+    return create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+
+
 class HypervecServerEngine:
     INDEX_FILE = "index.hypervec"
 
@@ -211,6 +220,12 @@ class HypervecServerEngine:
             "updated_at": meta.updated_at,
             "index_checksum": meta.index_checksum,
             "index_size_bytes": meta.index_size_bytes,
+            # Bundle / purge state (new fields — old clients can safely ignore)
+            "data_state": meta.data_state,
+            "last_known_total": meta.last_known_total,
+            "last_exported_at": meta.last_exported_at,
+            "last_purged_at": meta.last_purged_at,
+            "bundle_format": meta.bundle_format,
             "manifest": manifest,
         }
 
@@ -434,6 +449,10 @@ class HypervecServerEngine:
             "dim": meta.dim,
             "index_checksum": meta.index_checksum,
             "index_size_bytes": meta.index_size_bytes,
+            "data_state": meta.data_state,
+            "last_known_total": meta.last_known_total,
+            "last_exported_at": meta.last_exported_at,
+            "last_purged_at": meta.last_purged_at,
         }
 
     def sync_check(
@@ -505,4 +524,221 @@ class HypervecServerEngine:
                 "version": updated.version,
                 "index_checksum": updated.index_checksum,
                 "index_size_bytes": updated.index_size_bytes,
+            }
+
+    # ------------------------------------------------------------------
+    # Bundle export / import / purge
+    # ------------------------------------------------------------------
+
+    def export_collection_bundle(
+        self,
+        collection_name: str,
+        output_path: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Export scalar rows + index as a self-contained bundle ZIP.
+
+        If output_path is None, the bundle is written alongside the index file
+        as {collection_dir}/{collection_name}.hypervec-bundle.
+        Updates last_exported_at and bundle_format in metadata.
+        Raises FileNotFoundError if the collection has no flushed index.
+        Raises ValueError if data_state == "purged" (nothing to export).
+        """
+        create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name):
+            meta = self._meta_or_raise(collection_name)
+            if meta.data_state == "purged":
+                raise ValueError(
+                    f"collection '{collection_name}' data has been purged — "
+                    "nothing to export."
+                )
+            index_path = Path(meta.index_path)
+            if not index_path.exists():
+                raise FileNotFoundError(
+                    f"collection '{collection_name}' index has not been flushed; "
+                    "call flush() before exporting a bundle."
+                )
+            scalar_rows = self.scalar_store.export_rows(collection_name)
+            if output_path is None:
+                output_path = (
+                    self._collection_dir(collection_name)
+                    / f"{collection_name}.hypervec-bundle"
+                )
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest = create_bundle(
+                collection_name, index_path, scalar_rows, meta, output_path
+            )
+            bundle_size = output_path.stat().st_size
+            import hashlib as _hashlib
+            bundle_cksum = "sha256:" + _hashlib.sha256(output_path.read_bytes()).hexdigest()
+            self.meta_store.update(
+                collection_name,
+                last_exported_at=manifest["exported_at"],
+                last_known_total=len(scalar_rows),
+                bundle_format=BUNDLE_FORMAT,
+            )
+            return {
+                "collection_name": collection_name,
+                "path": str(output_path),
+                "bytes": bundle_size,
+                "version": meta.version,
+                "bundle_format": BUNDLE_FORMAT,
+                "bundle_checksum": bundle_cksum,
+                "manifest": manifest,
+            }
+
+    def import_collection_bundle(
+        self,
+        collection_name: str,
+        source_path: str | Path,
+        *,
+        checksum: str | None = None,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        """Restore a collection from a previously exported bundle.
+
+        - Verifies the bundle's collection_name matches the target.
+        - Verifies the optional bundle-level checksum (sha256:...) if provided.
+        - Writes index.hypervec to the collection's index_path.
+        - Restores scalar rows (with replace=True by default).
+        - Updates data_state to "ready".
+        Raises FileNotFoundError if the collection metadata does not exist.
+        Raises ValueError on format errors or checksum mismatches.
+        """
+        _, read_bundle, _, BUNDLE_FORMAT = _load_bundle_module()
+        collection_name = self.validate_collection_name(collection_name)
+        source_path = Path(source_path)
+
+        if checksum:
+            import hashlib as _hashlib
+            actual = "sha256:" + _hashlib.sha256(source_path.read_bytes()).hexdigest()
+            if actual != checksum:
+                raise ValueError(
+                    f"bundle checksum mismatch: expected {checksum}, got {actual}"
+                )
+
+        manifest, index_bytes, scalar_rows = read_bundle(source_path)
+
+        if manifest.get("collection_name") != collection_name:
+            raise ValueError(
+                f"bundle collection_name '{manifest.get('collection_name')}' "
+                f"does not match target '{collection_name}'."
+            )
+
+        with self._lock_for(collection_name):
+            meta = self._meta_or_raise(collection_name)
+
+            if meta.dim is not None and manifest.get("dim") is not None:
+                if int(meta.dim) != int(manifest["dim"]):
+                    raise ValueError(
+                        f"bundle dim {manifest['dim']} does not match "
+                        f"collection dim {meta.dim}."
+                    )
+
+            index_path = Path(meta.index_path)
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = index_path.with_suffix(index_path.suffix + ".import.tmp")
+            try:
+                tmp.write_bytes(index_bytes)
+                loaded = self._read_index(tmp)
+                tmp.replace(index_path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+
+            self.scalar_store.import_rows(
+                collection_name,
+                scalar_rows,
+                replace=(mode == "replace"),
+            )
+
+            file_info = index_file_info(index_path)
+            updated = self.meta_store.bump_version(
+                collection_name,
+                dim=manifest.get("dim") or meta.dim,
+                total=len(scalar_rows),
+                flushed_at=time.time(),
+                data_state="ready",
+                last_known_total=len(scalar_rows),
+                **file_info,
+            )
+            self._indexes[collection_name] = loaded
+            return {
+                "uploaded": True,
+                "collection_name": collection_name,
+                "version": updated.version,
+                "total": len(scalar_rows),
+                "dim": updated.dim,
+                "data_state": updated.data_state,
+                "index_checksum": updated.index_checksum,
+                "index_size_bytes": updated.index_size_bytes,
+            }
+
+    def purge_collection_data(
+        self,
+        collection_name: str,
+        *,
+        require_exported: bool = True,
+    ) -> dict[str, Any]:
+        """Delete user data (index file + scalar rows) while keeping metadata.
+
+        This is NOT drop_collection — the collection entry in collections.json
+        is preserved so users can re-identify their collections after logout.
+
+        require_exported=True (default): refuse to purge if last_exported_at is
+        not set on the metadata, preventing accidental data loss when the
+        bundle download step was skipped.
+
+        Security note: SQLite DROP + VACUUM + secure_delete reduces plain-file
+        residue but is not a cryptographic erase.  SSD wear-levelling, OS
+        file-system journals, and system-level snapshots may retain data at the
+        block level.
+        """
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name):
+            meta = self._meta_or_raise(collection_name)
+            if require_exported and not meta.last_exported_at:
+                raise ValueError(
+                    f"collection '{collection_name}' has no recorded export; "
+                    "call export_collection_bundle() first, or pass "
+                    "require_exported=False to force purge."
+                )
+            last_known_total = self.scalar_store.count(collection_name)
+
+            # Evict from memory
+            self._indexes.pop(collection_name, None)
+
+            # Delete index file(s)
+            index_path = Path(meta.index_path)
+            index_path.unlink(missing_ok=True)
+            for leftover in index_path.parent.glob("*.tmp"):
+                leftover.unlink(missing_ok=True)
+
+            # Purge scalar table
+            self.scalar_store.purge_collection_rows(collection_name)
+            self.scalar_store.checkpoint_and_vacuum()
+
+            purged_at = time.time()
+            self.meta_store.update(
+                collection_name,
+                data_state="purged",
+                last_purged_at=purged_at,
+                last_known_total=last_known_total,
+                # Reset index file info so describe reflects no live index
+                index_checksum=None,
+                index_size_bytes=None,
+                flushed_at=None,
+                total=0,
+            )
+            return {
+                "purged": True,
+                "collection_name": collection_name,
+                "metadata_preserved": True,
+                "scalar_deleted": True,
+                "index_deleted": True,
+                "memory_unloaded": True,
+                "data_state": "purged",
+                "last_known_total": last_known_total,
+                "last_purged_at": purged_at,
             }

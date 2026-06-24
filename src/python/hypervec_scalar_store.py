@@ -27,6 +27,7 @@ class ScalarStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA secure_delete=ON")
             self._local.conn = conn
         return self._local.conn
 
@@ -151,3 +152,105 @@ class ScalarStore:
             for row in cur.fetchall()
         }
         return [by_row_id.get(int(row_id)) for row_id in row_ids]
+
+    # ------------------------------------------------------------------
+    # Bundle export / import / purge helpers
+    # ------------------------------------------------------------------
+
+    def export_rows(self, collection_name: str) -> list[dict]:
+        """Return all rows ordered by row_id, each as a plain dict.
+
+        Includes row_id, doc_id, vector (as list[float]), text_content,
+        metadata (dict), created_at, updated_at.  Used when building a
+        collection data bundle.
+        """
+        table = self._table(collection_name)
+        try:
+            cur = self._conn().execute(
+                f'SELECT row_id, doc_id, vector, text_content, metadata, '
+                f'created_at, updated_at FROM "{table}" ORDER BY row_id ASC'
+            )
+        except Exception:
+            return []
+        rows = []
+        for row in cur.fetchall():
+            dim = len(np.frombuffer(row["vector"], dtype=np.float32))
+            rows.append({
+                "row_id": int(row["row_id"]),
+                "doc_id": row["doc_id"],
+                "vector": self._decode_vector(row["vector"], dim).tolist(),
+                "text_content": row["text_content"],
+                "metadata": json.loads(row["metadata"] or "{}"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+        return rows
+
+    def import_rows(
+        self,
+        collection_name: str,
+        rows: list[dict],
+        *,
+        replace: bool = True,
+    ) -> int:
+        """Restore rows exported by export_rows().
+
+        When replace=True (default) the existing table is dropped first so
+        row_ids start fresh.  Returns the number of rows inserted.
+        """
+        if replace:
+            self.drop_table(collection_name)
+        self.ensure_table(collection_name)
+        if not rows:
+            return 0
+        batch = [
+            (
+                int(r["row_id"]),
+                str(r["doc_id"]),
+                r["vector"],
+                r.get("text_content", ""),
+                dict(r.get("metadata") or {}),
+            )
+            for r in rows
+        ]
+        table = self._table(collection_name)
+        now = time.time()
+        self._conn().executemany(
+            f"""
+            INSERT INTO "{table}"
+              (row_id, doc_id, vector, text_content, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    int(row_id),
+                    str(doc_id),
+                    sqlite3.Binary(self._encode_vector(vector)),
+                    text_content,
+                    json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":")),
+                    r.get("created_at") or now,
+                    r.get("updated_at") or now,
+                )
+                for (row_id, doc_id, vector, text_content, metadata), r in zip(batch, rows)
+            ],
+        )
+        self._conn().commit()
+        return len(rows)
+
+    def purge_collection_rows(self, collection_name: str) -> dict:
+        """DROP the collection's table.  Returns summary dict."""
+        count_before = self.count(collection_name)
+        self.drop_table(collection_name)
+        return {"dropped": True, "count_before": count_before}
+
+    def checkpoint_and_vacuum(self) -> None:
+        """Flush WAL and compact the SQLite file.
+
+        This reduces the chance of data residue in WAL/SHM files after purge.
+        Note: this is not a cryptographic-erase guarantee — SSD wear-levelling
+        and OS-level snapshots may retain data at the block level.
+        """
+        conn = self._conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

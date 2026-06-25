@@ -12,6 +12,9 @@
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
+#include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf_flat.h>
+#include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <persistence/index_io.h>
@@ -61,9 +64,7 @@ void index_train(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
-  Py_BEGIN_ALLOW_THREADS
   index->Train(n, data);
-  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
@@ -73,9 +74,7 @@ void index_add(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
-  Py_BEGIN_ALLOW_THREADS
   index->Add(n, data);
-  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
@@ -181,6 +180,10 @@ struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 };
 
+struct IndexIVFFlat : Index {
+  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
+};
+
 struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
@@ -190,9 +193,19 @@ struct IndexIVFLVQ : Index {
               MetricType metric = kMetricL2);
 };
 
+struct IndexIVFPQ : Index {
+  IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
+             MetricType metric = kMetricL2);
+};
+
 struct IndexHNSWLVQ : Index {
   IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
                MetricType metric = kMetricL2);
+};
+
+struct IndexHNSWPQ : Index {
+  IndexHNSWPQ(int d, int M_pq, int nbits, int M_hnsw,
+              MetricType metric = kMetricL2);
 };
 
 void WriteIndex(const Index* idx, const char* fname, int io_flags = 0);

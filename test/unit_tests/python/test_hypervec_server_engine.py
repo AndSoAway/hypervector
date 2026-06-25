@@ -7,10 +7,13 @@ import numpy as np
 
 
 class FakeIndexFlatL2:
-    def __init__(self, d: int) -> None:
+    def __init__(self, d: int, *, trained: bool = True) -> None:
         self.d = d
-        self.is_trained = True
+        self.is_trained = trained
         self.vectors = np.empty((0, d), dtype=np.float32)
+
+    def train(self, x) -> None:
+        self.is_trained = True
 
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
@@ -29,15 +32,39 @@ class FakeHypervec:
 
     def __init__(self) -> None:
         self.saved_index = None
+        self.constructor_calls = []
 
     def IndexFlatL2(self, d: int):
+        self.constructor_calls.append(("IndexFlatL2", d))
         return FakeIndexFlatL2(d)
 
     def IndexFlatIP(self, d: int):
+        self.constructor_calls.append(("IndexFlatIP", d))
         return FakeIndexFlatL2(d)
 
-    def IndexHNSWFlat(self, d: int, m: int, metric: int):
+    def IndexIVFFlat(self, d: int, nlist: int, metric: int):
+        self.constructor_calls.append(("IndexIVFFlat", d, nlist, metric))
+        return FakeIndexFlatL2(d, trained=False)
+
+    def IndexIVFLVQ(self, d: int, nlist: int, nlocal: int, nbits: int, metric: int):
+        self.constructor_calls.append(("IndexIVFLVQ", d, nlist, nlocal, nbits, metric))
+        return FakeIndexFlatL2(d, trained=False)
+
+    def IndexIVFPQ(self, d: int, nlist: int, m_pq: int, nbits: int, metric: int):
+        self.constructor_calls.append(("IndexIVFPQ", d, nlist, m_pq, nbits, metric))
+        return FakeIndexFlatL2(d, trained=False)
+
+    def IndexHNSWFlat(self, d: int, m_hnsw: int, metric: int):
+        self.constructor_calls.append(("IndexHNSWFlat", d, m_hnsw, metric))
         return FakeIndexFlatL2(d)
+
+    def IndexHNSWLVQ(self, d: int, nlocal: int, nbits: int, m_hnsw: int, metric: int):
+        self.constructor_calls.append(("IndexHNSWLVQ", d, nlocal, nbits, m_hnsw, metric))
+        return FakeIndexFlatL2(d, trained=False)
+
+    def IndexHNSWPQ(self, d: int, m_pq: int, nbits: int, m_hnsw: int, metric: int):
+        self.constructor_calls.append(("IndexHNSWPQ", d, m_pq, nbits, m_hnsw, metric))
+        return FakeIndexFlatL2(d, trained=False)
 
     def write_index(self, index, path: str) -> None:
         self.saved_index = index
@@ -138,3 +165,76 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     dropped = engine.drop_collection("demo")
     assert dropped["dropped"]
     assert not engine.has_collection("demo")
+
+
+def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
+
+    cases = [
+        (
+            "IndexIVFFlat",
+            {"nlist": 2},
+            ("IndexIVFFlat", 4, 2, fake.kMetricL2),
+        ),
+        (
+            "IndexIVFLVQ",
+            {"nlist": 2, "nlocal": 2, "nbits": 1},
+            ("IndexIVFLVQ", 4, 2, 2, 1, fake.kMetricL2),
+        ),
+        (
+            "IndexIVFPQ",
+            {"nlist": 2, "m_pq": 2, "nbits": 1},
+            ("IndexIVFPQ", 4, 2, 2, 1, fake.kMetricL2),
+        ),
+        (
+            "IndexHNSWFlat",
+            {"m_hnsw": 8},
+            ("IndexHNSWFlat", 4, 8, fake.kMetricL2),
+        ),
+        (
+            "IndexHNSWLVQ",
+            {"m_hnsw": 8, "nlocal": 2, "nbits": 1},
+            ("IndexHNSWLVQ", 4, 2, 1, 8, fake.kMetricL2),
+        ),
+        (
+            "IndexHNSWPQ",
+            {"m_hnsw": 8, "m_pq": 2, "nbits": 1},
+            ("IndexHNSWPQ", 4, 2, 1, 8, fake.kMetricL2),
+        ),
+    ]
+
+    for index_type, params, expected in cases:
+        engine._make_index(
+            4,
+            {
+                "field_name": "vector",
+                "metric_type": "L2",
+                "index_type": index_type,
+                "params": params,
+            },
+        )
+        assert fake.constructor_calls[-1] == expected
+
+
+def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
+
+    for bad_param in ["M", "m", "M_hnsw", "M_pq"]:
+        try:
+            engine._make_index(
+                4,
+                {
+                    "field_name": "vector",
+                    "metric_type": "L2",
+                    "index_type": "IndexHNSWPQ",
+                    "params": {bad_param: 2},
+                },
+            )
+        except ValueError as exc:
+            assert "use explicit m_hnsw or m_pq" in str(exc)
+        else:
+            raise AssertionError(f"expected {bad_param} to be rejected")

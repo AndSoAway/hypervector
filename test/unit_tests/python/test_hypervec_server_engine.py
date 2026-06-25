@@ -229,10 +229,11 @@ def test_engine_purge_requires_export_by_default(tmp_path):
 
     try:
         engine.purge_collection_data("col1", require_exported=True)
-    except ValueError as exc:
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
         assert "no recorded export" in str(exc)
     else:
-        raise AssertionError("should have raised ValueError")
+        raise AssertionError("should have raised ConflictError")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
@@ -262,6 +263,14 @@ def test_engine_import_bundle_restores_data(tmp_path):
     assert meta.data_state == "ready"
     assert engine.scalar_store.count("col1") == 2
 
+    results = engine.search("col1", data=[[0.0, 1.0]], limit=2)
+    assert len(results[0]) == 2
+    hit_ids = {h["id"] for h in results[0]}
+    assert hit_ids == {"a", "b"}
+    entities_by_id = {h["id"]: h["entity"] for h in results[0]}
+    assert entities_by_id["a"]["contents"] == "hello"
+    assert entities_by_id["b"]["contents"] == "world"
+
 
 def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
     engine, _ = make_engine(tmp_path)
@@ -273,10 +282,11 @@ def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
     engine.create_collection("other", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     try:
         engine.import_collection_bundle("other", export_result["path"])
-    except ValueError as exc:
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
         assert "does not match" in str(exc)
     else:
-        raise AssertionError("should have raised ValueError")
+        raise AssertionError("should have raised ConflictError")
 
 
 def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
@@ -310,3 +320,57 @@ def test_engine_describe_includes_data_state(tmp_path):
 
     version = engine.get_version("col1")
     assert "data_state" in version
+
+
+# ---------------------------------------------------------------------------
+# Post-purge behavior tests
+# ---------------------------------------------------------------------------
+
+
+def test_engine_search_after_purge_raises(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.search("col1", data=[[0.0, 1.0]], limit=1, output_fields=["id"])
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("search after purge should raise FileNotFoundError")
+
+
+def test_engine_index_path_for_download_after_purge_raises(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.index_path_for_download("col1")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("index_path_for_download after purge should raise FileNotFoundError")
+
+
+def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "purged" in str(exc)
+    else:
+        raise AssertionError("export_collection_bundle after purge should raise ConflictError")

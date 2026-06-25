@@ -227,6 +227,20 @@ def test_hypervec_http_bundle_404_on_missing_collection(tmp_path):
     assert client.post("/collections/missing/purge-data").status_code == 404
 
 
+def test_hypervec_http_bundle_upload_400_on_empty_body(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
+
+    resp = client.put("/collections/demo/bundle", content=b"")
+    assert resp.status_code == 400
+
+
 def test_hypervec_http_purge_409_when_not_exported(tmp_path):
     import pytest
 
@@ -234,14 +248,23 @@ def test_hypervec_http_purge_409_when_not_exported(tmp_path):
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
+    # Load the HTTP module first so hypervec.hypervec_server_engine is registered
+    # in sys.modules; then pull ConflictError from that same instance so that
+    # isinstance() in fail() recognises it and returns 409 (not 500).
+    module = load_http_module()
+    _ConflictError = module.ConflictError
+
     class NoExportEngine(FakeEngine):
         def purge_collection_data(self, collection_name, *, require_exported=True):
             if require_exported:
-                raise ValueError("no recorded export")
+                raise _ConflictError("no recorded export")
             return {"purged": True, "collection_name": collection_name}
 
-    module = load_http_module()
     client = TestClient(module.create_app(data_root=str(tmp_path), engine=NoExportEngine()))
 
     resp = client.post("/collections/demo/purge-data", json={"require_exported": True})
-    assert resp.status_code == 400  # ValueError → 400
+    assert resp.status_code == 409  # ConflictError → 409
+
+    # Without require_exported, it should succeed
+    resp = client.post("/collections/demo/purge-data", json={"require_exported": False})
+    assert resp.status_code == 200

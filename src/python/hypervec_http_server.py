@@ -8,7 +8,7 @@ import logging
 import tempfile
 from typing import Any
 
-from .hypervec_server_engine import HypervecServerEngine
+from .hypervec_server_engine import ConflictError, HypervecServerEngine
 
 
 def _require_fastapi():
@@ -53,7 +53,7 @@ def create_app(
     def fail(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
             return HTTPException(status_code=404, detail=str(exc))
-        if isinstance(exc, FileExistsError):
+        if isinstance(exc, (FileExistsError, ConflictError)):
             return HTTPException(status_code=409, detail=str(exc))
         if isinstance(exc, ValueError):
             return HTTPException(status_code=400, detail=str(exc))
@@ -251,6 +251,11 @@ def create_app(
         bundle_path = result["path"]
         with open(bundle_path, "rb") as f:
             data = f.read()
+        import os as _os
+        try:
+            _os.unlink(bundle_path)
+        except OSError:
+            pass
         headers = {
             "Content-Disposition": (
                 f'attachment; filename="{collection_name}.hypervec-bundle"'

@@ -36,6 +36,15 @@ def _load_bundle_module():
     return create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
 
 
+class ConflictError(Exception):
+    """Raised when an operation conflicts with the current collection state.
+
+    Maps to HTTP 409 Conflict.  Examples: purging before exporting, uploading
+    a bundle whose collection_name does not match the target, or trying to
+    export from a collection that has already been purged.
+    """
+
+
 class HypervecServerEngine:
     INDEX_FILE = "index.hypervec"
 
@@ -541,14 +550,14 @@ class HypervecServerEngine:
         as {collection_dir}/{collection_name}.hypervec-bundle.
         Updates last_exported_at and bundle_format in metadata.
         Raises FileNotFoundError if the collection has no flushed index.
-        Raises ValueError if data_state == "purged" (nothing to export).
+        Raises ConflictError if data_state == "purged" (nothing to export).
         """
         create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
             if meta.data_state == "purged":
-                raise ValueError(
+                raise ConflictError(
                     f"collection '{collection_name}' data has been purged — "
                     "nothing to export."
                 )
@@ -621,7 +630,7 @@ class HypervecServerEngine:
         manifest, index_bytes, scalar_rows = read_bundle(source_path)
 
         if manifest.get("collection_name") != collection_name:
-            raise ValueError(
+            raise ConflictError(
                 f"bundle collection_name '{manifest.get('collection_name')}' "
                 f"does not match target '{collection_name}'."
             )
@@ -631,7 +640,7 @@ class HypervecServerEngine:
 
             if meta.dim is not None and manifest.get("dim") is not None:
                 if int(meta.dim) != int(manifest["dim"]):
-                    raise ValueError(
+                    raise ConflictError(
                         f"bundle dim {manifest['dim']} does not match "
                         f"collection dim {meta.dim}."
                     )
@@ -699,7 +708,7 @@ class HypervecServerEngine:
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
             if require_exported and not meta.last_exported_at:
-                raise ValueError(
+                raise ConflictError(
                     f"collection '{collection_name}' has no recorded export; "
                     "call export_collection_bundle() first, or pass "
                     "require_exported=False to force purge."

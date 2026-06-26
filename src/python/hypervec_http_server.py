@@ -44,7 +44,7 @@ def create_app(
         search_params: dict[str, Any] = Field(default_factory=dict)
         output_fields: list[str] = Field(default_factory=list)
         filter: str = ""
-        consistency_level: str | None = None
+        consistency_level: Optional[str] = None
 
     class SyncCheckRequest(BaseModel):
         client_version: int
@@ -62,9 +62,97 @@ def create_app(
     app = FastAPI(title="HyperVec HTTP Server", version="1")
     app.state.hypervec_engine = engine
 
+    examples = {
+        "HNSW": {
+            "name": "HNSW",
+            "full_name": "Hierarchical Navigable Small World",
+            "description": "基于多层小世界图的近似最近邻索引，适合高召回、低延迟向量检索。",
+            "use_case": ["百万级以上向量检索", "低延迟在线搜索", "高召回召回阶段"],
+            "advantages": ["查询速度快", "召回率高", "无需训练"],
+            "limitations": ["索引内存占用较高", "构建耗时随 M 和 ef_construction 增加"],
+            "parameters": {"M": "图连接数", "ef_construction": "构建搜索宽度", "ef_search": "查询搜索宽度"},
+            "example_code": {"Python": {"create": "index_params.add_index(field_name='vector', index_type='HNSW', metric_type='L2', params={'M': 32, 'ef_construction': 200})", "search": "client.search(collection_name='wiki_hnsw_1m', data=[query], limit=10, search_params={'ef_search': 128})"}},
+            "performance_tips": ["提高 ef_search 可提升召回但增加延迟", "提高 M 可提升图质量但增加内存"],
+        },
+        "Flat": {
+            "name": "Flat",
+            "full_name": "Brute-force Flat Index",
+            "description": "精确暴力搜索索引，遍历全部向量计算距离。",
+            "use_case": ["小规模数据", "召回率基准", "验证近似索引效果"],
+            "advantages": ["结果精确", "无需训练", "实现简单"],
+            "limitations": ["大规模数据查询较慢"],
+            "parameters": {"metric_type": "L2/IP/COSINE"},
+        },
+        "IVF": {
+            "name": "IVF",
+            "full_name": "Inverted File Index",
+            "description": "倒排聚类索引，通过只搜索部分聚类降低查询开销。",
+            "use_case": ["大规模向量粗召回", "可接受近似结果的搜索"],
+            "advantages": ["查询成本可控", "适合大规模数据"],
+            "limitations": ["需要训练", "召回受 nprobe 影响"],
+            "parameters": {"nlist": "聚类中心数", "nprobe": "查询探测聚类数"},
+        },
+        "IVFPQ": {
+            "name": "IVFPQ",
+            "full_name": "IVF with Product Quantization",
+            "description": "倒排索引结合乘积量化，降低内存占用。",
+            "use_case": ["超大规模向量检索", "内存敏感场景"],
+            "advantages": ["内存占用低", "查询速度快"],
+            "limitations": ["量化会损失精度", "需要训练"],
+            "parameters": {"nlist": "聚类中心数", "m": "子量化器数量", "nbits": "编码位数"},
+        },
+        "IVFLVQ": {
+            "name": "IVFLVQ",
+            "full_name": "IVF with LVQ",
+            "description": "倒排索引结合 LVQ 量化，兼顾压缩和查询效率。",
+            "use_case": ["大规模压缩检索", "内存受限场景"],
+            "advantages": ["压缩率高", "适合批量检索"],
+            "limitations": ["参数调优复杂", "存在量化误差"],
+            "parameters": {"nlist": "聚类中心数", "nlocal": "局部量化参数", "nbits": "量化位数"},
+        },
+        "PQ": {
+            "name": "PQ",
+            "full_name": "Product Quantization",
+            "description": "乘积量化索引，将向量压缩为短编码以降低存储成本。",
+            "use_case": ["内存压缩", "大规模候选集重排前筛选"],
+            "advantages": ["存储成本低", "适合大规模数据"],
+            "limitations": ["召回低于精确索引", "需要训练码本"],
+            "parameters": {"m": "子空间数量", "nbits": "每个子空间编码位数"},
+        },
+        "LVQ": {
+            "name": "LVQ",
+            "full_name": "Locally-adaptive Vector Quantization",
+            "description": "局部自适应向量量化索引，用于压缩向量并加速检索。",
+            "use_case": ["压缩检索", "内存带宽敏感场景"],
+            "advantages": ["压缩友好", "可降低内存访问"],
+            "limitations": ["近似结果", "需要根据数据调参"],
+            "parameters": {"nlocal": "局部分组数", "nbits": "量化位数"},
+        },
+        "HNSWFlat": {
+            "name": "HNSWFlat",
+            "full_name": "HNSW with Flat vectors",
+            "description": "HNSW 图结构配合原始向量精确距离计算，是通用在线 ANN 索引。",
+            "use_case": ["通用向量搜索服务", "高召回在线检索"],
+            "advantages": ["召回和延迟表现均衡", "适合作为默认 HNSW 配置"],
+            "limitations": ["内存占用高于量化索引"],
+            "parameters": {"M": "图连接数", "ef_construction": "构建搜索宽度", "ef_search": "查询搜索宽度"},
+        },
+    }
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/examples")
+    def list_examples() -> dict[str, Any]:
+        return {"supported_indexes": list(examples.keys()), "examples": list(examples.values())}
+
+    @app.get("/examples/{index_name}")
+    def get_example(index_name: str) -> dict[str, Any]:
+        for name, example in examples.items():
+            if name.lower() == index_name.lower():
+                return example
+        raise HTTPException(status_code=404, detail=f"example index '{index_name}' does not exist.")
 
     @app.get("/collections")
     def list_collections() -> dict[str, list[str]]:
@@ -104,7 +192,7 @@ def create_app(
     @app.post("/collections/{collection_name}/create")
     def create_collection(
         collection_name: str,
-        request: CreateCollectionRequest,
+        request: CreateCollectionRequest = Body(...),
     ) -> dict[str, Any]:
         try:
             return engine.create_collection(

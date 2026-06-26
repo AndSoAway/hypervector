@@ -58,7 +58,7 @@ def supported_instruction_sets():
         # as keys, and True / False as values
         supported = {k for k, v in __cpu_features__.items() if v}
         if is_sve_supported():
-            supported.Add("SVE")
+            supported.add("SVE")
         for f in os.getenv("HYPERVEC_DISABLE_CPU_FEATURES", "").split(", \t\n\r"):
             supported.discard(f)
         return supported
@@ -71,14 +71,14 @@ def supported_instruction_sets():
         import numpy.distutils.cpuinfo
         result = set()
         if "avx2" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
-            result.Add("AVX2")
+            result.add("AVX2")
         if "avx512" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
-            result.Add("AVX512")
+            result.add("AVX512")
         if "avx512_fp16" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
             # avx512_fp16 is supported starting SPR
-            result.Add("AVX512_SPR")
+            result.add("AVX512_SPR")
         if is_sve_supported():
-            result.Add("SVE")
+            result.add("SVE")
         for f in os.getenv("HYPERVEC_DISABLE_CPU_FEATURES", "").split(", \t\n\r"):
             result.discard(f)
         return result

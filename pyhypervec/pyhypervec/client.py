@@ -323,6 +323,10 @@ class HypervecClient:
             for desc in list(res.get("collections", []))
         ]
 
+    def examples(self) -> list[dict[str, Any]]:
+        res = self._request("GET", "/examples")
+        return list(res.get("examples", []))
+
     def get_collection_stats(
         self,
         collection_name: str,

@@ -238,3 +238,21 @@ def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
             assert "use explicit m_hnsw or m_pq" in str(exc)
         else:
             raise AssertionError(f"expected {bad_param} to be rejected")
+
+
+def test_hypervec_server_engine_supported_index_examples_follow_exports():
+    module = load_engine_module()
+    fake = FakeHypervec()
+    engine = module.HypervecServerEngine("unused", hypervec_module=fake)
+
+    examples = engine.supported_index_examples()
+
+    assert [item["index_type"] for item in examples] == [
+        "IndexIVFFlat",
+        "IndexIVFLVQ",
+        "IndexIVFPQ",
+        "IndexHNSWFlat",
+        "IndexHNSWLVQ",
+        "IndexHNSWPQ",
+    ]
+    assert all(item["index_type"].startswith("Index") for item in examples)

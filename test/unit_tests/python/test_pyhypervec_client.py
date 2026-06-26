@@ -125,6 +125,27 @@ def test_pyhypervec_client_describe_collections(monkeypatch):
     assert calls == [("GET", "/collections/describe", None)]
 
 
+def test_pyhypervec_client_examples(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {
+            "examples": [
+                {"index_type": "IndexIVFFlat", "cpp_class": "hypervec.IndexIVFFlat"},
+                {"index_type": "IndexHNSWPQ", "cpp_class": "hypervec.IndexHNSWPQ"},
+            ]
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    examples = client.examples()
+
+    assert [item["index_type"] for item in examples] == ["IndexIVFFlat", "IndexHNSWPQ"]
+    assert calls == [("GET", "/examples", None)]
+
+
 def test_pyhypervec_client_version_and_sync_payload(monkeypatch):
     calls = []
     client = HypervecClient("http://localhost:8080")

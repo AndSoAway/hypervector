@@ -24,6 +24,18 @@ class FakeEngine:
             {"collection_name": "other"},
         ]
 
+    def supported_index_examples(self):
+        return [
+            {
+                "index_type": "IndexIVFFlat",
+                "cpp_class": "hypervec.IndexIVFFlat",
+                "metric_types": ["L2", "IP", "COSINE"],
+                "code_size": "d * sizeof(float)",
+                "params": [{"name": "nlist", "type": "int", "default": 1024, "required": False}],
+                "description": "IVF with raw float vectors stored per list.",
+            }
+        ]
+
     def get_version(self, collection_name):
         return {
             "collection_name": collection_name,
@@ -93,3 +105,21 @@ def test_hypervec_http_server_sync_routes(tmp_path):
 
     upload = client.put("/collections/demo/index?version=3", content=b"fake-index")
     assert upload.json()["uploaded"]
+
+
+def test_hypervec_http_server_examples_route(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
+
+    res = client.get("/examples")
+    payload = res.json()
+
+    assert res.status_code == 200
+    assert [item["index_type"] for item in payload["examples"]] == ["IndexIVFFlat"]
+    assert payload["examples"][0]["cpp_class"] == "hypervec.IndexIVFFlat"

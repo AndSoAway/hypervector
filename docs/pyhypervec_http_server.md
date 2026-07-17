@@ -97,6 +97,45 @@ python -m hypervec.hypervec_http_server \
   --server hypercorn
 ```
 
+The original CLI remains supported. To manage the same settings in an INI
+file, export the complete commented sample first:
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --export-sample-config ./hypervec.ini
+```
+
+Set `data_root` in `[server]`, then start using only the configuration file:
+
+```bash
+python -m hypervec.hypervec_http_server --config ./hypervec.ini
+```
+
+The fixed precedence is:
+
+```text
+built-in defaults < INI configuration < explicit CLI options
+```
+
+For example, this keeps every value from `hypervec.ini` except the explicitly
+overridden host, port, HTTP/2 switch, reserved index defaults, and log level:
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --config ./hypervec.ini \
+  --host 0.0.0.0 \
+  --port 9090 \
+  --no-enable-http2 \
+  --default-index-type ivfflat \
+  --default-metric-type l2 \
+  --log-level warning
+```
+
+The exporter refuses to overwrite an existing file. Environment variables are
+not an additional configuration source; wrapper scripts may translate their
+values into explicit CLI arguments. Configuration is read once at startup and
+does not support hot reload.
+
 Use one worker for the first implementation. The engine keeps loaded indexes in
 process memory.
 
@@ -112,6 +151,22 @@ python -m hypervec.hypervec_http_server \
   --server uvicorn
 ```
 
+`enable_http2` defaults to `true` to preserve the existing Hypercorn behavior.
+Set `enable_http2 = false` in `[server]`, or pass `--no-enable-http2`, to limit
+Hypercorn TLS ALPN advertisement to HTTP/1.1. Uvicorn remains HTTP/1.1-only.
+
+The sample also contains a `[defaults]` section:
+
+```ini
+[defaults]
+default_index_type = hnswflat
+default_metric_type = l2
+```
+
+These two validated values are reserved for a later collection-default policy.
+They are available through `HypervecConfig.defaults`, but this version does not
+override explicit collection request fields or change the existing engine fallback.
+
 For production HTTP/2, prefer TLS with ALPN:
 
 ```bash
@@ -120,6 +175,7 @@ python -m hypervec.hypervec_http_server \
   --host 0.0.0.0 \
   --port 8443 \
   --server hypercorn \
+  --enable-http2 \
   --certfile /path/to/cert.pem \
   --keyfile /path/to/key.pem
 ```

@@ -192,6 +192,53 @@ python -m hypervec.hypervec_http_server \
   --server hypercorn
 ```
 
+也可以在编译安装完成后导出 ARM 部署用配置文件：
+
+```bash
+mkdir -p $HOME/hypervec_conf
+python -m hypervec.hypervec_http_server \
+  --export-sample-config $HOME/hypervec_conf/hypervec.ini
+```
+
+编辑 `$HOME/hypervec_conf/hypervec.ini`，至少填写：
+
+```ini
+[server]
+data_root = /home/<user>/hypervec_data
+host = 0.0.0.0
+port = 8080
+server = hypercorn
+enable_http2 = true
+
+[defaults]
+default_index_type = hnswflat
+default_metric_type = l2
+```
+
+然后只使用配置文件启动：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --config $HOME/hypervec_conf/hypervec.ini
+```
+
+CLI 可以覆盖文件中的同名项，例如临时切换端口：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --config $HOME/hypervec_conf/hypervec.ini \
+  --port 9090 \
+  --no-enable-http2
+```
+
+`default_index_type` 和 `default_metric_type` 本期只完成统一加载、校验和访问，
+不会覆盖 collection 请求中显式提供的索引或度量类型。
+
+优先级固定为“内置默认值 < INI < 显式 CLI”。`DATA_ROOT`、`SERVER_HOST`、`SERVER_PORT`
+和 `SERVER_IMPL` 仍是构建脚本自身的环境变量，并由 `START_SERVER=1` 分支转换为 CLI；
+它们不是新的配置文件优先级。现有构建脚本流程无需修改，使用 `--config` 时在构建完成后
+按上述命令手动启动即可。本期不支持配置热更新。
+
 本机健康检查：
 
 ```bash

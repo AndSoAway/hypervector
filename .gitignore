@@ -2,6 +2,7 @@
 CLAUDE.md
 AGENTS.md
 /.vscode/
+/.venv/
 *.log
 *.swp
 *.swo

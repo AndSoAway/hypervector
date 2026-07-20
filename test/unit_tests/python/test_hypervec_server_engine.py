@@ -167,6 +167,31 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     assert not engine.has_collection("demo")
 
 
+def test_hypervec_server_engine_upload_index_uses_write_lock(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
+    engine.create_collection(
+        "demo",
+        schema={
+            "fields": [
+                {"name": "id", "datatype": "VARCHAR", "is_primary": True},
+                {"name": "vector", "datatype": "FLOAT_VECTOR", "dim": 2},
+            ]
+        },
+        index_params={"indexes": []},
+    )
+
+    source = tmp_path / "uploaded.hypervec"
+    source.write_text("fake-index", encoding="utf-8")
+    fake.saved_index = object()
+
+    uploaded = engine.upload_index("demo", source, version=2)
+
+    assert uploaded["uploaded"]
+    assert uploaded["version"] == 2
+
+
 def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_path):
     module = load_engine_module()
     fake = FakeHypervec()

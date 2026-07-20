@@ -425,7 +425,7 @@ class HypervecServerEngine:
         index_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             if self.meta_store.get(collection_name) is not None:
                 raise FileExistsError(f"collection '{collection_name}' already exists.")
             self._collection_dir(collection_name).mkdir(parents=True, exist_ok=True)
@@ -703,7 +703,7 @@ class HypervecServerEngine:
         checksum: str | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if version is not None and int(version) < int(meta.version):
                 raise ValueError(

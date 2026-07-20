@@ -13,6 +13,7 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -90,6 +91,7 @@ static void read_lvq(LocalVectorQuantizer& lvq, IOReader* f) {
   lvq.SetDerivedValues();
   READVECTOR(lvq.local_centroids);
   READVECTOR(lvq.residual_codebooks);
+  lvq.BuildDecodedCodebooks();
   lvq.is_trained = true;
 }
 
@@ -144,6 +146,37 @@ Index* ReadIndex(IOReader* f, int io_flags) {
       "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
     idxhnsw->own_fields = true;
     return idxhnsw.release();
+  }
+
+  if (h == fourcc("IVFf")) {
+    auto idx = std::make_unique<IndexIVFFlat>();
+    read_index_header(*idx, f);
+    READ1(idx->nlist);
+    READ1(idx->nprobe);
+    READVECTOR(idx->centroids);
+
+    const size_t code_size = static_cast<size_t>(idx->d) * sizeof(float);
+    delete idx->invlists;
+    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
+                                           code_size);
+    idx->own_invlists = true;
+
+    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
+         list_no++) {
+      size_t sz;
+      READ1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT(sz < (get_deserialization_vector_byte_limit() /
+                                  sizeof(idx_t)));
+      std::vector<idx_t> ids(sz);
+      std::vector<uint8_t> codes(sz * code_size);
+      READANDCHECK(ids.data(), sz);
+      READANDCHECK(codes.data(), sz * code_size);
+      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
+    }
+    return idx.release();
   }
 
   if (h == fourcc("IHNl")) {

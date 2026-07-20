@@ -11,12 +11,18 @@
 #include <index/index.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <index/hnsw/index_hnsw_lvq.h>
+<<<<<<< ours
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <quantization/pq/index_ivfpq.h>
+=======
+#include <index/ivf/index_ivf_flat.h>
+>>>>>>> theirs
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
+#include <quantization/pq/index_ivfpq.h>
 #include <persistence/index_io.h>
 
 #include <cstring>
@@ -93,7 +99,15 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
-  index->Search(n, data, k, distances.data(), labels.data(), params);
+  PyThreadState* thread_state = PyEval_SaveThread();
+  try {
+    index->Search(n, data, k, distances.data(), labels.data(), params);
+  } catch (...) {
+    PyEval_RestoreThread(thread_state);
+    PyBuffer_Release(&view);
+    throw;
+  }
+  PyEval_RestoreThread(thread_state);
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);
@@ -188,12 +202,25 @@ struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
 
+struct IndexIVFFlat : Index {
+  idx_t nprobe;
+  explicit IndexIVFFlat(idx_t d = 0, idx_t nlist = 0,
+                        MetricType metric = kMetricL2);
+};
+
 struct IndexIVFLVQ : Index {
+  idx_t nprobe;
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 };
 
 struct IndexIVFPQ : Index {
+<<<<<<< ours
+=======
+  idx_t nprobe;
+  bool by_residual;
+  int use_precomputed_table;
+>>>>>>> theirs
   IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
              MetricType metric = kMetricL2);
 };

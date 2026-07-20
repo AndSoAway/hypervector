@@ -128,6 +128,58 @@ class ScalarStore:
             return np.empty((0, int(dim)), dtype=np.float32)
         return np.vstack(vectors).astype(np.float32, copy=False)
 
+    def get_row_ids_and_vectors(self, collection_name: str, dim: int) -> tuple[list[int], np.ndarray]:
+        table = self._table(collection_name)
+        cur = self._conn().execute(f'SELECT row_id, vector FROM "{table}" ORDER BY row_id ASC')
+        rows = cur.fetchall()
+        row_ids = [int(row["row_id"]) for row in rows]
+        vectors = [self._decode_vector(row["vector"], dim) for row in rows]
+        if not vectors:
+            return row_ids, np.empty((0, int(dim)), dtype=np.float32)
+        return row_ids, np.vstack(vectors).astype(np.float32, copy=False)
+
+    def get_vectors_by_row_ids(
+        self,
+        collection_name: str,
+        row_ids: list[int],
+        dim: int,
+    ) -> list[np.ndarray | None]:
+        if not row_ids:
+            return []
+        table = self._table(collection_name)
+        placeholders = ",".join("?" for _ in row_ids)
+        cur = self._conn().execute(
+            f'SELECT row_id, vector FROM "{table}" WHERE row_id IN ({placeholders})',
+            [int(row_id) for row_id in row_ids],
+        )
+        by_row_id = {
+            int(row["row_id"]): self._decode_vector(row["vector"], dim)
+            for row in cur.fetchall()
+        }
+        return [by_row_id.get(int(row_id)) for row_id in row_ids]
+
+    def get_doc_ids_by_row_ids(
+        self,
+        collection_name: str,
+        row_ids: list[int],
+    ) -> list[str | None]:
+        if not row_ids:
+            return []
+        table = self._table(collection_name)
+        placeholders = ",".join("?" for _ in row_ids)
+        cur = self._conn().execute(
+            f'SELECT row_id, doc_id FROM "{table}" '
+            f"WHERE row_id IN ({placeholders})",
+            [int(row_id) for row_id in row_ids],
+        )
+        by_row_id = {int(row["row_id"]): row["doc_id"] for row in cur.fetchall()}
+        return [by_row_id.get(int(row_id)) for row_id in row_ids]
+
+    def get_doc_id_map(self, collection_name: str) -> dict[int, str]:
+        table = self._table(collection_name)
+        cur = self._conn().execute(f'SELECT row_id, doc_id FROM "{table}"')
+        return {int(row["row_id"]): row["doc_id"] for row in cur.fetchall()}
+
     def get_by_row_ids(
         self,
         collection_name: str,

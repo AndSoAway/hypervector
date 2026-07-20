@@ -58,7 +58,7 @@ def supported_instruction_sets():
         # as keys, and True / False as values
         supported = {k for k, v in __cpu_features__.items() if v}
         if is_sve_supported():
-            supported.Add("SVE")
+            supported.add("SVE")
         for f in os.getenv("HYPERVEC_DISABLE_CPU_FEATURES", "").split(", \t\n\r"):
             supported.discard(f)
         return supported
@@ -71,14 +71,14 @@ def supported_instruction_sets():
         import numpy.distutils.cpuinfo
         result = set()
         if "avx2" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
-            result.Add("AVX2")
+            result.add("AVX2")
         if "avx512" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
-            result.Add("AVX512")
+            result.add("AVX512")
         if "avx512_fp16" in numpy.distutils.cpuinfo.cpu.info[0].get('flags', ""):
             # avx512_fp16 is supported starting SPR
-            result.Add("AVX512_SPR")
+            result.add("AVX512_SPR")
         if is_sve_supported():
-            result.Add("SVE")
+            result.add("SVE")
         for f in os.getenv("HYPERVEC_DISABLE_CPU_FEATURES", "").split(", \t\n\r"):
             result.discard(f)
         return result
@@ -99,7 +99,7 @@ if opt_level is None:
 else:
     logger.debug(f"Using {opt_level} as an instruction set.")
     instruction_sets = set()
-    instruction_sets.Add(opt_level)
+    instruction_sets.add(opt_level)
 
 loaded = False
 has_AVX512_SPR = any("AVX512_SPR" in x.upper() for x in instruction_sets)
@@ -138,7 +138,7 @@ if has_AVX2 and not loaded:
         # Reset so that we load without AVX2 below
         loaded = False
 
-has_SVE = "SVE" in instruction_sets
+has_SVE = any("SVE" in x.upper() for x in instruction_sets)
 if has_SVE and not loaded:
     try:
         logger.info("Loading hypervec with SVE support.")

@@ -5,11 +5,18 @@ from pathlib import Path
 import socket
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from .exceptions import HypervecClientError, HypervecHTTPError
 from .schema import CollectionSchema, IndexParams
+
+try:
+    from . import hypervec_service_pb2 as pb2
+    from . import hypervec_service_pb2_grpc as pb2_grpc
+except Exception:  # pragma: no cover
+    pb2 = None
+    pb2_grpc = None
 
 
 class HypervecClient:
@@ -20,10 +27,20 @@ class HypervecClient:
         timeout: float = 30.0,
         http2: bool = False,
     ) -> None:
-        self.uri = uri.rstrip("/") + "/"
+        parsed = urlparse(uri)
+        scheme = parsed.scheme.lower()
+        if not scheme:
+            raise HypervecClientError(f"invalid HyperVec server URI: {uri}")
+        self.transport = "grpc" if scheme == "tcp" else "http"
+        normalized_scheme = "http" if scheme == "tcp" else scheme
+        if normalized_scheme not in {"http", "https"}:
+            raise HypervecClientError(f"unsupported HyperVec server URI scheme: {parsed.scheme}")
+        normalized = parsed._replace(scheme=normalized_scheme).geturl()
+        self.uri = normalized.rstrip("/") + "/"
         self.token = token
         self.timeout = timeout
-        self.http2 = http2
+        self.http2 = http2 or normalized_scheme == "https"
+        self._grpc_stub_instance = None
 
     @staticmethod
     def create_schema(
@@ -48,6 +65,9 @@ class HypervecClient:
         *,
         body: dict[str, Any] | None = None,
     ) -> Any:
+        if self.transport == "grpc":
+            return self._request_grpc_json(method, path, body=body)
+
         if self.http2:
             data = None
             if body is not None:
@@ -99,6 +119,9 @@ class HypervecClient:
         body: bytes | None = None,
         content_type: str = "application/octet-stream",
     ) -> tuple[bytes, dict[str, str]]:
+        if self.transport == "grpc":
+            return self._request_grpc_bytes(method, path, body=body, content_type=content_type)
+
         if self.http2:
             return self._request_http2(
                 method,
@@ -284,6 +307,177 @@ class HypervecClient:
         if out:
             sock.sendall(out)
 
+    def _grpc_channel_target(self) -> str:
+        parsed = urlparse(self.uri)
+        if not parsed.netloc:
+            raise HypervecClientError(f"invalid HyperVec server URI: {self.uri}")
+        return parsed.netloc
+
+    def _grpc_stub(self):
+        if pb2 is None or pb2_grpc is None:
+            raise HypervecClientError("gRPC transport requires grpcio and generated HyperVec protobuf bindings.")
+        if self._grpc_stub_instance is None:
+            import grpc
+
+            channel = grpc.insecure_channel(
+                self._grpc_channel_target(),
+                options=[
+                    ("grpc.max_send_message_length", 1024 * 1024 * 1024),
+                    ("grpc.max_receive_message_length", 1024 * 1024 * 1024),
+                    ("grpc.max_concurrent_streams", 256),
+                    ("grpc.keepalive_time_ms", 60000),
+                    ("grpc.keepalive_timeout_ms", 20000),
+                    ("grpc.http2.min_time_between_pings_ms", 30000),
+                    ("grpc.http2.max_pings_without_data", 0),
+                ],
+            )
+            self._grpc_stub_instance = pb2_grpc.HypervecServiceStub(channel)
+        return self._grpc_stub_instance
+
+    @staticmethod
+    def _collection_from_path(path: str) -> str:
+        parts = urlparse(path).path.strip("/").split("/")
+        if len(parts) < 2 or parts[0] != "collections":
+            raise HypervecClientError(f"invalid collection path: {path}")
+        return parts[1]
+
+    @staticmethod
+    def _json_response(response: Any) -> Any:
+        return json.loads(response.json or "{}")
+
+    def _request_grpc_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        stub = self._grpc_stub()
+        payload = body or {}
+        if path == "/health":
+            response = stub.Health(pb2.HealthRequest())
+            return {"status": response.status}
+        if path == "/collections":
+            response = stub.ListCollections(pb2.ListCollectionsRequest())
+            return {"collections": list(response.collections)}
+        if method == "DELETE" and path.startswith("/collections/"):
+            response = stub.DropCollection(pb2.DropCollectionRequest(collection_name=self._collection_from_path(path)))
+            return self._json_response(response)
+        if path.endswith("/exists"):
+            response = stub.HasCollection(pb2.HasCollectionRequest(collection_name=self._collection_from_path(path)))
+            return {"collection_name": response.collection_name, "exists": bool(response.exists)}
+        if path.endswith("/describe"):
+            return self._json_response(stub.DescribeCollection(pb2.DescribeCollectionRequest(collection_name=self._collection_from_path(path))))
+        if path.endswith("/create"):
+            response = stub.CreateCollection(
+                pb2.CreateCollectionRequest(
+                    collection_name=self._collection_from_path(path),
+                    schema_json=json.dumps(payload.get("schema", {}), separators=(",", ":")),
+                    index_params_json=json.dumps(payload.get("index_params", {}), separators=(",", ":")),
+                )
+            )
+            return self._json_response(response)
+        if path.endswith("/insert"):
+            response = stub.Insert(
+                pb2.InsertRequest(
+                    collection_name=self._collection_from_path(path),
+                    data_json=json.dumps(payload.get("data", []), separators=(",", ":")),
+                )
+            )
+            return self._json_response(response)
+        if path.endswith("/flush"):
+            return self._json_response(stub.Flush(pb2.CollectionRequest(collection_name=self._collection_from_path(path))))
+        if path.endswith("/load"):
+            return self._json_response(stub.LoadCollection(pb2.CollectionRequest(collection_name=self._collection_from_path(path))))
+        if path.endswith("/close"):
+            return self._json_response(stub.CloseCollection(pb2.CollectionRequest(collection_name=self._collection_from_path(path))))
+        if path.endswith("/version"):
+            return self._json_response(stub.GetVersion(pb2.CollectionRequest(collection_name=self._collection_from_path(path))))
+        if path.endswith("/sync-check"):
+            response = stub.SyncCheck(
+                pb2.SyncCheckRequest(
+                    collection_name=self._collection_from_path(path),
+                    client_version=int(payload.get("client_version", 0)),
+                    client_checksum=str(payload.get("client_checksum", "")),
+                )
+            )
+            return self._json_response(response)
+        if path.endswith("/search"):
+            search_data = payload.get("data", [])
+            data_bytes = b""
+            dim = 0
+            num_rows = 0
+            if search_data is not None:
+                import numpy as np
+                arr = np.asarray(search_data, dtype=np.float32)
+                if arr.size:
+                    if arr.ndim == 1:
+                        arr = arr.reshape(1, arr.shape[0])
+                    data_bytes = arr.tobytes()
+                    dim = arr.shape[1] if arr.ndim == 2 else 0
+                    num_rows = arr.shape[0]
+            response = stub.Search(
+                pb2.SearchRequest(
+                    collection_name=self._collection_from_path(path),
+                    data_json="" if data_bytes else json.dumps(search_data, separators=(",", ":")),
+                    limit=int(payload.get("limit", 0)),
+                    search_params_json=json.dumps(payload.get("search_params", {}), separators=(",", ":")),
+                    output_fields=list(payload.get("output_fields", [])),
+                    filter=str(payload.get("filter", "")),
+                    consistency_level=str(payload.get("consistency_level", "")),
+                    data_bytes=data_bytes,
+                    dim=dim,
+                    num_rows=num_rows,
+                )
+            )
+            return {
+                "results": [
+                    [
+                        {
+                            "id": hit.id,
+                            "distance": hit.distance,
+                            "entity": json.loads(hit.entity_json) if hit.entity_json else {},
+                        }
+                        for hit in row.hits
+                    ]
+                    for row in response.results
+                ]
+            }
+        raise HypervecClientError(f"unsupported gRPC JSON path: {method} {path}")
+
+    def _request_grpc_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> tuple[bytes, dict[str, str]]:
+        del content_type
+        if not urlparse(path).path.endswith("/index"):
+            raise HypervecClientError(f"unsupported gRPC bytes path: {method} {path}")
+        stub = self._grpc_stub()
+        collection_name = self._collection_from_path(path)
+        if method == "GET":
+            response = stub.DownloadIndex(pb2.CollectionRequest(collection_name=collection_name))
+            return response.data, {
+                "X-Hypervec-Collection-Version": str(response.version),
+                "X-Hypervec-Index-Checksum": response.index_checksum,
+                "X-Hypervec-Index-Size": str(response.index_size_bytes),
+            }
+        if method == "PUT":
+            query = parse_qs(urlparse(path).query)
+            response = stub.UploadIndex(
+                pb2.UploadIndexRequest(
+                    collection_name=collection_name,
+                    data=body or b"",
+                    version=int((query.get("version") or ["0"])[0] or 0),
+                    checksum=(query.get("checksum") or [""])[0],
+                )
+            )
+            return (response.json or "{}").encode("utf-8"), {}
+        raise HypervecClientError(f"unsupported gRPC bytes method: {method}")
+
     @staticmethod
     def _error_message(raw: bytes) -> str:
         message = raw.decode("utf-8", errors="replace")
@@ -304,15 +498,8 @@ class HypervecClient:
         res = self._request("GET", f"/collections/{collection_name}/exists")
         return bool(res.get("exists", False))
 
-    @staticmethod
-    def _normalize_description(desc: dict[str, Any]) -> dict[str, Any]:
-        if isinstance(desc, dict) and "description" not in desc:
-            schema = desc.get("schema")
-            if isinstance(schema, dict):
-                desc["description"] = str(schema.get("description") or "")
-        return desc
-
     def describe_collection(self, collection_name: str) -> dict[str, Any]:
+<<<<<<< ours
         desc = self._request("GET", f"/collections/{collection_name}/describe")
         return self._normalize_description(desc)
 
@@ -335,6 +522,9 @@ class HypervecClient:
         del timeout
         desc = self.describe_collection(collection_name)
         return {"row_count": int(desc.get("total") or 0)}
+=======
+        return self._request("GET", f"/collections/{collection_name}/describe")
+>>>>>>> theirs
 
     def create_collection(
         self,

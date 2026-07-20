@@ -214,7 +214,7 @@ target_link_libraries(swighypervec_avx512_spr PRIVATE
 )
 
 target_link_libraries(swighypervec_sve PRIVATE
-  hypervec_sve
+  hypervec
   Python::Module
   Python::NumPy
   OpenMP::OpenMP_CXX
@@ -239,12 +239,12 @@ endif()
 
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
-target_include_directories(swighypervec PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx2 PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx512 PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx512_spr PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_sve PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(hypervec_example_external_module PRIVATE ${PROJECT_SOURCE_DIR}/..)
+target_include_directories(swighypervec PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
+target_include_directories(swighypervec_avx2 PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
+target_include_directories(swighypervec_avx512 PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
+target_include_directories(swighypervec_avx512_spr PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
+target_include_directories(swighypervec_sve PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
+target_include_directories(hypervec_example_external_module PRIVATE ${PROJECT_SOURCE_DIR}/.. ${hypervec_SOURCE_DIR}/include)
 
 find_package(Python REQUIRED
   COMPONENTS Development.Module NumPy
@@ -285,6 +285,9 @@ configure_file(hypervec_meta_store.py hypervec_meta_store.py COPYONLY)
 configure_file(hypervec_scalar_store.py hypervec_scalar_store.py COPYONLY)
 configure_file(hypervec_server_engine.py hypervec_server_engine.py COPYONLY)
 configure_file(hypervec_http_server.py hypervec_http_server.py COPYONLY)
+configure_file(hypervec_grpc_server.py hypervec_grpc_server.py COPYONLY)
+configure_file(hypervec_service_pb2.py hypervec_service_pb2.py COPYONLY)
+configure_file(hypervec_service_pb2_grpc.py hypervec_service_pb2_grpc.py COPYONLY)
 
 # file(GLOB files "${CMAKE_SOURCE_DIR}/contrib/*.py")
 if(EXISTS ${CMAKE_SOURCE_DIR}/contrib)

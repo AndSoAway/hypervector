@@ -1324,6 +1324,12 @@ class IndexPQ(Index):
         self, d: int, M: int, nbits: int, metric: MetricType = kMetricL2
     ) -> None: ...
 
+# HNSW with PQ index
+class IndexHNSWPQ(Index):
+    def __init__(
+        self, d: int, M_pq: int, nbits: int, M_hnsw: int, metric: MetricType = kMetricL2
+    ) -> None: ...
+
 # Scalar Quantizer index
 class IndexScalarQuantizer(Index):
     sq: ScalarQuantizer

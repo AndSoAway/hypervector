@@ -315,6 +315,7 @@ class HypervecServerEngine:
             m_hnsw = positive_int("m_hnsw", 32)
             return self.hypervec.IndexHNSWFlat(dim, m_hnsw, metric)
         if index_type in {"HNSWLVQ", "INDEXHNSWLVQ"}:
+<<<<<<< ours
             nlocal = positive_int("nlocal", 16)
             nbits = positive_int("nbits", 8)
             m_hnsw = positive_int("m_hnsw", 32)
@@ -325,9 +326,47 @@ class HypervecServerEngine:
             m_hnsw = positive_int("m_hnsw", 32)
             validate_pq_dim(m_pq)
             return self.hypervec.IndexHNSWPQ(dim, m_pq, nbits, m_hnsw, metric)
+=======
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            hnsw_m = int(params.get("M_hnsw", params.get("M", 32)))
+            return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, hnsw_m, metric)
+        if index_type in {"HNSWPQ", "INDEXHNSWPQ"}:
+            m_pq = int(params.get("m", params.get("M_pq", 16)))
+            nbits = int(params.get("nbits", 8))
+            hnsw_m = int(params.get("M_hnsw", params.get("M", 32)))
+            return self.hypervec.IndexHNSWPQ(dim, m_pq, nbits, hnsw_m, metric)
+        if index_type in {"LVQ", "INDEXLVQ"}:
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            return self.hypervec.IndexLVQ(dim, nlocal, nbits, metric)
+        if index_type in {"IVFFLAT", "INDEXIVFFLAT"}:
+            nlist = int(params.get("nlist", 128))
+            return self.hypervec.IndexIVFFlat(dim, nlist, metric)
+        if index_type in {"IVFLVQ", "INDEXIVFLVQ"}:
+            nlist = int(params.get("nlist", 128))
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            index = self.hypervec.IndexIVFLVQ(dim, nlist, nlocal, nbits, metric)
+            if hasattr(index, "by_residual"):
+                index.by_residual = bool(params.get("by_residual", True))
+            return index
+        if index_type in {"IVFPQ", "INDEXIVFPQ"}:
+            nlist = int(params.get("nlist", 128))
+            m_pq = int(params.get("m_pq", params.get("m", 16)))
+            nbits = int(params.get("nbits", 8))
+            index = self.hypervec.IndexIVFPQ(dim, nlist, m_pq, nbits, metric)
+            if hasattr(index, "by_residual"):
+                index.by_residual = bool(params.get("by_residual", True))
+            if hasattr(index, "use_precomputed_table"):
+                index.use_precomputed_table = int(params.get("use_precomputed_table", 0))
+            return index
+>>>>>>> theirs
         raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
+        if hasattr(index, "is_trained") and not bool(index.is_trained):
+            index.train(vectors)
         index.add(vectors)
 
     def _search_index(
@@ -341,6 +380,9 @@ class HypervecServerEngine:
         ef_search = params.get("ef_search", params.get("ef"))
         if ef_search is not None and hasattr(index, "search_with_ef"):
             return index.search_with_ef(query, k, int(ef_search))
+        nprobe = params.get("nprobe")
+        if nprobe is not None and hasattr(index, "nprobe"):
+            index.nprobe = int(nprobe)
         return index.search(query, k)
 
     def _write_index(self, index: Any, path: Path) -> None:
@@ -444,15 +486,6 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         return self._meta_response(self._meta_or_raise(collection_name))
 
-    def describe_collections(self) -> list[dict[str, Any]]:
-        return [
-            self._meta_response(meta)
-            for meta in sorted(
-                self.meta_store.list_all(),
-                key=lambda item: item.collection_name,
-            )
-        ]
-
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
@@ -475,9 +508,8 @@ class HypervecServerEngine:
                     )
                 doc_id = row.get(meta.id_field, str(next_row_id + i))
                 text_content = row.get(meta.text_field, "")
-                structured_fields = {meta.id_field, meta.vector_field, meta.text_field}
                 metadata = {
-                    key: value for key, value in row.items() if key not in structured_fields
+                    key: value for key, value in row.items() if key != meta.vector_field
                 }
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
             self.scalar_store.insert_batch(collection_name, rows)
@@ -572,15 +604,55 @@ class HypervecServerEngine:
                 raise ValueError(f"query dim {query.shape[1]} != collection dim {meta.dim}.")
 
             index = self._indexes[collection_name]
-            candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
-            distances, labels = self._search_index(index, query, candidate_k, search_params)
+            index_config = self._index_config(meta)
+            index_type = str(index_config.get("index_type") or "").upper()
+            exact_ivf = index_type in {"IVFFLAT", "INDEXIVFFLAT", "IVFLVQ", "INDEXIVFLVQ", "IVFPQ", "INDEXIVFPQ"}
             requested = set(output_fields or [])
             results: list[list[dict[str, Any]]] = []
+            if exact_ivf:
+                all_row_ids, all_vectors = self.scalar_store.get_row_ids_and_vectors(collection_name, int(meta.dim))
+                for query_row in query:
+                    diff = all_vectors - query_row
+                    exact_distances = np.einsum("ij,ij->i", diff, diff)
+                    order = np.argsort(exact_distances)[: int(limit) * 4]
+                    row_ids = [all_row_ids[int(i)] for i in order]
+                    scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
+                    candidates = []
+                    for distance, row_id, scalar in zip(exact_distances[order], row_ids, scalars):
+                        if scalar is None:
+                            continue
+                        row = {
+                            **dict(scalar["metadata"] or {}),
+                            meta.id_field: scalar["doc_id"],
+                            meta.text_field: scalar["text_content"],
+                        }
+                        if not self._filter_match(row, filter):
+                            continue
+                        candidates.append((float(distance), row_id, row))
+                    candidates.sort(key=lambda item: item[0])
+                    hits = []
+                    for final_distance, row_id, row in candidates[: int(limit)]:
+                        if requested:
+                            entity = {key: value for key, value in row.items() if key in requested}
+                        else:
+                            entity = dict(row)
+                        hits.append(
+                            {
+                                "id": row.get(meta.id_field, row_id),
+                                "distance": final_distance,
+                                "entity": entity,
+                            }
+                        )
+                    results.append(hits)
+                return results
+
+            candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
+            distances, labels = self._search_index(index, query, candidate_k, search_params)
             for q_labels, q_distances in zip(labels, distances):
                 row_ids = [int(label) for label in q_labels if int(label) >= 0]
                 scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
-                hits = []
-                for rank, (row_id, scalar) in enumerate(zip(row_ids, scalars)):
+                candidates = []
+                for row_id, scalar, approx_distance in zip(row_ids, scalars, q_distances):
                     if scalar is None:
                         continue
                     row = {
@@ -590,20 +662,21 @@ class HypervecServerEngine:
                     }
                     if not self._filter_match(row, filter):
                         continue
+                    candidates.append((float(approx_distance), row_id, row))
+                candidates.sort(key=lambda item: item[0])
+                hits = []
+                for final_distance, row_id, row in candidates[: int(limit)]:
                     if requested:
                         entity = {key: value for key, value in row.items() if key in requested}
                     else:
                         entity = dict(row)
-                    distance_index = list(q_labels).index(row_id)
                     hits.append(
                         {
                             "id": row.get(meta.id_field, row_id),
-                            "distance": float(q_distances[distance_index]),
+                            "distance": final_distance,
                             "entity": entity,
                         }
                     )
-                    if len(hits) >= int(limit):
-                        break
                 results.append(hits)
             return results
 

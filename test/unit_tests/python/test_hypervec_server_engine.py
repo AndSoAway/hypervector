@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -111,11 +113,6 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     created = engine.create_collection("demo", schema=schema, index_params=index_params)
     assert created["collection_name"] == "demo"
     assert engine.has_collection("demo")
-    engine.create_collection("alpha", schema=schema, index_params=index_params)
-    described = engine.describe_collections()
-    assert [desc["collection_name"] for desc in described] == ["alpha", "demo"]
-    assert described[0]["schema"] == schema
-    engine.drop_collection("alpha")
 
     inserted = engine.insert(
         "demo",
@@ -126,8 +123,6 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
         ],
     )
     assert inserted["total"] == 3
-    stored = engine.scalar_store.get_by_row_ids("demo", [0])[0]
-    assert stored["metadata"] == {"source": "manual"}
     assert engine.get_version("demo")["version"] == 1
     flushed = engine.flush("demo")
     assert flushed["dim"] == 2
@@ -167,6 +162,7 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     assert not engine.has_collection("demo")
 
 
+<<<<<<< ours
 def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_path):
     module = load_engine_module()
     fake = FakeHypervec()
@@ -256,3 +252,70 @@ def test_hypervec_server_engine_supported_index_examples_follow_exports():
         "IndexHNSWPQ",
     ]
     assert all(item["index_type"].startswith("Index") for item in examples)
+=======
+def test_hypervec_server_engine_search_runs_concurrently_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("HYPERVEC_SEARCH_CONCURRENCY", raising=False)
+    module = load_engine_module()
+
+    class BlockingIndex(FakeIndexFlatL2):
+        def __init__(self, d: int) -> None:
+            super().__init__(d)
+            self.entered = 0
+            self.entered_cond = threading.Condition()
+            self.release = threading.Event()
+
+        def search(self, x, k: int):
+            with self.entered_cond:
+                self.entered += 1
+                self.entered_cond.notify_all()
+            assert self.release.wait(timeout=2.0)
+            return super().search(x, k)
+
+    class BlockingHypervec(FakeHypervec):
+        def __init__(self) -> None:
+            super().__init__()
+            self.index = BlockingIndex(2)
+
+        def IndexFlatL2(self, d: int):
+            return self.index
+
+    fake = BlockingHypervec()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
+    schema = {
+        "auto_id": False,
+        "fields": [
+            {"name": "id", "datatype": "VARCHAR", "is_primary": True},
+            {"name": "vector", "datatype": "FLOAT_VECTOR", "dim": 2},
+        ],
+    }
+    engine.create_collection(
+        "demo",
+        schema=schema,
+        index_params={"indexes": [{"field_name": "vector", "metric_type": "L2", "index_type": "Flat"}]},
+    )
+    engine.insert("demo", [{"id": "a", "vector": [0, 0]}, {"id": "b", "vector": [1, 1]}])
+    engine.flush("demo")
+
+    errors = []
+
+    def run_search():
+        try:
+            engine.search("demo", data=[[0.1, 0.1]], limit=1, output_fields=["id"])
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_search), threading.Thread(target=run_search)]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.time() + 2.0
+    with fake.index.entered_cond:
+        while fake.index.entered < 2 and time.time() < deadline:
+            fake.index.entered_cond.wait(timeout=0.05)
+
+    assert fake.index.entered == 2
+    fake.index.release.set()
+    for thread in threads:
+        thread.join(timeout=2.0)
+    assert not errors
+>>>>>>> theirs

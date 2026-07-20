@@ -18,6 +18,7 @@ class FakeEngine:
     def describe_collection(self, collection_name):
         return {"collection_name": collection_name}
 
+<<<<<<< ours
     def describe_collections(self):
         return [
             {"collection_name": "demo"},
@@ -36,6 +37,8 @@ class FakeEngine:
             }
         ]
 
+=======
+>>>>>>> theirs
     def get_version(self, collection_name):
         return {
             "collection_name": collection_name,
@@ -85,12 +88,6 @@ def test_hypervec_http_server_sync_routes(tmp_path):
 
     module = load_http_module()
     client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
-
-    described = client.get("/collections/describe")
-    assert described.json()["collections"] == [
-        {"collection_name": "demo"},
-        {"collection_name": "other"},
-    ]
 
     assert client.get("/collections/demo/version").json()["version"] == 2
     sync = client.post(

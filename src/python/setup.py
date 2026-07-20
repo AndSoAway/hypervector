@@ -29,6 +29,9 @@ shutil.copyfile("hypervec_meta_store.py", "hypervec/hypervec_meta_store.py")
 shutil.copyfile("hypervec_scalar_store.py", "hypervec/hypervec_scalar_store.py")
 shutil.copyfile("hypervec_server_engine.py", "hypervec/hypervec_server_engine.py")
 shutil.copyfile("hypervec_http_server.py", "hypervec/hypervec_http_server.py")
+shutil.copyfile("hypervec_grpc_server.py", "hypervec/hypervec_grpc_server.py")
+shutil.copyfile("hypervec_service_pb2.py", "hypervec/hypervec_service_pb2.py")
+shutil.copyfile("hypervec_service_pb2_grpc.py", "hypervec/hypervec_service_pb2_grpc.py")
 
 if os.path.exists("__init__.pyi"):
     shutil.copyfile("__init__.pyi", "hypervec/__init__.pyi")
@@ -134,7 +137,7 @@ setup(
     keywords="Search nearest neighbors",
     install_requires=["numpy", "packaging"],
     extras_require={
-        "server": ["fastapi", "uvicorn", "hypercorn", "h2"],
+        "server": ["fastapi", "uvicorn", "hypercorn", "h2", "grpcio>=1.65", "protobuf>=5.27"],
     },
     packages=["hypervec"],
     package_data={

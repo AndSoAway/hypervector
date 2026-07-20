@@ -1,5 +1,11 @@
 build/
+build-*/
+.venv/
 .git/
+data/
+hypervec_data/
+../data/
+../hypervec_data/
 *.o
 *.a
 *.so

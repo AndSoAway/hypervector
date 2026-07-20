@@ -13,6 +13,7 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -159,6 +160,29 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*ilvq, f);
     write_lvq(ilvq->lvq, f);
     WRITEVECTOR(ilvq->codes);
+    return;
+  }
+
+  const IndexIVFFlat* ivfflat = dynamic_cast<const IndexIVFFlat*>(index);
+  if (ivfflat) {
+    uint32_t h = fourcc("IVFf");
+    WRITE1(h);
+    write_index_header(*ivfflat, f);
+    WRITE1(ivfflat->nlist);
+    WRITE1(ivfflat->nprobe);
+    WRITEVECTOR(ivfflat->centroids);
+    const size_t code_size = static_cast<size_t>(ivfflat->d) * sizeof(float);
+    for (size_t list_no = 0; list_no < ivfflat->nlist; list_no++) {
+      const size_t sz = ivfflat->invlists->list_size(list_no);
+      WRITE1(sz);
+      if (sz == 0) {
+        continue;
+      }
+      InvertedLists::ScopedIds ids(ivfflat->invlists, list_no);
+      InvertedLists::ScopedCodes codes(ivfflat->invlists, list_no);
+      WRITEANDCHECK(ids.get(), sz);
+      WRITEANDCHECK(codes.get(), sz * code_size);
+    }
     return;
   }
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sys
@@ -25,6 +26,64 @@ except ImportError:  # pragma: no cover - supports direct file loading in tests
     from hypervec_index_io import index_file_info
     from hypervec_meta_store import CollectionMeta, MetaStore
     from hypervec_scalar_store import ScalarStore
+
+
+class ReadWriteLock:
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.RLock())
+        self._readers = 0
+        self._writer = False
+
+    def read_lock(self):
+        return _ReadLock(self)
+
+    def write_lock(self):
+        return _WriteLock(self)
+
+    def _acquire_read(self) -> None:
+        with self._cond:
+            while self._writer:
+                self._cond.wait()
+            self._readers += 1
+
+    def _release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def _acquire_write(self) -> None:
+        with self._cond:
+            while self._writer or self._readers > 0:
+                self._cond.wait()
+            self._writer = True
+
+    def _release_write(self) -> None:
+        with self._cond:
+            self._writer = False
+            self._cond.notify_all()
+
+
+class _ReadLock:
+    def __init__(self, lock: ReadWriteLock) -> None:
+        self._lock = lock
+
+    def __enter__(self) -> None:
+        self._lock._acquire_read()
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._lock._release_read()
+
+
+class _WriteLock:
+    def __init__(self, lock: ReadWriteLock) -> None:
+        self._lock = lock
+
+    def __enter__(self) -> None:
+        self._lock._acquire_write()
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._lock._release_write()
 
 
 class HypervecServerEngine:
@@ -50,8 +109,15 @@ class HypervecServerEngine:
         self.meta_store = meta_store or MetaStore(self.data_root / "collections.json")
         self.scalar_store = scalar_store or ScalarStore(self.data_root / "scalar.db")
         self._indexes: dict[str, Any] = {}
-        self._locks: dict[str, threading.RLock] = {}
+        self._doc_id_maps: dict[str, dict[int, str]] = {}
+        self._locks: dict[str, ReadWriteLock] = {}
         self._global_lock = threading.RLock()
+        default_search_concurrency = max(1, min(32, os.cpu_count() or 1))
+        search_concurrency = max(
+            1,
+            int(os.environ.get("HYPERVEC_SEARCH_CONCURRENCY", str(default_search_concurrency))),
+        )
+        self._search_semaphore = threading.BoundedSemaphore(search_concurrency)
 
     @staticmethod
     def validate_collection_name(name: str) -> str:
@@ -67,9 +133,9 @@ class HypervecServerEngine:
             )
         return name
 
-    def _lock_for(self, collection_name: str) -> threading.RLock:
+    def _lock_for(self, collection_name: str) -> ReadWriteLock:
         with self._global_lock:
-            return self._locks.setdefault(collection_name, threading.RLock())
+            return self._locks.setdefault(collection_name, ReadWriteLock())
 
     def _collection_dir(self, collection_name: str) -> Path:
         return self.collections_root / self.validate_collection_name(collection_name)
@@ -144,17 +210,49 @@ class HypervecServerEngine:
             if metric == int(self.hypervec.kMetricInnerProduct):
                 return self.hypervec.IndexFlatIP(dim)
             return self.hypervec.IndexFlatL2(dim)
+        if index_type in {"IVF", "IVFFLAT", "INDEXIVFFLAT"}:
+            nlist = int(params.get("nlist", 128))
+            return self.hypervec.IndexIVFFlat(dim, nlist, metric)
         if index_type in {"HNSW", "HNSWFLAT", "INDEXHNSWFLAT", "AUTOINDEX"}:
             hnsw_m = int(params.get("M", params.get("m", 32)))
             return self.hypervec.IndexHNSWFlat(dim, hnsw_m, metric)
+        if index_type in {"HNSWPQ", "INDEXHNSWPQ"}:
+            hnsw_m = int(params.get("M_hnsw", params.get("M", 32)))
+            pq_m = int(params.get("M_pq", params.get("m", 256)))
+            nbits = int(params.get("nbits", 8))
+            return self.hypervec.IndexHNSWPQ(dim, pq_m, nbits, hnsw_m, metric)
         if index_type in {"HNSWLVQ", "INDEXHNSWLVQ"}:
             nlocal = int(params.get("nlocal", 16))
             nbits = int(params.get("nbits", 8))
             hnsw_m = int(params.get("M_hnsw", params.get("M", 32)))
             return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, hnsw_m, metric)
+        if index_type in {"LVQ", "INDEXLVQ"}:
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            return self.hypervec.IndexLVQ(dim, nlocal, nbits, metric)
+        if index_type in {"IVFLVQ", "INDEXIVFLVQ"}:
+            nlist = int(params.get("nlist", 128))
+            nlocal = int(params.get("nlocal", 16))
+            nbits = int(params.get("nbits", 8))
+            index = self.hypervec.IndexIVFLVQ(dim, nlist, nlocal, nbits, metric)
+            if hasattr(index, "by_residual"):
+                index.by_residual = bool(params.get("by_residual", False))
+            return index
+        if index_type in {"IVFPQ", "INDEXIVFPQ"}:
+            nlist = int(params.get("nlist", 128))
+            pq_m = int(params.get("M_pq", params.get("m", 256)))
+            nbits = int(params.get("nbits", 8))
+            index = self.hypervec.IndexIVFPQ(dim, nlist, pq_m, nbits, metric)
+            if hasattr(index, "by_residual"):
+                index.by_residual = bool(params.get("by_residual", True))
+            if hasattr(index, "use_precomputed_table"):
+                index.use_precomputed_table = int(params.get("use_precomputed_table", 0))
+            return index
         raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
+        if hasattr(index, "is_trained") and not bool(index.is_trained):
+            index.train(vectors)
         index.add(vectors)
 
     def _search_index(
@@ -168,6 +266,11 @@ class HypervecServerEngine:
         ef_search = params.get("ef_search", params.get("ef"))
         if ef_search is not None and hasattr(index, "search_with_ef"):
             return index.search_with_ef(query, k, int(ef_search))
+        nprobe = params.get("nprobe")
+        if nprobe is not None and hasattr(index, "search_with_nprobe"):
+            return index.search_with_nprobe(query, k, int(nprobe))
+        if nprobe is not None and hasattr(index, "nprobe"):
+            index.nprobe = int(nprobe)
         return index.search(query, k)
 
     def _write_index(self, index: Any, path: Path) -> None:
@@ -229,7 +332,8 @@ class HypervecServerEngine:
 
     def has_collection(self, collection_name: str) -> bool:
         collection_name = self.validate_collection_name(collection_name)
-        return self.meta_store.get(collection_name) is not None
+        with self._lock_for(collection_name).read_lock():
+            return self.meta_store.get(collection_name) is not None
 
     def create_collection(
         self,
@@ -239,7 +343,7 @@ class HypervecServerEngine:
         index_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             if self.meta_store.get(collection_name) is not None:
                 raise FileExistsError(f"collection '{collection_name}' already exists.")
             self._collection_dir(collection_name).mkdir(parents=True, exist_ok=True)
@@ -258,9 +362,10 @@ class HypervecServerEngine:
 
     def drop_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             existed = self.meta_store.delete(collection_name)
             self._indexes.pop(collection_name, None)
+            self._doc_id_maps.pop(collection_name, None)
             self.scalar_store.drop_table(collection_name)
             collection_dir = self._collection_dir(collection_name)
             if collection_dir.exists():
@@ -269,11 +374,12 @@ class HypervecServerEngine:
 
     def describe_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        return self._meta_response(self._meta_or_raise(collection_name))
+        with self._lock_for(collection_name).read_lock():
+            return self._meta_response(self._meta_or_raise(collection_name))
 
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             self.scalar_store.ensure_table(collection_name)
             dim = meta.dim
@@ -301,11 +407,12 @@ class HypervecServerEngine:
             total = self.scalar_store.count(collection_name)
             self.meta_store.update(collection_name, dim=dim, total=total)
             self._indexes.pop(collection_name, None)
+            self._doc_id_maps.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
     def flush(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if meta.dim is None:
                 raise ValueError(f"collection '{collection_name}' has no rows.")
@@ -339,7 +446,7 @@ class HypervecServerEngine:
 
     def load_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             index_path = Path(meta.index_path)
             if not index_path.exists():
@@ -347,6 +454,7 @@ class HypervecServerEngine:
                     f"collection '{collection_name}' index has not been flushed."
                 )
             self._indexes[collection_name] = self._read_index(index_path)
+            self._doc_id_maps[collection_name] = self.scalar_store.get_doc_id_map(collection_name)
             return {
                 "loaded": True,
                 "collection_name": collection_name,
@@ -357,8 +465,9 @@ class HypervecServerEngine:
 
     def close_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             self._indexes.pop(collection_name, None)
+            self._doc_id_maps.pop(collection_name, None)
             return {"closed": True, "collection_name": collection_name}
 
     def search(
@@ -376,65 +485,131 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
-        with self._lock_for(collection_name):
-            if collection_name not in self._indexes:
-                self.load_collection(collection_name)
-            meta = self._meta_or_raise(collection_name)
-            if meta.dim is None:
-                raise ValueError(f"collection '{collection_name}' has no vector dimension.")
-            query = np.asarray(data, dtype=np.float32, order="C")
-            if query.ndim != 2:
-                raise ValueError("search data must be a 2-D matrix.")
-            if int(query.shape[1]) != int(meta.dim):
-                raise ValueError(f"query dim {query.shape[1]} != collection dim {meta.dim}.")
 
-            index = self._indexes[collection_name]
-            candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
-            distances, labels = self._search_index(index, query, candidate_k, search_params)
-            requested = set(output_fields or [])
-            results: list[list[dict[str, Any]]] = []
-            for q_labels, q_distances in zip(labels, distances):
-                row_ids = [int(label) for label in q_labels if int(label) >= 0]
-                scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
-                hits = []
-                for rank, (row_id, scalar) in enumerate(zip(row_ids, scalars)):
-                    if scalar is None:
+        query = np.asarray(data, dtype=np.float32, order="C")
+        if query.ndim != 2:
+            raise ValueError("search data must be a 2-D matrix.")
+
+        with self._lock_for(collection_name).read_lock():
+            loaded = collection_name in self._indexes
+        if not loaded:
+            self.load_collection(collection_name)
+
+        requested = set(output_fields or [])
+        doc_id_map = None
+        with self._search_semaphore:
+            with self._lock_for(collection_name).read_lock():
+                meta = self._meta_or_raise(collection_name)
+                if meta.dim is None:
+                    raise ValueError(f"collection '{collection_name}' has no vector dimension.")
+                if int(query.shape[1]) != int(meta.dim):
+                    raise ValueError(f"query dim {query.shape[1]} != collection dim {meta.dim}.")
+                index = self._indexes[collection_name]
+                doc_id_map = self._doc_id_maps.get(collection_name)
+                id_only = requested == {meta.id_field} and not filter
+                params = dict(search_params or {})
+                metric_type = str(self._index_config(meta).get("metric_type", "L2")).upper()
+                exact = bool(params.get("exact", False)) and metric_type in {"L2", "EUCLIDEAN"}
+                rerank = bool(params.get("rerank", True)) and metric_type in {"L2", "EUCLIDEAN"}
+                if exact:
+                    base_vectors = self.scalar_store.get_vectors(collection_name, int(meta.dim))
+                    all_distances = ((query[:, None, :] - base_vectors[None, :, :]) ** 2).sum(axis=2)
+                    top = np.argpartition(all_distances, kth=int(limit) - 1, axis=1)[:, : int(limit)]
+                    order = np.take_along_axis(all_distances, top, axis=1).argsort(axis=1)
+                    labels = np.take_along_axis(top, order, axis=1)
+                    distances = np.take_along_axis(all_distances, labels, axis=1)
+                    rerank = False
+                else:
+                    candidate_k = int(limit)
+                    if rerank:
+                        candidate_k = max(candidate_k, int(params.get("rerank_k", min(meta.total, max(int(limit) * 50, 500)))))
+                    elif not id_only:
+                        candidate_k = max(candidate_k, int(limit) * 8)
+                    candidate_k = min(meta.total, candidate_k)
+                    distances, labels = self._search_index(index, query, candidate_k, params)
+        results: list[list[dict[str, Any]]] = []
+        for q_vector, q_labels, q_distances in zip(query, labels, distances):
+            row_ids = [int(label) for label in q_labels if int(label) >= 0]
+            label_distances = {
+                int(label): float(distance)
+                for label, distance in zip(q_labels, q_distances)
+                if int(label) >= 0
+            }
+            if rerank and row_ids:
+                candidate_vectors = self.scalar_store.get_vectors_by_row_ids(
+                    collection_name, row_ids, int(meta.dim)
+                )
+                reranked = []
+                for row_id, vector in zip(row_ids, candidate_vectors):
+                    if vector is None:
                         continue
-                    row = {
-                        **dict(scalar["metadata"] or {}),
-                        meta.id_field: scalar["doc_id"],
-                        meta.text_field: scalar["text_content"],
-                    }
-                    if not self._filter_match(row, filter):
-                        continue
-                    if requested:
-                        entity = {key: value for key, value in row.items() if key in requested}
-                    else:
-                        entity = dict(row)
-                    distance_index = list(q_labels).index(row_id)
-                    hits.append(
-                        {
-                            "id": row.get(meta.id_field, row_id),
-                            "distance": float(q_distances[distance_index]),
-                            "entity": entity,
-                        }
+                    distance = float(np.dot(vector - q_vector, vector - q_vector))
+                    reranked.append((distance, row_id))
+                reranked.sort(key=lambda item: item[0])
+                row_ids = [row_id for distance, row_id in reranked]
+                label_distances = {row_id: distance for distance, row_id in reranked}
+
+            if id_only:
+                limited_row_ids = row_ids[: int(limit)]
+                if doc_id_map is not None:
+                    doc_ids = [doc_id_map.get(row_id) for row_id in limited_row_ids]
+                else:
+                    doc_ids = self.scalar_store.get_doc_ids_by_row_ids(
+                        collection_name, limited_row_ids
                     )
-                    if len(hits) >= int(limit):
-                        break
-                results.append(hits)
-            return results
+                results.append(
+                    [
+                        {
+                            "id": doc_id,
+                            "distance": label_distances[row_id],
+                            "entity": {},
+                        }
+                        for row_id, doc_id in zip(limited_row_ids, doc_ids)
+                        if doc_id is not None
+                    ]
+                )
+                continue
 
+            scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
+            hits = []
+            for row_id, scalar in zip(row_ids, scalars):
+                if scalar is None:
+                    continue
+                row = {
+                    **dict(scalar["metadata"] or {}),
+                    meta.id_field: scalar["doc_id"],
+                    meta.text_field: scalar["text_content"],
+                }
+                if not self._filter_match(row, filter):
+                    continue
+                if requested:
+                    entity = {key: value for key, value in row.items() if key in requested}
+                else:
+                    entity = dict(row)
+                hits.append(
+                    {
+                        "id": row.get(meta.id_field, row_id),
+                        "distance": label_distances[row_id],
+                        "entity": entity,
+                    }
+                )
+                if len(hits) >= int(limit):
+                    break
+            results.append(hits)
+        return results
     def get_version(self, collection_name: str) -> dict[str, Any]:
-        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
-        return {
-            "collection_name": meta.collection_name,
-            "version": meta.version,
-            "updated_at": meta.updated_at,
-            "total": meta.total,
-            "dim": meta.dim,
-            "index_checksum": meta.index_checksum,
-            "index_size_bytes": meta.index_size_bytes,
-        }
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name).read_lock():
+            meta = self._meta_or_raise(collection_name)
+            return {
+                "collection_name": meta.collection_name,
+                "version": meta.version,
+                "updated_at": meta.updated_at,
+                "total": meta.total,
+                "dim": meta.dim,
+                "index_checksum": meta.index_checksum,
+                "index_size_bytes": meta.index_size_bytes,
+            }
 
     def sync_check(
         self,
@@ -443,25 +618,29 @@ class HypervecServerEngine:
         client_version: int,
         client_checksum: str | None = None,
     ) -> dict[str, Any]:
-        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
-        needs_sync = int(client_version) != int(meta.version)
-        if client_checksum and meta.index_checksum:
-            needs_sync = needs_sync or client_checksum != meta.index_checksum
-        return {
-            "needs_sync": needs_sync,
-            "server_version": meta.version,
-            "client_version": int(client_version),
-            "download_url": f"/collections/{collection_name}/index",
-            "index_checksum": meta.index_checksum,
-            "index_size_bytes": meta.index_size_bytes,
-        }
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name).read_lock():
+            meta = self._meta_or_raise(collection_name)
+            needs_sync = int(client_version) != int(meta.version)
+            if client_checksum and meta.index_checksum:
+                needs_sync = needs_sync or client_checksum != meta.index_checksum
+            return {
+                "needs_sync": needs_sync,
+                "server_version": meta.version,
+                "client_version": int(client_version),
+                "download_url": f"/collections/{collection_name}/index",
+                "index_checksum": meta.index_checksum,
+                "index_size_bytes": meta.index_size_bytes,
+            }
 
     def index_path_for_download(self, collection_name: str) -> Path:
-        meta = self._meta_or_raise(self.validate_collection_name(collection_name))
-        path = Path(meta.index_path)
-        if not path.exists():
-            raise FileNotFoundError(f"collection '{collection_name}' index is not available.")
-        return path
+        collection_name = self.validate_collection_name(collection_name)
+        with self._lock_for(collection_name).read_lock():
+            meta = self._meta_or_raise(collection_name)
+            path = Path(meta.index_path)
+            if not path.exists():
+                raise FileNotFoundError(f"collection '{collection_name}' index is not available.")
+            return path
 
     def upload_index(
         self,
@@ -472,7 +651,7 @@ class HypervecServerEngine:
         checksum: str | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if version is not None and int(version) < int(meta.version):
                 raise ValueError(

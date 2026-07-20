@@ -128,6 +128,49 @@ class ScalarStore:
             return np.empty((0, int(dim)), dtype=np.float32)
         return np.vstack(vectors).astype(np.float32, copy=False)
 
+    def get_doc_ids_by_row_ids(
+        self,
+        collection_name: str,
+        row_ids: list[int],
+    ) -> list[str | None]:
+        if not row_ids:
+            return []
+        table = self._table(collection_name)
+        placeholders = ",".join("?" for _ in row_ids)
+        cur = self._conn().execute(
+            f'SELECT row_id, doc_id FROM "{table}" '
+            f"WHERE row_id IN ({placeholders})",
+            [int(row_id) for row_id in row_ids],
+        )
+        by_row_id = {int(row["row_id"]): row["doc_id"] for row in cur.fetchall()}
+        return [by_row_id.get(int(row_id)) for row_id in row_ids]
+
+    def get_doc_id_map(self, collection_name: str) -> dict[int, str]:
+        table = self._table(collection_name)
+        cur = self._conn().execute(f'SELECT row_id, doc_id FROM "{table}"')
+        return {int(row["row_id"]): row["doc_id"] for row in cur.fetchall()}
+
+    def get_vectors_by_row_ids(
+        self,
+        collection_name: str,
+        row_ids: list[int],
+        dim: int,
+    ) -> list[np.ndarray | None]:
+        if not row_ids:
+            return []
+        table = self._table(collection_name)
+        placeholders = ",".join("?" for _ in row_ids)
+        cur = self._conn().execute(
+            f'SELECT row_id, vector FROM "{table}" '
+            f"WHERE row_id IN ({placeholders})",
+            [int(row_id) for row_id in row_ids],
+        )
+        by_row_id = {
+            int(row["row_id"]): self._decode_vector(row["vector"], dim)
+            for row in cur.fetchall()
+        }
+        return [by_row_id.get(int(row_id)) for row_id in row_ids]
+
     def get_by_row_ids(
         self,
         collection_name: str,

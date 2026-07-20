@@ -12,8 +12,13 @@
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
+#include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf.h>
+#include <index/ivf/index_ivf_flat.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
+#include <quantization/pq/index_pq.h>
+#include <quantization/pq/index_ivfpq.h>
 #include <persistence/index_io.h>
 
 #include <cstring>
@@ -90,7 +95,15 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
-  index->Search(n, data, k, distances.data(), labels.data(), params);
+  PyThreadState* thread_state = PyEval_SaveThread();
+  try {
+    index->Search(n, data, k, distances.data(), labels.data(), params);
+  } catch (...) {
+    PyEval_RestoreThread(thread_state);
+    PyBuffer_Release(&view);
+    throw;
+  }
+  PyEval_RestoreThread(thread_state);
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);
@@ -173,8 +186,17 @@ struct IndexFlatL2 : Index {
   explicit IndexFlatL2(idx_t d);
 };
 
+struct IndexIVFFlat : Index {
+  explicit IndexIVFFlat(idx_t d = 0, idx_t nlist = 0,
+                        MetricType metric = kMetricL2);
+};
+
 struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
+};
+
+struct IndexPQ : Index {
+  IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric = kMetricL2);
 };
 
 struct IndexLVQ : Index {
@@ -186,9 +208,23 @@ struct IndexIVFLVQ : Index {
               MetricType metric = kMetricL2);
 };
 
+struct IndexIVFPQ : Index {
+  IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
+             MetricType metric = kMetricL2);
+  bool by_residual;
+  int use_precomputed_table;
+  void PrecomputeTable();
+};
+
 struct IndexHNSWLVQ : Index {
   IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
                MetricType metric = kMetricL2);
+};
+
+struct IndexHNSWPQ : Index {
+  IndexHNSWPQ(int d, int M_pq, int nbits, int M_hnsw,
+              MetricType metric = kMetricL2);
+  void Freeze();
 };
 
 void WriteIndex(const Index* idx, const char* fname, int io_flags = 0);
@@ -210,6 +246,12 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
   PyObject* search_with_ef(PyObject* x, hypervec::idx_t k, int ef_search) {
     hypervec::SearchParametersHNSW params;
     params.ef_search = ef_search;
+    return index_search_with_params($self, x, k, &params);
+  }
+
+  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k, int nprobe) {
+    hypervec::IVFSearchParameters params;
+    params.nprobe = nprobe;
     return index_search_with_params($self, x, k, &params);
   }
 }

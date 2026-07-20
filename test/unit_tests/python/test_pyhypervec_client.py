@@ -162,3 +162,48 @@ def test_pyhypervec_client_http2_download_uses_case_insensitive_headers(monkeypa
     assert downloaded["version"] == "5"
     assert downloaded["index_checksum"] == "sha256:abc"
     assert downloaded["index_size_bytes"] == "10"
+
+
+def test_pyhypervec_client_accepts_tcp_http_and_https_uris():
+    tcp_client = HypervecClient("tcp://localhost:8080")
+    http_client = HypervecClient("http://localhost:8080")
+    https_client = HypervecClient("https://localhost:8443")
+
+    assert tcp_client.transport == "grpc"
+    assert tcp_client.uri == "http://localhost:8080/"
+    assert http_client.transport == "http"
+    assert http_client.uri == "http://localhost:8080/"
+    assert https_client.transport == "http"
+    assert https_client.uri == "https://localhost:8443/"
+
+
+def test_pyhypervec_client_tcp_uri_routes_json_requests_to_grpc(monkeypatch):
+    calls = []
+    client = HypervecClient("tcp://localhost:8080")
+
+    def fake_request_grpc_json(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(client, "_request_grpc_json", fake_request_grpc_json)
+    assert client.health()["status"] == "ok"
+    assert calls == [("GET", "/health", None)]
+
+
+def test_pyhypervec_client_tcp_uri_routes_bytes_requests_to_grpc(monkeypatch, tmp_path):
+    client = HypervecClient("tcp://localhost:8080")
+    target = tmp_path / "target.hypervec"
+
+    def fake_request_grpc_bytes(method, path, *, body=None, content_type="application/octet-stream"):
+        assert method == "GET"
+        assert path == "/collections/demo/index"
+        return b"downloaded", {
+            "X-Hypervec-Collection-Version": "7",
+            "X-Hypervec-Index-Checksum": "sha256:grpc",
+            "X-Hypervec-Index-Size": "10",
+        }
+
+    monkeypatch.setattr(client, "_request_grpc_bytes", fake_request_grpc_bytes)
+    downloaded = client.download_index("demo", target)
+    assert target.read_bytes() == b"downloaded"
+    assert downloaded["version"] == "7"

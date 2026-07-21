@@ -30,6 +30,12 @@ class CollectionMeta:
     created_at: float
     updated_at: float
     flushed_at: float | None = None
+    # Bundle / purge state fields (added for UltraRAG user-exit flow)
+    data_state: str = "ready"            # "ready" | "purged" | "importing" | "invalid"
+    last_known_total: int | None = None  # row count at last purge/export
+    last_exported_at: float | None = None
+    last_purged_at: float | None = None
+    bundle_format: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,6 +58,11 @@ class CollectionMeta:
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
             flushed_at=data.get("flushed_at"),
+            data_state=str(data.get("data_state") or "ready"),
+            last_known_total=data.get("last_known_total"),
+            last_exported_at=data.get("last_exported_at"),
+            last_purged_at=data.get("last_purged_at"),
+            bundle_format=data.get("bundle_format"),
         )
 
 

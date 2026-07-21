@@ -281,3 +281,239 @@ def test_hypervec_server_engine_supported_index_examples_follow_exports():
         "IndexHNSWPQ",
     ]
     assert all(item["index_type"].startswith("Index") for item in examples)
+
+
+# ---------------------------------------------------------------------------
+# Bundle / purge tests
+# ---------------------------------------------------------------------------
+
+_SCHEMA = {
+    "auto_id": False,
+    "enable_dynamic_field": True,
+    "fields": [
+        {"name": "id", "datatype": "VARCHAR", "is_primary": True},
+        {"name": "vector", "datatype": "FLOAT_VECTOR", "dim": 2},
+        {"name": "contents", "datatype": "VARCHAR"},
+    ],
+}
+_INDEX_PARAMS = {
+    "indexes": [
+        {"field_name": "vector", "metric_type": "L2", "index_type": "Flat", "params": {}}
+    ]
+}
+
+
+def make_engine(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    return module.HypervecServerEngine(str(tmp_path), hypervec_module=fake), fake
+
+
+def test_engine_export_bundle_creates_zip(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+
+    result = engine.export_collection_bundle("col1")
+    assert result["bundle_format"].startswith("hypervector.collection.bundle")
+    assert result["bytes"] > 0
+
+    import zipfile
+
+    with zipfile.ZipFile(result["path"]) as zf:
+        names = zf.namelist()
+    assert "manifest.json" in names
+    assert "index.hypervec" in names
+    assert "scalar.jsonl" in names
+
+    meta = engine.meta_store.get("col1")
+    assert meta.last_exported_at is not None
+    assert meta.bundle_format is not None
+
+
+def test_engine_purge_removes_data_keeps_metadata(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+
+    result = engine.purge_collection_data("col1")
+    assert result["purged"] is True
+    assert result["metadata_preserved"] is True
+    assert result["data_state"] == "purged"
+
+    # Metadata still exists
+    assert engine.has_collection("col1")
+    meta = engine.meta_store.get("col1")
+    assert meta.data_state == "purged"
+    assert meta.last_purged_at is not None
+
+    # Index file gone
+    from pathlib import Path
+    assert not Path(meta.index_path).exists()
+
+    # Scalar count = 0
+    assert engine.scalar_store.count("col1") == 0
+
+
+def test_engine_purge_requires_export_by_default(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "no recorded export" in str(exc)
+    else:
+        raise AssertionError("should have raised ConflictError")
+
+
+def test_engine_import_bundle_restores_data(tmp_path):
+    engine, fake = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    # Verify purged state
+    assert engine.scalar_store.count("col1") == 0
+
+    # Restore
+    restore_result = engine.import_collection_bundle("col1", export_result["path"])
+    assert restore_result["uploaded"] is True
+    assert restore_result["total"] == 2
+    assert restore_result["data_state"] == "ready"
+
+    meta = engine.meta_store.get("col1")
+    assert meta.data_state == "ready"
+    assert engine.scalar_store.count("col1") == 2
+
+    results = engine.search("col1", data=[[0.0, 1.0]], limit=2)
+    assert len(results[0]) == 2
+    hit_ids = {h["id"] for h in results[0]}
+    assert hit_ids == {"a", "b"}
+    entities_by_id = {h["id"]: h["entity"] for h in results[0]}
+    assert entities_by_id["a"]["contents"] == "hello"
+    assert entities_by_id["b"]["contents"] == "world"
+
+
+def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+
+    engine.create_collection("other", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    try:
+        engine.import_collection_bundle("other", export_result["path"])
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "does not match" in str(exc)
+    else:
+        raise AssertionError("should have raised ConflictError")
+
+
+def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    export_result = engine.export_collection_bundle("col1")
+
+    engine.purge_collection_data("col1")
+    try:
+        engine.import_collection_bundle(
+            "col1",
+            export_result["path"],
+            checksum="sha256:deadbeef",
+        )
+    except ValueError as exc:
+        assert "checksum mismatch" in str(exc)
+    else:
+        raise AssertionError("should have raised ValueError")
+
+
+def test_engine_describe_includes_data_state(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+
+    described = engine.describe_collection("col1")
+    assert described["data_state"] == "ready"
+    assert "last_exported_at" in described
+    assert "last_purged_at" in described
+
+    version = engine.get_version("col1")
+    assert "data_state" in version
+
+
+# ---------------------------------------------------------------------------
+# Post-purge behavior tests
+# ---------------------------------------------------------------------------
+
+
+def test_engine_search_after_purge_raises(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.search("col1", data=[[0.0, 1.0]], limit=1, output_fields=["id"])
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("search after purge should raise FileNotFoundError")
+
+
+def test_engine_index_path_for_download_after_purge_raises(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.index_path_for_download("col1")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("index_path_for_download after purge should raise FileNotFoundError")
+
+
+def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    engine.purge_collection_data("col1", require_exported=True)
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "purged" in str(exc)
+    else:
+        raise AssertionError("export_collection_bundle after purge should raise ConflictError")

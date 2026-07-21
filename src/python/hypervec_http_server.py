@@ -8,19 +8,19 @@ import logging
 import tempfile
 from typing import Any
 
-from .hypervec_server_engine import HypervecServerEngine
+from .hypervec_server_engine import ConflictError, HypervecServerEngine
 
 
 def _require_fastapi():
     try:
-        from fastapi import FastAPI, HTTPException, Query, Request
+        from fastapi import FastAPI, HTTPException, Query, Request, Response
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "HyperVec HTTP server requires fastapi and pydantic."
         ) from exc
-    return FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field
+    return FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field
 
 
 def create_app(
@@ -28,7 +28,7 @@ def create_app(
     data_root: str,
     engine: HypervecServerEngine | None = None,
 ) -> Any:
-    FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field = _require_fastapi()
+    FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field = _require_fastapi()
     engine = engine or HypervecServerEngine(data_root)
 
     class CreateCollectionRequest(BaseModel):
@@ -53,7 +53,7 @@ def create_app(
     def fail(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
             return HTTPException(status_code=404, detail=str(exc))
-        if isinstance(exc, FileExistsError):
+        if isinstance(exc, (FileExistsError, ConflictError)):
             return HTTPException(status_code=409, detail=str(exc))
         if isinstance(exc, ValueError):
             return HTTPException(status_code=400, detail=str(exc))

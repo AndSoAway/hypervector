@@ -453,3 +453,146 @@ def _build_config(values: ConfigOverrides) -> HypervecConfig:
         defaults=IndexDefaultsConfig(**values["defaults"]),
         logging=LoggingConfig(**values["logging"]),
     )
+
+
+def default_config() -> HypervecConfig:
+    """Build the complete default snapshot from CONFIG_OPTIONS."""
+
+    config = _build_config(_default_values())
+    validate_config(config, require_data_root=False)
+    return config
+
+
+def load_config_file(path: str | Path) -> ConfigOverrides:
+    """Read and validate explicit values from an INI configuration file."""
+
+    config_path = Path(path).expanduser().resolve(strict=False)
+    if not config_path.exists():
+        raise ConfigError("configuration file does not exist", path=config_path)
+    if not config_path.is_file():
+        raise ConfigError("configuration path is not a regular file", path=config_path)
+
+    parser = configparser.ConfigParser(
+        interpolation=None,
+        strict=True,
+        allow_no_value=False,
+        empty_lines_in_values=False,
+    )
+    # Preserve key case so misspelled capitalization is rejected, not normalized.
+    parser.optionxform = str
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            parser.read_file(config_file)
+    except (OSError, UnicodeError, configparser.Error) as exc:
+        raise ConfigError(f"unable to read configuration: {exc}", path=config_path) from exc
+
+    if parser.defaults():
+        key = next(iter(parser.defaults()))
+        raise ConfigError(
+            "the DEFAULT section is not supported",
+            path=config_path,
+            section=parser.default_section,
+            key=key,
+        )
+
+    overrides: ConfigOverrides = {}
+    allowed_sections = {option.section for option in CONFIG_OPTIONS}
+    for section in parser.sections():
+        if section not in allowed_sections:
+            raise ConfigError(
+                "unknown configuration section",
+                path=config_path,
+                section=section,
+            )
+        for key, raw_value in parser.items(section, raw=True):
+            option = _OPTIONS_BY_NAME.get((section, key))
+            if option is None:
+                raise ConfigError(
+                    "unknown configuration option",
+                    path=config_path,
+                    section=section,
+                    key=key,
+                    value=raw_value,
+                )
+            value = _coerce_option_value(
+                option,
+                raw_value,
+                base_dir=config_path.parent,
+                path=config_path,
+            )
+            overrides.setdefault(section, {})[key] = value
+    return overrides
+
+
+def resolve_config(
+    config_path: str | Path | None = None,
+    cli_overrides: Mapping[str, object] | None = None,
+) -> HypervecConfig:
+    """Merge defaults, file values, and explicit CLI values, then validate."""
+
+    # Later layers overwrite earlier layers: defaults < INI < explicit CLI.
+    values = _default_values()
+    if config_path is not None:
+        for section, section_values in load_config_file(config_path).items():
+            values[section].update(section_values)
+
+    for cli_dest, raw_value in (cli_overrides or {}).items():
+        option = _OPTIONS_BY_CLI_DEST.get(cli_dest)
+        if option is None:
+            raise ConfigError(f"unknown CLI configuration override {cli_dest!r}")
+        values[option.section][option.key] = _coerce_option_value(
+            option,
+            raw_value,
+            base_dir=Path.cwd(),
+        )
+
+    config = _build_config(values)
+    validate_config(config)
+    return config
+
+
+def validate_config(
+    config: HypervecConfig,
+    *,
+    require_data_root: bool = True,
+) -> None:
+    """Validate option values and constraints that span multiple options."""
+
+    # Revalidate materialized objects so direct callers cannot bypass metadata.
+    for option in CONFIG_OPTIONS:
+        if option.section == "logging":
+            continue
+        section_value = getattr(config, option.field_path[0])
+        value = getattr(section_value, option.field_path[1])
+        _validate_option_value(option, value)
+
+    if require_data_root and not config.server.data_root:
+        raise ConfigError(
+            "value is required to start the HTTP server",
+            section="server",
+            key="data_root",
+        )
+    if bool(config.server.certfile) != bool(config.server.keyfile):
+        raise ConfigError(
+            "certfile and keyfile must be configured together",
+            section="server",
+        )
+    _validate_logging_config(config.logging)
+
+
+def _validate_logging_config(config: LoggingConfig) -> None:
+    for option in CONFIG_OPTIONS:
+        if option.section == "logging":
+            _validate_option_value(option, getattr(config, option.key))
+
+    if config.enable_logging and not (config.log_to_stderr or config.log_to_file):
+        raise ConfigError(
+            "at least one logging output must be enabled",
+            section="logging",
+        )
+    if config.log_to_file and not config.log_file_path:
+        raise ConfigError(
+            "log_file_path is required when log_to_file is enabled",
+            section="logging",
+            key="log_file_path",
+        )

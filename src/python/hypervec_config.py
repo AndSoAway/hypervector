@@ -312,3 +312,144 @@ _BOOLEAN_VALUES = {
 _LOG_HANDLER_MARKER = "_hypervec_config_handler"
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _option_error(
+    option: ConfigOption,
+    message: str,
+    *,
+    path: Path | None = None,
+    value: object | None = None,
+) -> ConfigError:
+    return ConfigError(
+        message,
+        path=path,
+        section=option.section,
+        key=option.key,
+        value=value,
+    )
+
+
+def _validate_option_value(
+    option: ConfigOption,
+    value: ConfigValue,
+    *,
+    path: Path | None = None,
+) -> None:
+    if value is None:
+        if option.optional:
+            return
+        raise _option_error(option, "value may not be empty", path=path, value=value)
+
+    valid_type = isinstance(value, option.value_type)
+    if option.value_type in (bool, int):
+        valid_type = type(value) is option.value_type
+    if not valid_type:
+        raise _option_error(
+            option,
+            f"value {value!r} must have type {option.value_type.__name__}",
+            path=path,
+            value=value,
+        )
+
+    if option.choices and value not in option.choices:
+        choices = ", ".join(option.choices)
+        raise _option_error(
+            option,
+            f"invalid value {value!r}; expected one of: {choices}",
+            path=path,
+            value=value,
+        )
+
+    if option.validator is not None:
+        try:
+            option.validator(value)
+        except ValueError as exc:
+            raise _option_error(option, str(exc), path=path, value=value) from exc
+
+
+def _coerce_option_value(
+    option: ConfigOption,
+    raw_value: object,
+    *,
+    base_dir: Path,
+    path: Path | None = None,
+) -> ConfigValue:
+    """Convert one raw value using its metadata before final validation."""
+
+    value: ConfigValue
+    if raw_value is None:
+        value = None
+    elif option.value_type is bool:
+        if type(raw_value) is bool:
+            value = raw_value
+        elif isinstance(raw_value, str) and raw_value.strip().lower() in _BOOLEAN_VALUES:
+            value = _BOOLEAN_VALUES[raw_value.strip().lower()]
+        else:
+            raise _option_error(
+                option,
+                f"invalid boolean value {raw_value!r}",
+                path=path,
+                value=raw_value,
+            )
+    elif option.value_type is int:
+        if type(raw_value) is int:
+            value = raw_value
+        elif isinstance(raw_value, str) and _INTEGER_PATTERN.fullmatch(raw_value.strip()):
+            value = int(raw_value.strip(), 10)
+        else:
+            raise _option_error(
+                option,
+                f"invalid integer value {raw_value!r}",
+                path=path,
+                value=raw_value,
+            )
+    elif option.value_type is str:
+        if not isinstance(raw_value, str):
+            raise _option_error(
+                option,
+                f"value must have type str, got {type(raw_value).__name__}",
+                path=path,
+                value=raw_value,
+            )
+        value = raw_value.strip()
+        if not value and option.optional:
+            value = None
+        elif option.choices:
+            value = value.lower()
+    else:  # pragma: no cover - guarded by the static metadata table
+        raise RuntimeError(f"unsupported configuration type {option.value_type!r}")
+
+    if option.is_path and value is not None:
+        # INI paths use the config directory; CLI paths use the process cwd.
+        value_path = Path(value).expanduser()
+        if not value_path.is_absolute():
+            value_path = base_dir / value_path
+        value = str(value_path.resolve(strict=False))
+
+    _validate_option_value(option, value, path=path)
+    return value
+
+
+def _default_values() -> ConfigOverrides:
+    """Build validated defaults through the same conversion path as user input."""
+
+    values: ConfigOverrides = {}
+    for option in CONFIG_OPTIONS:
+        value = _coerce_option_value(
+            option,
+            option.default,
+            base_dir=Path.cwd(),
+        )
+        values.setdefault(option.section, {})[option.key] = value
+    return values
+
+
+def _build_config(values: ConfigOverrides) -> HypervecConfig:
+    """Materialize the nested value map as immutable typed config objects."""
+
+    return HypervecConfig(
+        server=ServerConfig(**values["server"]),
+        defaults=IndexDefaultsConfig(**values["defaults"]),
+        logging=LoggingConfig(**values["logging"]),
+    )

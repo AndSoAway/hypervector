@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import importlib.util
 from pathlib import Path
 import sys
@@ -82,3 +83,71 @@ def test_non_empty_validator_rejects_invalid_values(value):
 def test_port_validator_rejects_values_outside_integer_range(value):
     with pytest.raises(ValueError, match="1..65535"):
         config_module._validate_port(value)
+
+
+@pytest.mark.parametrize(
+    ("option_name", "raw_value", "expected"),
+    [
+        (("server", "enable_http2"), "OFF", False),
+        (("logging", "enable_logging"), "yes", True),
+        (("server", "port"), "+9090", 9090),
+        (("server", "server"), "UVICORN", "uvicorn"),
+        (("defaults", "default_metric_type"), "COSINE", "cosine"),
+    ],
+)
+def test_coerce_option_value_supports_typed_input(option_name, raw_value, expected):
+    option = config_module._OPTIONS_BY_NAME[option_name]
+
+    assert (
+        config_module._coerce_option_value(
+            option,
+            raw_value,
+            base_dir=Path.cwd(),
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("option_name", "raw_value", "expected"),
+    [
+        (("server", "port"), "8080.5", "invalid integer value"),
+        (("server", "server"), "gunicorn", "hypercorn, uvicorn"),
+        (("logging", "enable_logging"), "maybe", "invalid boolean value"),
+        (("logging", "log_level"), "verbose", "debug, info"),
+    ],
+)
+def test_coerce_option_value_reports_invalid_input(option_name, raw_value, expected):
+    option = config_module._OPTIONS_BY_NAME[option_name]
+
+    with pytest.raises(config_module.ConfigError) as error:
+        config_module._coerce_option_value(
+            option,
+            raw_value,
+            base_dir=Path.cwd(),
+        )
+
+    assert expected in str(error.value)
+    assert f"[{option.section}].{option.key}" in str(error.value)
+
+
+def test_coerce_paths_use_the_caller_base_directory(tmp_path):
+    option = config_module._OPTIONS_BY_NAME[("server", "data_root")]
+
+    value = config_module._coerce_option_value(
+        option,
+        "data",
+        base_dir=tmp_path,
+    )
+
+    assert value == str((tmp_path / "data").resolve())
+
+
+def test_default_values_and_build_config_are_typed():
+    values = config_module._default_values()
+    config = config_module._build_config(values)
+
+    assert asdict(config) == values
+    assert type(config.server.port) is int
+    assert type(config.server.enable_http2) is bool
+    assert type(config.logging.enable_logging) is bool

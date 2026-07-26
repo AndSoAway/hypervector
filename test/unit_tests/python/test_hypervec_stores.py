@@ -184,3 +184,52 @@ def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
     assert meta.last_purged_at is None
     assert meta.last_known_total is None
     assert meta.bundle_format is None
+
+
+def test_scalar_store_export_rows_missing_table_returns_empty(tmp_path):
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    # Never created "demo" — the table does not exist, which is the only case
+    # that legitimately means "empty export".
+    assert store.export_rows("demo") == []
+
+
+def test_scalar_store_export_rows_propagates_locked_error(tmp_path):
+    import sqlite3
+
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    store.ensure_table("demo")
+    store.insert_batch("demo", [(0, "a", [1.0], "txt", {})])
+
+    class _Boom:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+    store._conn = lambda: _Boom()
+    try:
+        store.export_rows("demo")
+    except sqlite3.OperationalError as exc:
+        assert "locked" in str(exc)
+    else:
+        raise AssertionError("locked database should propagate, not return []")
+
+
+def test_scalar_store_export_rows_propagates_database_error(tmp_path):
+    import sqlite3
+
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    store.ensure_table("demo")
+
+    class _Corrupt:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+    store._conn = lambda: _Corrupt()
+    try:
+        store.export_rows("demo")
+    except sqlite3.DatabaseError as exc:
+        assert "malformed" in str(exc)
+    else:
+        raise AssertionError("corrupt database should propagate, not return []")

@@ -170,8 +170,15 @@ class ScalarStore:
                 f'SELECT row_id, doc_id, vector, text_content, metadata, '
                 f'created_at, updated_at FROM "{table}" ORDER BY row_id ASC'
             )
-        except Exception:
-            return []
+        except sqlite3.OperationalError as exc:
+            # Only a genuinely missing table means "empty collection".  Any
+            # other operational error (e.g. "database is locked") — as well as
+            # DatabaseError (corruption), ProgrammingError, etc. — must
+            # propagate so callers never mistake a failure for an empty export
+            # and wrongly record the data as exported.
+            if "no such table" in str(exc).lower():
+                return []
+            raise
         rows = []
         for row in cur.fetchall():
             dim = len(np.frombuffer(row["vector"], dtype=np.float32))

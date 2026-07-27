@@ -123,3 +123,75 @@ def test_hypervec_http_server_examples_route(tmp_path):
     assert res.status_code == 200
     assert [item["index_type"] for item in payload["examples"]] == ["IndexIVFFlat"]
     assert payload["examples"][0]["cpp_class"] == "hypervec.IndexIVFFlat"
+
+
+def test_config_cli_only_exposes_explicit_business_overrides():
+    module = load_http_module()
+    parser = module.build_argument_parser()
+    help_text = parser.format_help()
+
+    for option in (
+        "--config",
+        "--export-sample-config",
+        "--data-root",
+        "--enable-http2",
+        "--no-enable-http2",
+        "--default-index-type",
+        "--default-metric-type",
+        "--enable-logging",
+        "--no-enable-logging",
+        "--log-to-stderr",
+        "--no-log-to-stderr",
+        "--log-to-file",
+        "--no-log-to-file",
+        "--log-file-path",
+    ):
+        assert option in help_text
+
+    defaults = parser.parse_args([])
+    assert module.cli_overrides_from_namespace(defaults) == {}
+
+    args = parser.parse_args(
+        [
+            "--data-root",
+            "data",
+            "--host",
+            "localhost",
+            "--port",
+            "9090",
+            "--server",
+            "uvicorn",
+            "--no-enable-http2",
+            "--default-index-type",
+            "ivfpq",
+            "--default-metric-type",
+            "cosine",
+            "--log-level",
+            "warning",
+            "--certfile",
+            "server.crt",
+            "--keyfile",
+            "server.key",
+            "--no-enable-logging",
+            "--no-log-to-stderr",
+            "--log-to-file",
+            "--log-file-path",
+            "hypervec.log",
+        ]
+    )
+    assert module.cli_overrides_from_namespace(args) == {
+        "data_root": "data",
+        "host": "localhost",
+        "port": 9090,
+        "server": "uvicorn",
+        "enable_http2": False,
+        "certfile": "server.crt",
+        "keyfile": "server.key",
+        "default_index_type": "ivfpq",
+        "default_metric_type": "cosine",
+        "enable_logging": False,
+        "log_level": "warning",
+        "log_to_stderr": False,
+        "log_to_file": True,
+        "log_file_path": "hypervec.log",
+    }

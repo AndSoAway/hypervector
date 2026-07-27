@@ -62,7 +62,10 @@ endif()
 find_package(OpenMP REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
-set(OMP_LIB "gomp")
+set(OMP_LIB "")
+if(MINGW)
+  set(OMP_LIB "gomp")
+endif()
 
 target_link_libraries(hypervec_test PRIVATE
   OpenMP::OpenMP_CXX

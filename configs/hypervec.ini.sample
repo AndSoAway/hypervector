@@ -1,0 +1,72 @@
+# HyperVector HTTP server configuration.
+# Precedence: defaults < this file < explicit CLI options.
+
+[server]
+# Root directory for collection metadata, scalar data, and indexes; required at server startup.
+# Type: path (optional)
+# Default: <empty>
+data_root =
+# Host name or IP address on which the HTTP server listens.
+# Type: str
+# Default: 127.0.0.1
+host = 127.0.0.1
+# TCP port on which the HTTP server listens (1..65535).
+# Type: int
+# Default: 8080
+port = 8080
+# ASGI server implementation.
+# Type: str
+# Default: hypercorn
+# Choices: hypercorn, uvicorn
+server = hypercorn
+# Enable HTTP/2 when supported by the selected ASGI server.
+# Type: bool
+# Default: true
+# Accepted values: true/false, yes/no, on/off, 1/0
+enable_http2 = true
+# TLS certificate file; configure together with keyfile.
+# Type: path (optional)
+# Default: <empty>
+certfile =
+# TLS private key file; configure together with certfile.
+# Type: path (optional)
+# Default: <empty>
+keyfile =
+
+[defaults]
+# Default index type reserved for collection creation defaults.
+# Type: str
+# Default: hnswflat
+# Choices: flat, ivfflat, ivflvq, ivfpq, hnswflat, hnswlvq, hnswpq
+default_index_type = hnswflat
+# Default distance metric reserved for collection creation defaults.
+# Type: str
+# Default: l2
+# Choices: l2, ip, cosine
+default_metric_type = l2
+
+[logging]
+# Enable logging for the HyperVector Python logger namespace.
+# Type: bool
+# Default: true
+# Accepted values: true/false, yes/no, on/off, 1/0
+enable_logging = true
+# Minimum level emitted by HyperVector logging.
+# Type: str
+# Default: info
+# Choices: debug, info, warning, error, critical
+log_level = info
+# Write HyperVector log records to standard error.
+# Type: bool
+# Default: true
+# Accepted values: true/false, yes/no, on/off, 1/0
+log_to_stderr = true
+# Write HyperVector log records to a file.
+# Type: bool
+# Default: false
+# Accepted values: true/false, yes/no, on/off, 1/0
+log_to_file = false
+# Log file path used when log_to_file is enabled.
+# Type: path (optional)
+# Default: <empty>
+log_file_path =

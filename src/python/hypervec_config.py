@@ -652,3 +652,91 @@ def configure_logging(config: LoggingConfig) -> None:
     logger.propagate = False
     for handler in new_handlers:
         logger.addHandler(handler)
+
+
+def cli_overrides_from_namespace(namespace: object) -> dict[str, object]:
+    """Extract business options explicitly present on an argparse namespace."""
+
+    overrides: dict[str, object] = {}
+    for option in CONFIG_OPTIONS:
+        if option.cli_dest is not None and hasattr(namespace, option.cli_dest):
+            overrides[option.cli_dest] = getattr(namespace, option.cli_dest)
+    return overrides
+
+
+def _format_sample_value(value: ConfigValue) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _format_sample_type(option: ConfigOption) -> str:
+    type_name = "path" if option.is_path else option.value_type.__name__
+    return f"{type_name} (optional)" if option.optional else type_name
+
+
+def render_sample_config() -> str:
+    """Render a deterministic, commented INI sample from CONFIG_OPTIONS."""
+
+    lines = [
+        "# HyperVector HTTP server configuration.",
+        "# Precedence: defaults < this file < explicit CLI options.",
+        "",
+    ]
+    current_section: str | None = None
+    # Metadata order is intentional and keeps generated output reviewable.
+    for option in CONFIG_OPTIONS:
+        if option.section != current_section:
+            if current_section is not None:
+                lines.append("")
+            lines.append(f"[{option.section}]")
+            current_section = option.section
+        lines.append(f"# {option.description}")
+        lines.append(f"# Type: {_format_sample_type(option)}")
+        default_text = _format_sample_value(option.default) or "<empty>"
+        lines.append(f"# Default: {default_text}")
+        if option.choices:
+            lines.append(f"# Choices: {', '.join(option.choices)}")
+        elif option.value_type is bool:
+            lines.append("# Accepted values: true/false, yes/no, on/off, 1/0")
+        sample_value = _format_sample_value(option.default)
+        lines.append(f"{option.key} = {sample_value}" if sample_value else f"{option.key} =")
+
+    return "\n".join(lines) + "\n"
+
+
+def export_sample_config(path: str | Path) -> None:
+    """Create a sample configuration file without overwriting an existing file."""
+
+    output_path = Path(path).expanduser()
+    try:
+        with output_path.open("x", encoding="utf-8", newline="\n") as output_file:
+            output_file.write(render_sample_config())
+    except FileExistsError as exc:
+        raise ConfigError("sample configuration already exists", path=output_path) from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"unable to write sample configuration: {exc}",
+            path=output_path,
+        ) from exc
+
+
+__all__ = [
+    "CONFIG_OPTIONS",
+    "ConfigError",
+    "ConfigOption",
+    "HypervecConfig",
+    "IndexDefaultsConfig",
+    "LoggingConfig",
+    "ServerConfig",
+    "cli_overrides_from_namespace",
+    "configure_logging",
+    "default_config",
+    "export_sample_config",
+    "load_config_file",
+    "render_sample_config",
+    "resolve_config",
+    "validate_config",
+]

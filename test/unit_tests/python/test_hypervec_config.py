@@ -5,6 +5,7 @@ import importlib.util
 import io
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 
 import pytest
@@ -465,3 +466,181 @@ def test_configure_logging_does_not_modify_an_injected_external_logger(
     finally:
         injected_logger.removeHandler(injected_handler)
         injected_handler.close()
+
+
+def test_omitted_cli_options_do_not_override_file_values(tmp_path):
+    config_path = tmp_path / "hypervec.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root = data
+host = file-host
+port = 8181
+server = uvicorn
+""",
+        encoding="utf-8",
+    )
+
+    config = config_module.resolve_config(config_path, {"log_level": "error"})
+
+    assert config.server.host == "file-host"
+    assert config.server.port == 8181
+    assert config.server.server == "uvicorn"
+    assert config.logging.log_level == "error"
+
+
+def test_namespace_extraction_and_sample_rendering_are_metadata_driven():
+    namespace = SimpleNamespace(port=9000, log_to_stderr=False, config="ignored.ini")
+    assert config_module.cli_overrides_from_namespace(namespace) == {
+        "port": 9000,
+        "log_to_stderr": False,
+    }
+
+    sample = config_module.render_sample_config()
+    assert sample.count("[server]") == 1
+    assert sample.count("[defaults]") == 1
+    assert sample.count("[logging]") == 1
+    assert "host = 127.0.0.1" in sample
+    assert "enable_http2 = true" in sample
+    assert "default_index_type = hnswflat" in sample
+    assert "default_metric_type = l2" in sample
+    assert "enable_logging = true" in sample
+    assert "log_file_path =\n" in sample
+    assert sample.endswith("\n")
+
+
+def test_supported_types_and_optional_values_are_parsed(tmp_path):
+    config_path = tmp_path / "types.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root =
+host = localhost
+port = +9090
+enable_http2 = OFF
+certfile =
+
+[defaults]
+default_index_type = HNSWPQ
+default_metric_type = IP
+
+[logging]
+enable_logging = YES
+log_to_stderr = on
+log_to_file = 0
+log_file_path =
+""",
+        encoding="utf-8",
+    )
+
+    values = config_module.load_config_file(config_path)
+    assert values["server"] == {
+        "data_root": None,
+        "host": "localhost",
+        "port": 9090,
+        "enable_http2": False,
+        "certfile": None,
+    }
+    assert values["defaults"] == {
+        "default_index_type": "hnswpq",
+        "default_metric_type": "ip",
+    }
+    assert values["logging"] == {
+        "enable_logging": True,
+        "log_to_stderr": True,
+        "log_to_file": False,
+        "log_file_path": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("off", False),
+        ("0", False),
+    ],
+)
+def test_all_supported_boolean_tokens(tmp_path, raw_value, expected):
+    config_path = tmp_path / "boolean.ini"
+    config_path.write_text(
+        f"[logging]\nenable_logging = {raw_value}\n",
+        encoding="utf-8",
+    )
+
+    values = config_module.load_config_file(config_path)
+    assert values["logging"]["enable_logging"] is expected
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1"])
+def test_port_range_boundaries_are_rejected(tmp_path, port):
+    config_path = tmp_path / "invalid-port.ini"
+    config_path.write_text(f"[server]\nport = {port}\n", encoding="utf-8")
+
+    with pytest.raises(config_module.ConfigError) as error:
+        config_module.load_config_file(config_path)
+    assert "[server].port" in str(error.value)
+    assert port in str(error.value)
+    assert "1..65535" in str(error.value)
+
+
+def test_config_paths_are_file_relative_and_cli_paths_are_cwd_relative(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "hypervec.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root = data
+certfile = tls/server.crt
+keyfile = tls/server.key
+""",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.chdir(work_dir)
+
+    from_file = config_module.resolve_config(config_path)
+    assert from_file.server.data_root == str((config_dir / "data").resolve())
+    assert from_file.server.certfile == str(
+        (config_dir / "tls/server.crt").resolve()
+    )
+
+    from_cli = config_module.resolve_config(
+        config_path,
+        {"data_root": "cli-data", "certfile": None, "keyfile": None},
+    )
+    assert from_cli.server.data_root == str((work_dir / "cli-data").resolve())
+
+
+def test_no_config_path_does_not_search_the_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "hypervec.ini").write_text(
+        "[server]\nport = 1234\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = config_module.resolve_config(None, {"data_root": "data"})
+    assert config.server.port == 8080
+
+
+def test_export_sample_matches_repository_golden_file_and_refuses_overwrite(tmp_path):
+    golden_path = Path(__file__).parents[3] / "configs" / "hypervec.ini.sample"
+    expected = golden_path.read_text(encoding="utf-8")
+    assert config_module.render_sample_config() == expected
+
+    output_path = tmp_path / "hypervec.ini"
+    config_module.export_sample_config(output_path)
+    assert output_path.read_text(encoding="utf-8") == expected
+
+    with pytest.raises(config_module.ConfigError, match="already exists"):
+        config_module.export_sample_config(output_path)

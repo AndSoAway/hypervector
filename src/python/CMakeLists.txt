@@ -285,6 +285,7 @@ configure_file(hypervec_meta_store.py hypervec_meta_store.py COPYONLY)
 configure_file(hypervec_scalar_store.py hypervec_scalar_store.py COPYONLY)
 configure_file(hypervec_server_engine.py hypervec_server_engine.py COPYONLY)
 configure_file(hypervec_http_server.py hypervec_http_server.py COPYONLY)
+configure_file(hypervec_config.py hypervec_config.py COPYONLY)
 
 # file(GLOB files "${CMAKE_SOURCE_DIR}/contrib/*.py")
 if(EXISTS ${CMAKE_SOURCE_DIR}/contrib)

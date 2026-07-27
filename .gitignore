@@ -14,6 +14,8 @@ AGENTS.md
 *.dylib
 *.pyc
 *~
+/.pytest-*/
+/output/
 /build/
 /config.*
 /aclocal.m4

@@ -15,6 +15,8 @@
 
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/hnsw.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <utils/common/result_handler.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/structures/random.h>
@@ -216,6 +218,50 @@ TEST(HNSW, IndexHNSWMetricLp) {
 
     EXPECT_NEAR(distance, 8.0, 1e-5); // Distance should be 8.0 (2^3)
     EXPECT_EQ(label, 0);              // Label should be 0
+}
+
+TEST(HNSW, HNSWFlatInnerProductSerialization) {
+    const int d = 4;
+    const int k = 2;
+    hypervec::IndexHNSWFlat index(d, 8, hypervec::kMetricInnerProduct);
+
+    // Three axis-aligned unit vectors — inner products with query [0.9, 0.1, 0, 0]
+    // are 0.9 (vec 0), 0.1 (vec 1), 0.0 (vec 2).
+    std::vector<float> xb = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+    };
+    index.Add(3, xb.data());
+
+    // --- search before serialization ---
+    float query[4] = {0.9f, 0.1f, 0.0f, 0.0f};
+    std::vector<float> dist_before(k);
+    std::vector<hypervec::idx_t> labels_before(k);
+    index.Search(1, query, k, dist_before.data(), labels_before.data());
+
+    // --- serialize → deserialize ---
+    hypervec::VectorIOWriter writer;
+    hypervec::WriteIndex(&index, &writer);
+
+    hypervec::VectorIOReader reader;
+    reader.data = writer.data;
+    std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(&reader));
+
+    ASSERT_EQ(loaded->d, d);
+    ASSERT_EQ(loaded->n_total, 3);
+    ASSERT_EQ(loaded->metric_type, hypervec::kMetricInnerProduct);
+
+    // --- search after deserialization ---
+    std::vector<float> dist_after(k);
+    std::vector<hypervec::idx_t> labels_after(k);
+    loaded->Search(1, query, k, dist_after.data(), labels_after.data());
+
+    // --- round-trip consistency: labels and distances must match exactly ---
+    ASSERT_EQ(labels_before[0], labels_after[0]);
+    ASSERT_EQ(labels_before[1], labels_after[1]);
+    EXPECT_FLOAT_EQ(dist_before[0], dist_after[0]);
+    EXPECT_FLOAT_EQ(dist_before[1], dist_after[1]);
 }
 
 class HNSWTest : public testing::Test {

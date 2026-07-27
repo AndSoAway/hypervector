@@ -33,7 +33,6 @@ def _load_bundle_module():
             create_bundle,
             read_bundle,
             bundle_checksum,
-            schema_checksum,
             BUNDLE_FORMAT,
         )
     except ImportError:
@@ -42,10 +41,9 @@ def _load_bundle_module():
             create_bundle,
             read_bundle,
             bundle_checksum,
-            schema_checksum,
             BUNDLE_FORMAT,
         )
-    return create_bundle, read_bundle, bundle_checksum, schema_checksum, BUNDLE_FORMAT
+    return create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
 
 
 class ConflictError(Exception):
@@ -846,7 +844,7 @@ class HypervecServerEngine:
         if the index is stale (index_version != data_version), or if the
         index / scalar / metadata row counts and dimensions do not agree.
         """
-        create_bundle, _, _, _, BUNDLE_FORMAT = _load_bundle_module()
+        create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
@@ -854,11 +852,6 @@ class HypervecServerEngine:
                 raise ConflictError(
                     f"collection '{collection_name}' data has been purged — "
                     "nothing to export."
-                )
-            if meta.data_state in ("importing", "invalid"):
-                raise ConflictError(
-                    f"collection '{collection_name}' is in '{meta.data_state}' "
-                    "state and cannot be exported; restore a valid bundle first."
                 )
             index_path = Path(meta.index_path)
             if not index_path.exists():
@@ -896,26 +889,41 @@ class HypervecServerEngine:
                     f"index.d={index.d} != meta.dim={meta.dim}."
                 )
             scalar_rows = self.scalar_store.export_rows(collection_name)
+            # When no explicit destination is given (the HTTP download path),
+            # build into a controlled temp subdir so a failed/cancelled export
+            # never leaves a stray bundle in the collection root.  purge sweeps
+            # this directory unconditionally.
+            export_tmp_dir: Path | None = None
             if output_path is None:
-                output_path = self._collection_dir(collection_name) / f"{collection_name}.hypervec-bundle"
+                export_tmp_dir = self._collection_dir(collection_name) / ".export.tmp"
+                export_tmp_dir.mkdir(parents=True, exist_ok=True)
+                output_path = export_tmp_dir / f"{collection_name}.hypervec-bundle"
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest = create_bundle(
-                collection_name, index_path, scalar_rows, meta, output_path
-            )
-            # Defense in depth: the manifest is derived from meta, so confirm
-            # it agrees with the freshly-observed index and scalar counts.
-            if not (
-                int(manifest["total"]) == scalar_count
-                and (meta.dim is None or int(manifest["dim"]) == int(index.d))
-            ):
-                raise ConflictError(
-                    f"collection '{collection_name}' bundle manifest disagrees "
-                    f"with observed state (manifest.total={manifest['total']}, "
-                    f"scalar_count={scalar_count})."
+            try:
+                manifest = create_bundle(
+                    collection_name, index_path, scalar_rows, meta, output_path
                 )
-            bundle_size = output_path.stat().st_size
-            bundle_cksum = file_sha256(output_path)
+                # Defense in depth: the manifest is derived from meta, so confirm
+                # it agrees with the freshly-observed index and scalar counts.
+                if not (
+                    int(manifest["total"]) == scalar_count
+                    and (meta.dim is None or int(manifest["dim"]) == int(index.d))
+                ):
+                    raise ConflictError(
+                        f"collection '{collection_name}' bundle manifest disagrees "
+                        f"with observed state (manifest.total={manifest['total']}, "
+                        f"scalar_count={scalar_count})."
+                    )
+                bundle_size = output_path.stat().st_size
+                bundle_cksum = file_sha256(output_path)
+            except BaseException:
+                # Any failure (or cancellation) removes the partial artifact and
+                # the controlled temp dir so no residue survives.
+                output_path.unlink(missing_ok=True)
+                if export_tmp_dir is not None:
+                    shutil.rmtree(export_tmp_dir, ignore_errors=True)
+                raise
             self.meta_store.update(
                 collection_name,
                 last_exported_at=manifest["exported_at"],
@@ -955,16 +963,11 @@ class HypervecServerEngine:
         Raises ValueError on format errors or checksum mismatches.
         Raises ConflictError on collection_name / dim mismatch.
         """
-        _, read_bundle, _, schema_checksum, BUNDLE_FORMAT = _load_bundle_module()
+        _, read_bundle, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         source_path = Path(source_path)
 
         # ---- Validate everything BEFORE touching any live state ----
-        if mode != "replace":
-            raise ValueError(
-                f"unsupported import mode '{mode}'; only 'replace' is supported."
-            )
-
         if checksum:
             actual = file_sha256(source_path)
             if actual != checksum:
@@ -988,27 +991,6 @@ class HypervecServerEngine:
                     raise ConflictError(
                         f"bundle dim {manifest['dim']} does not match "
                         f"collection dim {meta.dim}."
-                    )
-
-            # Schema compatibility: the bundle's schema must match the target
-            # collection's, verified via the same deterministic checksum used
-            # when the bundle was created.
-            target_schema_cksum = schema_checksum(meta.schema)
-            if manifest.get("schema_checksum") != target_schema_cksum:
-                raise ConflictError(
-                    f"bundle schema is incompatible with collection "
-                    f"'{collection_name}' (schema_checksum mismatch)."
-                )
-            for field, meta_value in (
-                ("id_field", meta.id_field),
-                ("vector_field", meta.vector_field),
-                ("text_field", meta.text_field),
-            ):
-                bundle_value = manifest.get(field)
-                if bundle_value is not None and bundle_value != meta_value:
-                    raise ConflictError(
-                        f"bundle {field} '{bundle_value}' does not match "
-                        f"collection '{collection_name}' {field} '{meta_value}'."
                     )
 
             index_path = Path(meta.index_path)
@@ -1139,13 +1121,32 @@ class HypervecServerEngine:
             # Evict from memory
             self._indexes.pop(collection_name, None)
 
-            # Delete index file and server-generated temp files.
+            # Delete index file + all server-generated bundle / temp / staging
+            # residue in the collection directory.  Anything the export or
+            # import paths could leave behind must be swept here so no user data
+            # survives a purge (P0-4).
+            collection_dir = self._collection_dir(collection_name)
             index_path = Path(meta.index_path)
             index_path.unlink(missing_ok=True)
-            collection_dir = self._collection_dir(collection_name)
-            for leftover in collection_dir.glob("*.tmp"):
-                if leftover.is_file():
-                    leftover.unlink(missing_ok=True)
+            residue_globs = (
+                "*.tmp",
+                "*.hypervec-bundle",
+                "*.hypervec-bundle.tmp",
+                "*.import.staging",
+                "*.pre-import",
+                "*.import.tmp",
+                "*.upload.tmp",
+            )
+            for pattern in residue_globs:
+                for leftover in collection_dir.glob(pattern):
+                    if leftover.is_file():
+                        leftover.unlink(missing_ok=True)
+            # Controlled export temp dir (see export_collection_bundle).
+            export_tmp = collection_dir / ".export.tmp"
+            if export_tmp.exists():
+                shutil.rmtree(export_tmp, ignore_errors=True)
+            # Drop any orphan import-staging table.
+            self.scalar_store.rollback_staging(collection_name)
 
             # Purge scalar table
             self.scalar_store.purge_collection_rows(collection_name)

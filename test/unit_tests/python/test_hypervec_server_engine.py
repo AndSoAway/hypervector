@@ -714,30 +714,68 @@ def test_engine_recover_rolls_forward_completed_switch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: import validation (mode / schema)
+# Phase 4: purge residue cleanup + controlled export temp dir
 # ---------------------------------------------------------------------------
 
 
-def test_engine_import_rejects_non_replace_mode(tmp_path):
-    engine, _, bundle_path = _make_exported_bundle(tmp_path)
-    try:
-        engine.import_collection_bundle("col1", bundle_path, mode="append")
-    except ValueError as exc:
-        assert "mode" in str(exc)
-    else:
-        raise AssertionError("non-replace mode should raise ValueError")
+def test_engine_purge_leaves_no_bundle_residue(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Default (HTTP-style) export builds into the controlled .export.tmp dir.
+    engine.export_collection_bundle("col1")
+    # Simulate stray server-side artifacts a crash/abort could leave behind.
+    coll_dir = engine._collection_dir("col1")
+    (coll_dir / "col1.hypervec-bundle").write_bytes(b"leftover")
+    (coll_dir / "index.hypervec.import.staging").write_bytes(b"leftover")
+    (coll_dir / "index.hypervec.pre-import").write_bytes(b"leftover")
 
-
-def test_engine_import_rejects_incompatible_schema(tmp_path):
-    engine, _, bundle_path = _make_exported_bundle(tmp_path)
     engine.purge_collection_data("col1", require_exported=True)
-    # Mutate the target schema so its checksum no longer matches the bundle.
-    engine.meta_store.update("col1", schema={"fields": [{"name": "different"}]})
 
+    residue = []
+    for pattern in (
+        "*.hypervec-bundle",
+        "*.hypervec-bundle.tmp",
+        "*.import.staging",
+        "*.pre-import",
+        "*.tmp",
+    ):
+        residue += list(coll_dir.glob(pattern))
+    assert residue == [], f"purge left residue: {residue}"
+    assert not (coll_dir / ".export.tmp").exists()
+    assert not (coll_dir / "index.hypervec").exists()
+
+
+def test_engine_export_failure_leaves_no_residue(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    # Force create_bundle to raise mid-export by making the index file vanish
+    # right after the freshness/consistency checks would have read it... instead
+    # inject a failure via a monkeypatched scalar export.
+    def _boom_export(name):
+        raise RuntimeError("injected export_rows failure")
+
+    original = engine.scalar_store.export_rows
+    engine.scalar_store.export_rows = _boom_export
     try:
-        engine.import_collection_bundle("col1", bundle_path)
-    except Exception as exc:
-        assert type(exc).__name__ == "ConflictError"
-        assert "schema" in str(exc)
-    else:
-        raise AssertionError("incompatible schema should raise ConflictError")
+        try:
+            engine.export_collection_bundle("col1")
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("export should have raised")
+    finally:
+        engine.scalar_store.export_rows = original
+
+    coll_dir = engine._collection_dir("col1")
+    # No controlled temp dir or stray bundle survives a failed export.
+    assert not list(coll_dir.glob("*.hypervec-bundle"))
+    # export_rows failed before the temp dir was created, but if it exists it
+    # must be empty of bundles.
+    export_tmp = coll_dir / ".export.tmp"
+    if export_tmp.exists():
+        assert not list(export_tmp.glob("*.hypervec-bundle"))

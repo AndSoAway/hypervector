@@ -326,3 +326,351 @@ class ConfigOption:
 7. 用户配置项清单中的默认值和约束。
 
 dataclass 、CLI parser 和 sample 不允许再写一套业务默认值。CLI help 如果需要显示默认值，必须从定义表读取。
+
+## 8. 配置加载与优先级
+
+### 8.1 固定优先级
+
+```text
+CONFIG_OPTIONS.default < INI 配置文件 < 显式 CLI
+```
+
+环境变量不在该链路中。ARM 脚本如果将环境变量转成 CLI，则它们以显式 CLI 值的身份生效。
+
+### 8.2 加载算法
+
+```text
+1. 从 CONFIG_OPTIONS 创建 mutable nested value map
+2. 如果显式传入 --config：
+     2.1 读取文件
+     2.2 检查 section/key
+     2.3 解析类型和规范化路径
+     2.4 覆盖 value map
+3. 只提取 Namespace 中实际存在的 CLI destination
+4. 解析/规范化 CLI 值并覆盖 value map
+5. 构造 frozen HypervecConfig
+6. 执行交叉字段和最终启动校验
+7. 返回配置快照
+```
+
+### 8.3 CLI 未指定值的处理
+
+原有 CLI 业务参数不再在 `argparse` 中持有业务默认值，并使用 `default=argparse.SUPPRESS`：
+
+```python
+parser.add_argument("--port", type=int, default=argparse.SUPPRESS)
+```
+
+因此：
+
+- 配置文件设置 `port=8081`，CLI 不传 `--port` -> 最终值为 `8081`。
+- 配置文件设置 `port=8081`，CLI 传 `--port 9090` -> 最终值为 `9090`。
+- 配置文件和 CLI 都未设置 port -> 使用 `CONFIG_OPTIONS` 中的 `8080`。
+
+`--data-root` 不再使用 `required=True`，因为它可来自配置文件。合并后的最终校验仍要求它非空。
+
+### 8.4 配置文件入口
+
+新增：
+
+```text
+--config PATH
+--export-sample-config PATH
+```
+
+行为：
+
+- 未提供 `--config` 时不自动查找配置文件，保持旧 CLI 启动语义。
+- 显式提供但文件不存在/不可读时报错。
+- `--export-sample-config` 生成文件后退出 0，不要求 `data_root`，不导入或启动 ASGI server。
+- exporter 使用 exclusive create，默认拒绝覆盖已存在文件。
+
+### 8.5 新增配置 CLI 覆盖
+
+为保证新增配置项都可显式覆盖 INI，新增：
+
+```text
+--enable-http2 / --no-enable-http2
+--default-index-type TYPE
+--default-metric-type TYPE
+--enable-logging / --no-enable-logging
+--log-to-stderr / --no-log-to-stderr
+--log-to-file / --no-log-to-file
+--log-file-path PATH
+```
+
+布尔参数使用 `argparse.BooleanOptionalAction` 或等价成对 action，并使用 `argparse.SUPPRESS` 区分未传入与显式 false。现有 `--log-level` 保留名称并映射到 `logging.log_level`。
+
+### 8.6 命令行使用
+
+当前 CLI 选项如下：
+
+| 选项 | 作用 |
+|---|---|
+| `--config PATH` | 读取显式指定的 INI 文件 |
+| `--export-sample-config PATH` | 导出 sample 后退出 |
+| `--data-root PATH` | 覆盖 `server.data_root` |
+| `--host HOST` | 覆盖 `server.host` |
+| `--port PORT` | 覆盖 `server.port` |
+| `--server {hypercorn,uvicorn}` | 覆盖 `server.server` |
+| `--enable-http2` / `--no-enable-http2` | 覆盖 `server.enable_http2` |
+| `--log-level {debug,info,warning,error,critical}` | 覆盖 `logging.log_level` |
+| `--certfile PATH` | 覆盖 `server.certfile` |
+| `--keyfile PATH` | 覆盖 `server.keyfile` |
+| `--default-index-type TYPE` | 覆盖 `defaults.default_index_type` |
+| `--default-metric-type TYPE` | 覆盖 `defaults.default_metric_type` |
+| `--enable-logging` / `--no-enable-logging` | 覆盖 `logging.enable_logging` |
+| `--log-to-stderr` / `--no-log-to-stderr` | 覆盖 `logging.log_to_stderr` |
+| `--log-to-file` / `--no-log-to-file` | 覆盖 `logging.log_to_file` |
+| `--log-file-path PATH` | 覆盖 `logging.log_file_path` |
+
+旧 CLI 启动方式保持兼容：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --data-root /data/hypervec \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --server hypercorn
+```
+
+导出 sample。目标文件已存在时命令返回错误，不会覆盖：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --export-sample-config ./hypervec.ini
+```
+
+填写 `server.data_root` 后，只使用配置文件启动：
+
+```bash
+python -m hypervec.hypervec_http_server --config ./hypervec.ini
+```
+
+显式 CLI 参数覆盖配置文件中的同名项；未传入的 CLI 参数不会覆盖文件值：
+
+```bash
+python -m hypervec.hypervec_http_server \
+  --config ./hypervec.ini \
+  --host 0.0.0.0 \
+  --port 9090 \
+  --log-level warning
+```
+
+日志布尔项支持成对覆盖：
+
+```text
+--enable-logging / --no-enable-logging
+--log-to-stderr / --no-log-to-stderr
+--log-to-file / --no-log-to-file
+```
+
+## 9. 校验设计
+
+校验分为三层，后一层只处理前一层无法判断的约束。
+
+### 9.1 文件级校验
+
+| 场景 | 行为 |
+|---|---|
+| 未提供 `--config` | 不加载文件，不报错 |
+| 显式路径不存在 | `ConfigError` |
+| 路径不是普通文件/不可读 | `ConfigError` |
+| 空文件 | 解析为无文件覆盖，后续使用默认值 |
+| 非法 INI 语法 | `ConfigError`，包含文件和原因/行号（如 parser 可提供） |
+| 重复 section/key | `ConfigError` |
+| 未知 section/key | `ConfigError` |
+
+空文件本身不是格式错误。但使用空文件启动时，如果 CLI 也未提供 `data_root`，最终启动校验必须失败。
+
+### 9.2 单项类型和范围校验
+
+| 配置项 | 校验 |
+|---|---|
+| bool 项 | 只接受定义的 bool token |
+| int 项 | 必须能完整解析为十进制 int |
+| `server.host` | strip 后非空；不强制解析为 IP，保留 hostname 支持 |
+| `server.port` | `1..65535` |
+| `server.server` | `hypercorn` 或 `uvicorn` |
+| `server.enable_http2` | bool；仅 Hypercorn 启动路径消费该值 |
+| `defaults.default_index_type` | `flat/ivfflat/ivflvq/ivfpq/hnswflat/hnswlvq/hnswpq` |
+| `defaults.default_metric_type` | `l2/ip/cosine` |
+| `logging.log_level` | `debug/info/warning/error/critical` |
+| optional string/path | 空值转 `None`，非空值完成路径规范化 |
+
+### 9.3 交叉字段和启动校验
+
+| 约束 | 规则 |
+|---|---|
+| data root | `require_data_root=True` 时 `server.data_root` 必须非空 |
+| TLS | `certfile` 和 `keyfile` 必须同时设置或同时为 `None` |
+| logging output | `enable_logging=true` 时 `log_to_stderr/log_to_file` 至少一个为 true |
+| logging file | `log_to_file=true` 时 `log_file_path` 必须非空 |
+
+TLS 文件存在性不在本期提前校验，保持现有 ASGI server 报错语义。`data_root` 的目录创建仍由 `HypervecServerEngine` 负责。
+
+`log_file_path` 的文件打开属于日志应用阶段：`configure_logging()` 在启动 ASGI server 前以 UTF-8 append 模式打开文件；不自动创建父目录，打开失败时抛出 `ConfigError`。
+
+### 9.4 校验时机
+
+- 默认值也经过单项校验，防止定义表自身不合法。
+- 文件值在读取时执行类型和单项校验。
+- CLI 值在合并前执行对应单项校验。
+- 交叉字段校验在所有来源合并后只执行一次，避免文件中的不完整组合被 CLI 合法覆盖前就误报错。
+
+## 10. 错误模型
+
+### 10.1 `ConfigError`
+
+```python
+class ConfigError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: Path | None = None,
+        section: str | None = None,
+        key: str | None = None,
+        value: object | None = None,
+    ) -> None: ...
+```
+
+`ConfigError` 用于可预期的用户配置错误：
+
+- 文件不存在/不可读。
+- INI 语法、重复或未知项。
+- 类型转换、范围和 choices 错误。
+- 交叉字段约束错误。
+- sample 导出目标已存在/不可写。
+- 日志文件无法打开。
+
+### 10.2 错误消息格式
+
+示例：
+
+```text
+/etc/hypervec/hypervec.ini [server].port: invalid integer value 'abc'
+/etc/hypervec/hypervec.ini [server].port: value 70000 must be an integer in the range 1..65535
+/etc/hypervec/hypervec.ini [logging].log_to_disk: unknown configuration option
+[server]: certfile and keyfile must be configured together
+[server].data_root: value is required to start the HTTP server
+```
+
+要求：
+
+- 有文件来源时包含文件路径。
+- 有具体配置项时包含 `[section].key`。
+- 类型/范围错误包含原始值和期望规则。
+- 未来如果增加密钥类项，元数据必须支持隐藏 value；当前无密钥项。
+
+### 10.3 CLI 中的错误呈现
+
+`main(argv=None)` 捕获 `ConfigError` 并调用 `parser.error(str(exc))` 或等价逻辑：
+
+- 向 stderr 输出简洁错误。
+- 退出码为 `2`。
+- 不为正常用户配置错误输出 Python traceback。
+
+编程错误和未预期异常不转换为 `ConfigError`，避免隐藏真实缺陷。
+
+## 11. 对外 API 设计
+
+### 11.1 配置核心 API
+
+```python
+from pathlib import Path
+from typing import Mapping
+
+ConfigOverrides = dict[str, dict[str, ConfigValue]]
+
+
+def default_config() -> HypervecConfig:
+    """Build the complete default snapshot from CONFIG_OPTIONS."""
+
+
+def load_config_file(path: str | Path) -> ConfigOverrides:
+    """Read, parse, normalize, and validate file-level option values."""
+
+
+def resolve_config(
+    config_path: str | Path | None = None,
+    cli_overrides: Mapping[str, object] | None = None,
+) -> HypervecConfig:
+    """Merge defaults, file values, and explicit CLI values, then validate."""
+
+
+def validate_config(
+    config: HypervecConfig,
+    *,
+    require_data_root: bool = True,
+) -> None:
+    """Apply cross-field and final startup validation."""
+
+
+def configure_logging(config: LoggingConfig) -> None:
+    """Apply HyperVector Python logging handlers without starting the server."""
+
+
+def render_sample_config() -> str:
+    """Render a deterministic, commented INI sample from CONFIG_OPTIONS."""
+
+
+def export_sample_config(path: str | Path) -> None:
+    """Create a new sample file and refuse to overwrite an existing path."""
+```
+
+### 11.2 CLI 辅助 API
+
+```python
+def cli_overrides_from_namespace(namespace: argparse.Namespace) -> dict[str, object]:
+    """Return only explicitly present business options."""
+```
+
+`cli_overrides` 使用 `ConfigOption.cli_dest` 作为 key。`--config`、`--export-sample-config` 不是业务配置项，不出现在 override map 中。
+
+### 11.3 HTTP Server API
+
+```python
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Build the backward-compatible server CLI parser."""
+
+
+def run_server(config: HypervecConfig) -> None:
+    """Create the app and run the selected ASGI implementation."""
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Parse CLI, resolve config, configure logging, and run the server."""
+```
+
+`main()` 无参调用保持命令行语义，测试可传入 argv 列表。`create_app(*, data_root, engine=None)` 现有签名保持不变，避免破坏 route 测试和嵌入调用。
+
+### 11.4 `main()` 执行顺序
+
+```text
+build_argument_parser()
+    |
+parse_args(argv)
+    |
+    +--> --export-sample-config ?
+    |       |
+    |       +--> export_sample_config() -> exit 0
+    |
+cli_overrides_from_namespace()
+    |
+resolve_config(--config, overrides)
+    |
+configure_logging(config.logging)
+    |
+run_server(config)
+```
+
+sample 导出分支位于 `data_root` 必填校验之前。
+
+### 11.5 HTTP/2 与预留索引默认值
+
+- `server.enable_http2=true` 保持现有 Hypercorn 行为，ALPN 为 `h2,http/1.1`。
+- `server.enable_http2=false` 时 Hypercorn 的 TLS ALPN 只声明 `http/1.1`。
+- Uvicorn 当前只支持 HTTP/1.1，因此该字段不会改变 Uvicorn 启动参数。
+- Hypercorn 自身仍可能处理明文 h2c 升级；首期配置项只承诺控制启动时的 HTTP/2 协议声明，不实现自定义 ASGI 协议栈。
+- `defaults.default_index_type` 和 `defaults.default_metric_type` 是后续 collection 默认策略的统一入口；本期只加载、校验和暴露，不改变请求级显式参数及当前 engine 默认逻辑。

@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 from .exceptions import HypervecClientError, HypervecHTTPError
 from .schema import CollectionSchema, IndexParams
+from .uri import parse_uri
 
 
 class HypervecClient:
@@ -20,10 +21,33 @@ class HypervecClient:
         timeout: float = 30.0,
         http2: bool = False,
     ) -> None:
-        self.uri = uri.rstrip("/") + "/"
         self.token = token
         self.timeout = timeout
         self.http2 = http2
+
+        parsed = parse_uri(uri)
+        if parsed.transport == "grpc":
+            from ._grpc_transport import GrpcTransport
+
+            self._grpc: GrpcTransport | None = GrpcTransport(
+                parsed.address,
+                timeout=timeout,
+                token=token,
+            )
+            self.uri = parsed.address
+        else:
+            self._grpc = None
+            self.uri = (parsed.http_base or "").rstrip("/") + "/"
+
+    def close(self) -> None:
+        if self._grpc is not None:
+            self._grpc.close()
+
+    def __enter__(self) -> "HypervecClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
 
     @staticmethod
     def create_schema(
@@ -294,13 +318,19 @@ class HypervecClient:
             return message
 
     def health(self) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.health()
         return self._request("GET", "/health")
 
     def list_collections(self) -> list[str]:
+        if self._grpc is not None:
+            return self._grpc.list_collections()
         res = self._request("GET", "/collections")
         return list(res.get("collections", []))
 
     def has_collection(self, collection_name: str) -> bool:
+        if self._grpc is not None:
+            return self._grpc.has_collection(collection_name)
         res = self._request("GET", f"/collections/{collection_name}/exists")
         return bool(res.get("exists", False))
 
@@ -313,17 +343,26 @@ class HypervecClient:
         return desc
 
     def describe_collection(self, collection_name: str) -> dict[str, Any]:
-        desc = self._request("GET", f"/collections/{collection_name}/describe")
+        if self._grpc is not None:
+            desc = self._grpc.describe_collection(collection_name)
+        else:
+            desc = self._request("GET", f"/collections/{collection_name}/describe")
         return self._normalize_description(desc)
 
     def describe_collections(self) -> list[dict[str, Any]]:
-        res = self._request("GET", "/collections/describe")
+        if self._grpc is not None:
+            descriptions = self._grpc.describe_collections()
+        else:
+            res = self._request("GET", "/collections/describe")
+            descriptions = list(res.get("collections", []))
         return [
             self._normalize_description(desc)
-            for desc in list(res.get("collections", []))
+            for desc in descriptions
         ]
 
     def examples(self) -> list[dict[str, Any]]:
+        if self._grpc is not None:
+            return self._grpc.examples()
         res = self._request("GET", "/examples")
         return list(res.get("examples", []))
 
@@ -344,6 +383,13 @@ class HypervecClient:
         index_params: IndexParams | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.create_collection(
+                collection_name,
+                schema,
+                index_params,
+                **kwargs,
+            )
         body = {
             "schema": schema.to_dict(),
             "index_params": (index_params or IndexParams()).to_dict(),
@@ -352,9 +398,13 @@ class HypervecClient:
         return self._request("POST", f"/collections/{collection_name}/create", body=body)
 
     def drop_collection(self, collection_name: str) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.drop_collection(collection_name)
         return self._request("DELETE", f"/collections/{collection_name}")
 
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.insert(collection_name, data)
         return self._request(
             "POST",
             f"/collections/{collection_name}/insert",
@@ -362,15 +412,23 @@ class HypervecClient:
         )
 
     def flush(self, collection_name: str) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.flush(collection_name)
         return self._request("POST", f"/collections/{collection_name}/flush", body={})
 
     def load_collection(self, collection_name: str) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.load_collection(collection_name)
         return self._request("POST", f"/collections/{collection_name}/load", body={})
 
     def close_collection(self, collection_name: str) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.close_collection(collection_name)
         return self._request("POST", f"/collections/{collection_name}/close", body={})
 
     def get_version(self, collection_name: str) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.get_version(collection_name)
         return self._request("GET", f"/collections/{collection_name}/version")
 
     def sync_check(
@@ -379,6 +437,12 @@ class HypervecClient:
         client_version: int,
         client_checksum: str | None = None,
     ) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.sync_check(
+                collection_name,
+                client_version,
+                client_checksum,
+            )
         body: dict[str, Any] = {"client_version": int(client_version)}
         if client_checksum:
             body["client_checksum"] = client_checksum
@@ -389,6 +453,8 @@ class HypervecClient:
         )
 
     def download_index(self, collection_name: str, target_path: str | Path) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.download_index(collection_name, target_path)
         raw, headers = self._request_bytes("GET", f"/collections/{collection_name}/index")
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -414,6 +480,13 @@ class HypervecClient:
         version: int | None = None,
         checksum: str | None = None,
     ) -> dict[str, Any]:
+        if self._grpc is not None:
+            return self._grpc.upload_index(
+                collection_name,
+                index_path,
+                version=version,
+                checksum=checksum,
+            )
         params: dict[str, Any] = {}
         if version is not None:
             params["version"] = int(version)
@@ -442,6 +515,17 @@ class HypervecClient:
         consistency_level: str | None = None,
         **kwargs: Any,
     ) -> list[list[dict[str, Any]]]:
+        if self._grpc is not None:
+            return self._grpc.search(
+                collection_name=collection_name,
+                data=data,
+                limit=limit,
+                search_params=search_params,
+                output_fields=output_fields,
+                filter=filter,
+                consistency_level=consistency_level,
+                **kwargs,
+            )
         body = {
             "data": data,
             "limit": int(limit),
@@ -475,6 +559,11 @@ class HypervecClient:
 
         Returns a dict with path / bytes / version / bundle_format / bundle_checksum.
         """
+        if self._grpc is not None:
+            return self._grpc.download_collection_bundle(
+                collection_name,
+                target_path,
+            )
         raw, headers = self._request_bytes("GET", f"/collections/{collection_name}/bundle")
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -505,6 +594,13 @@ class HypervecClient:
 
         NOTE: v1 reads the entire bundle into memory before sending.
         """
+        if self._grpc is not None:
+            return self._grpc.upload_collection_bundle(
+                collection_name,
+                bundle_path,
+                checksum=checksum,
+                mode=mode,
+            )
         params: dict[str, Any] = {"mode": mode}
         if checksum:
             params["checksum"] = checksum
@@ -533,6 +629,11 @@ class HypervecClient:
         require_exported=True (default): the server refuses to purge unless
         a successful export (download_collection_bundle) was recorded.
         """
+        if self._grpc is not None:
+            return self._grpc.purge_collection_data(
+                collection_name,
+                require_exported=require_exported,
+            )
         return self._request(
             "POST",
             f"/collections/{collection_name}/purge-data",

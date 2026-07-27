@@ -10,3 +10,10 @@ class HypervecHTTPError(HypervecClientError):
         super().__init__(f"HTTP {status_code}: {message}")
         self.status_code = status_code
         self.message = message
+
+
+class HypervecGrpcError(HypervecClientError):
+    def __init__(self, status_code: str, message: str) -> None:
+        super().__init__(f"gRPC {status_code}: {message}")
+        self.status_code = status_code
+        self.message = message

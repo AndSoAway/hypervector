@@ -8,7 +8,10 @@ import logging
 import tempfile
 from typing import Any
 
-from .hypervec_server_engine import ConflictError, HypervecServerEngine
+try:
+    from .hypervec_server_engine import ConflictError, HypervecServerEngine
+except ImportError:  # pragma: no cover - supports direct file execution
+    from hypervec_server_engine import ConflictError, HypervecServerEngine
 
 
 def _require_fastapi():

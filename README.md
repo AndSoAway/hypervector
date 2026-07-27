@@ -1,5 +1,7 @@
 # HyperVec Collection Data Bundle 接口说明
 
+> 最新 `main` 同时支持 HTTP 与 gRPC 协议。gRPC 的安装、启动、URI 和 RPC 覆盖说明见 [docs/pyhypervec_grpc_server.md](docs/pyhypervec_grpc_server.md)。
+
 本文档介绍为 UltraRAG 用户退出场景新增的 collection data bundle 接口体系，包括数据整体下载、上传与清除能力。
 
 ## 背景

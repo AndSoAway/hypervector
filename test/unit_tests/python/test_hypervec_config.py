@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 import importlib.util
+import io
+import logging
 from pathlib import Path
 import sys
 
@@ -20,6 +22,34 @@ def load_config_module():
 
 
 config_module = load_config_module()
+
+
+@pytest.fixture
+def hypervec_logger():
+    logger = logging.getLogger("hypervec")
+    marker = config_module._LOG_HANDLER_MARKER
+    for handler in list(logger.handlers):
+        if getattr(handler, marker, False):
+            logger.removeHandler(handler)
+            handler.close()
+
+    original_handlers = list(logger.handlers)
+    original_disabled = logger.disabled
+    original_level = logger.level
+    original_propagate = logger.propagate
+    yield logger
+
+    for handler in list(logger.handlers):
+        if handler not in original_handlers:
+            logger.removeHandler(handler)
+            handler.close()
+    logger.disabled = original_disabled
+    logger.setLevel(original_level)
+    logger.propagate = original_propagate
+
+
+def logging_config(**changes):
+    return replace(config_module.default_config().logging, **changes)
 
 
 def test_module_loads_without_compiled_hypervec_extension():
@@ -332,3 +362,106 @@ def test_unknown_sections_and_options_are_rejected(tmp_path, contents, expected)
     with pytest.raises(config_module.ConfigError) as error:
         config_module.load_config_file(config_path)
     assert expected in str(error.value)
+
+
+def test_configure_logging_can_disable_all_owned_output(hypervec_logger, capsys):
+    config_module.configure_logging(logging_config(enable_logging=False))
+
+    assert hypervec_logger.disabled
+    assert not [
+        handler
+        for handler in hypervec_logger.handlers
+        if getattr(handler, config_module._LOG_HANDLER_MARKER, False)
+    ]
+    logging.getLogger("hypervec.test.disabled").error("disabled message")
+    assert "disabled message" not in capsys.readouterr().err
+
+
+def test_configure_logging_stderr_only_preserves_external_handlers(
+    hypervec_logger, capsys
+):
+    external_stream = io.StringIO()
+    external_handler = logging.StreamHandler(external_stream)
+    hypervec_logger.addHandler(external_handler)
+    root_handlers = list(logging.getLogger().handlers)
+
+    config_module.configure_logging(logging_config(log_level="warning"))
+    test_logger = logging.getLogger("hypervec.test.stderr")
+    test_logger.info("filtered message")
+    test_logger.warning("stderr message")
+
+    captured = capsys.readouterr().err
+    assert "filtered message" not in captured
+    assert "stderr message" in captured
+    assert external_handler in hypervec_logger.handlers
+    assert logging.getLogger().handlers == root_handlers
+
+
+def test_configure_logging_file_only_is_append_and_idempotent(
+    tmp_path, hypervec_logger, capsys
+):
+    log_path = tmp_path / "hypervec.log"
+    log_path.write_text("existing line\n", encoding="utf-8")
+    config = logging_config(
+        log_to_stderr=False,
+        log_to_file=True,
+        log_file_path=str(log_path),
+    )
+
+    config_module.configure_logging(config)
+    logging.getLogger("hypervec.test.file").info("first file message")
+    config_module.configure_logging(config)
+    logging.getLogger("hypervec.test.file").info("second file message")
+
+    contents = log_path.read_text(encoding="utf-8")
+    assert contents.startswith("existing line\n")
+    assert contents.count("first file message") == 1
+    assert contents.count("second file message") == 1
+    assert capsys.readouterr().err == ""
+
+
+def test_configure_logging_can_write_stderr_and_file(
+    tmp_path, hypervec_logger, capsys
+):
+    log_path = tmp_path / "hypervec.log"
+    config_module.configure_logging(
+        logging_config(log_to_file=True, log_file_path=str(log_path))
+    )
+
+    logging.getLogger("hypervec.test.both").error("both outputs")
+
+    assert "both outputs" in capsys.readouterr().err
+    assert "both outputs" in log_path.read_text(encoding="utf-8")
+
+
+def test_configure_logging_reports_file_open_errors(tmp_path, hypervec_logger):
+    log_path = tmp_path / "missing-parent" / "hypervec.log"
+    with pytest.raises(config_module.ConfigError) as error:
+        config_module.configure_logging(
+            logging_config(
+                log_to_stderr=False,
+                log_to_file=True,
+                log_file_path=str(log_path),
+            )
+        )
+
+    assert str(log_path) in str(error.value)
+    assert "unable to open log file" in str(error.value)
+
+
+def test_configure_logging_does_not_modify_an_injected_external_logger(
+    hypervec_logger,
+):
+    injected_logger = logging.getLogger("application.injected-engine")
+    injected_handler = logging.StreamHandler(io.StringIO())
+    injected_logger.addHandler(injected_handler)
+    original_level = injected_logger.level
+    original_disabled = injected_logger.disabled
+    try:
+        config_module.configure_logging(logging_config())
+        assert injected_handler in injected_logger.handlers
+        assert injected_logger.level == original_level
+        assert injected_logger.disabled == original_disabled
+    finally:
+        injected_logger.removeHandler(injected_handler)
+        injected_handler.close()

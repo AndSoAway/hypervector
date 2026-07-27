@@ -596,3 +596,59 @@ def _validate_logging_config(config: LoggingConfig) -> None:
             section="logging",
             key="log_file_path",
         )
+
+
+def configure_logging(config: LoggingConfig) -> None:
+    """Apply handlers owned by HyperVector without modifying the root logger."""
+
+    _validate_logging_config(config)
+    formatter = logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT)
+    new_handlers: list[logging.Handler] = []
+
+    # Build every replacement handler first. A file-open failure must leave the
+    # currently active logger configuration untouched.
+    if config.enable_logging:
+        if config.log_to_stderr:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setFormatter(formatter)
+            setattr(stderr_handler, _LOG_HANDLER_MARKER, True)
+            new_handlers.append(stderr_handler)
+
+        if config.log_to_file:
+            log_path = Path(config.log_file_path or "").expanduser()
+            try:
+                file_handler = logging.FileHandler(
+                    log_path,
+                    mode="a",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                for handler in new_handlers:
+                    handler.close()
+                raise ConfigError(
+                    f"unable to open log file: {exc}",
+                    path=log_path,
+                    section="logging",
+                    key="log_file_path",
+                ) from exc
+            file_handler.setFormatter(formatter)
+            setattr(file_handler, _LOG_HANDLER_MARKER, True)
+            new_handlers.append(file_handler)
+
+    logger = logging.getLogger("hypervec")
+    # Only replace handlers created by this module; embedded callers may own
+    # additional handlers on the same logger namespace.
+    for handler in list(logger.handlers):
+        if getattr(handler, _LOG_HANDLER_MARKER, False):
+            logger.removeHandler(handler)
+            handler.close()
+
+    logger.disabled = not config.enable_logging
+    logger.setLevel(
+        getattr(logging, config.log_level.upper())
+        if config.enable_logging
+        else logging.CRITICAL + 1
+    )
+    logger.propagate = False
+    for handler in new_handlers:
+        logger.addHandler(handler)

@@ -152,40 +152,6 @@ def test_scalar_store_checkpoint_and_vacuum(tmp_path):
     store.checkpoint_and_vacuum()
 
 
-def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
-    module = load_module("hypervec_meta_store")
-    import json
-
-    old_data = {
-        "demo": {
-            "collection_name": "demo",
-            "version": 1,
-            "schema": {"fields": []},
-            "index_params": {"indexes": []},
-            "id_field": "id",
-            "vector_field": "vector",
-            "text_field": "contents",
-            "dim": None,
-            "total": 0,
-            "index_path": "/data/demo/index.hypervec",
-            "index_checksum": None,
-            "index_size_bytes": None,
-            "created_at": 1000.0,
-            "updated_at": 1000.0,
-        }
-    }
-    path = tmp_path / "collections.json"
-    path.write_text(json.dumps(old_data), encoding="utf-8")
-
-    store = module.MetaStore(path)
-    meta = store.get("demo")
-    assert meta.data_state == "ready"
-    assert meta.last_exported_at is None
-    assert meta.last_purged_at is None
-    assert meta.last_known_total is None
-    assert meta.bundle_format is None
-
-
 def test_scalar_store_export_rows_missing_table_returns_empty(tmp_path):
     module = load_module("hypervec_scalar_store")
     store = module.ScalarStore(tmp_path / "scalar.db")
@@ -233,3 +199,43 @@ def test_scalar_store_export_rows_propagates_database_error(tmp_path):
         assert "malformed" in str(exc)
     else:
         raise AssertionError("corrupt database should propagate, not return []")
+
+
+def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
+    module = load_module("hypervec_meta_store")
+    import json
+
+    old_data = {
+        "demo": {
+            "collection_name": "demo",
+            "version": 1,
+            "schema": {"fields": []},
+            "index_params": {"indexes": []},
+            "id_field": "id",
+            "vector_field": "vector",
+            "text_field": "contents",
+            "dim": None,
+            "total": 0,
+            "index_path": "/data/demo/index.hypervec",
+            "index_checksum": None,
+            "index_size_bytes": None,
+            "created_at": 1000.0,
+            "updated_at": 1000.0,
+        }
+    }
+    path = tmp_path / "collections.json"
+    path.write_text(json.dumps(old_data), encoding="utf-8")
+
+    store = module.MetaStore(path)
+    meta = store.get("demo")
+    assert meta.data_state == "ready"
+    assert meta.last_exported_at is None
+    assert meta.last_purged_at is None
+    assert meta.last_known_total is None
+    assert meta.bundle_format is None
+    # Dual-version fields default so old metadata loads as "index never built".
+    assert meta.data_version == 1
+    assert meta.index_version == 0
+    assert meta.exported_data_version is None
+    assert meta.exported_bundle_checksum is None
+    assert meta.import_txn is None

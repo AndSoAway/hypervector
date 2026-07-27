@@ -17,23 +17,35 @@ from typing import Any
 import numpy as np
 
 try:
-    from .hypervec_index_io import index_file_info
+    from .hypervec_index_io import index_file_info, file_sha256
     from .hypervec_meta_store import CollectionMeta, MetaStore
     from .hypervec_scalar_store import ScalarStore
 except ImportError:  # pragma: no cover - supports direct file loading in tests
     sys.path.insert(0, str(Path(__file__).parent))
-    from hypervec_index_io import index_file_info
+    from hypervec_index_io import index_file_info, file_sha256
     from hypervec_meta_store import CollectionMeta, MetaStore
     from hypervec_scalar_store import ScalarStore
 
 
 def _load_bundle_module():
     try:
-        from .hypervec_bundle import create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+        from .hypervec_bundle import (
+            create_bundle,
+            read_bundle,
+            bundle_checksum,
+            schema_checksum,
+            BUNDLE_FORMAT,
+        )
     except ImportError:
         sys.path.insert(0, str(Path(__file__).parent))
-        from hypervec_bundle import create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
-    return create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+        from hypervec_bundle import (
+            create_bundle,
+            read_bundle,
+            bundle_checksum,
+            schema_checksum,
+            BUNDLE_FORMAT,
+        )
+    return create_bundle, read_bundle, bundle_checksum, schema_checksum, BUNDLE_FORMAT
 
 
 class ConflictError(Exception):
@@ -418,6 +430,9 @@ class HypervecServerEngine:
             "last_exported_at": meta.last_exported_at,
             "last_purged_at": meta.last_purged_at,
             "bundle_format": meta.bundle_format,
+            "data_version": meta.data_version,
+            "index_version": meta.index_version,
+            "exported_data_version": meta.exported_data_version,
             "manifest": manifest,
         }
 
@@ -506,7 +521,12 @@ class HypervecServerEngine:
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
             self.scalar_store.insert_batch(collection_name, rows)
             total = self.scalar_store.count(collection_name)
-            self.meta_store.update(collection_name, dim=dim, total=total)
+            self.meta_store.update(
+                collection_name,
+                dim=dim,
+                total=total,
+                data_version=meta.data_version + 1,
+            )
             self._indexes.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
@@ -531,6 +551,7 @@ class HypervecServerEngine:
                 dim=int(vectors.shape[1]),
                 total=int(vectors.shape[0]),
                 flushed_at=time.time(),
+                index_version=meta.data_version,
                 **file_info,
             )
             self._indexes[collection_name] = index
@@ -584,6 +605,12 @@ class HypervecServerEngine:
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
         with self._lock_for(collection_name):
+            meta = self._meta_or_raise(collection_name)
+            if meta.data_state == "invalid":
+                raise ConflictError(
+                    f"collection '{collection_name}' is in 'invalid' state; "
+                    "restore a valid bundle before searching."
+                )
             if collection_name not in self._indexes:
                 self.load_collection(collection_name)
             meta = self._meta_or_raise(collection_name)
@@ -645,6 +672,10 @@ class HypervecServerEngine:
             "last_known_total": meta.last_known_total,
             "last_exported_at": meta.last_exported_at,
             "last_purged_at": meta.last_purged_at,
+            "bundle_format": meta.bundle_format,
+            "data_version": meta.data_version,
+            "index_version": meta.index_version,
+            "exported_data_version": meta.exported_data_version,
         }
 
     def sync_check(
@@ -707,6 +738,7 @@ class HypervecServerEngine:
                 collection_name,
                 max(new_version, meta.version),
                 flushed_at=time.time(),
+                index_version=meta.data_version,
                 **file_info,
             )
             self._indexes[collection_name] = loaded
@@ -733,9 +765,11 @@ class HypervecServerEngine:
         as {collection_dir}/{collection_name}.hypervec-bundle.
         Updates last_exported_at and bundle_format in metadata.
         Raises FileNotFoundError if the collection has no flushed index.
-        Raises ConflictError if data_state == "purged" (nothing to export).
+        Raises ConflictError if data_state == "purged" (nothing to export),
+        if the index is stale (index_version != data_version), or if the
+        index / scalar / metadata row counts and dimensions do not agree.
         """
-        create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
+        create_bundle, _, _, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
@@ -750,25 +784,52 @@ class HypervecServerEngine:
                     f"collection '{collection_name}' index has not been flushed; "
                     "call flush() before exporting a bundle."
                 )
+            # Freshness gate: refuse to export a bundle whose index does not
+            # reflect the current data (e.g. insert-after-flush).  Otherwise
+            # the bundle could ship index.n_total != scalar rows.
+            if meta.index_version != meta.data_version:
+                raise ConflictError(
+                    f"collection '{collection_name}' index is stale "
+                    f"(index_version={meta.index_version} != "
+                    f"data_version={meta.data_version}); call flush() before "
+                    "exporting a bundle."
+                )
+            # Consistency triad: index.n_total == scalar count == meta.total
+            # and index.d == meta.dim, verified against the live index object.
+            index = self._indexes.get(collection_name)
+            if index is None:
+                index = self._read_index(index_path)
+                self._indexes[collection_name] = index
+            scalar_count = self.scalar_store.count(collection_name)
+            index_total = int(index.n_total)
+            if not (index_total == scalar_count == int(meta.total or 0)):
+                raise ConflictError(
+                    f"collection '{collection_name}' is inconsistent: "
+                    f"index.n_total={index_total}, scalar_count={scalar_count}, "
+                    f"meta.total={meta.total}; call flush() to rebuild the index."
+                )
+            if meta.dim is not None and int(index.d) != int(meta.dim):
+                raise ConflictError(
+                    f"collection '{collection_name}' dimension mismatch: "
+                    f"index.d={index.d} != meta.dim={meta.dim}."
+                )
             scalar_rows = self.scalar_store.export_rows(collection_name)
             if output_path is None:
-                output_path = (
-                    self._collection_dir(collection_name)
-                    / f"{collection_name}.hypervec-bundle"
-                )
+                output_path = self._collection_dir(collection_name) / f"{collection_name}.hypervec-bundle"
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             manifest = create_bundle(
                 collection_name, index_path, scalar_rows, meta, output_path
             )
             bundle_size = output_path.stat().st_size
-            import hashlib as _hashlib
-            bundle_cksum = "sha256:" + _hashlib.sha256(output_path.read_bytes()).hexdigest()
+            bundle_cksum = file_sha256(output_path)
             self.meta_store.update(
                 collection_name,
                 last_exported_at=manifest["exported_at"],
                 last_known_total=len(scalar_rows),
                 bundle_format=BUNDLE_FORMAT,
+                exported_data_version=meta.data_version,
+                exported_bundle_checksum=bundle_cksum,
             )
             return {
                 "collection_name": collection_name,
@@ -790,21 +851,24 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         """Restore a collection from a previously exported bundle.
 
-        - Verifies the bundle's collection_name matches the target.
-        - Verifies the optional bundle-level checksum (sha256:...) if provided.
-        - Writes index.hypervec to the collection's index_path.
-        - Restores scalar rows (with replace=True by default).
-        - Updates data_state to "ready".
+        Validates the bundle fully before touching any live state, then writes
+        the new index file and imports scalar rows, then bumps metadata.
+
         Raises FileNotFoundError if the collection metadata does not exist.
         Raises ValueError on format errors or checksum mismatches.
+        Raises ConflictError on collection_name / dim / schema mismatch.
         """
-        _, read_bundle, _, BUNDLE_FORMAT = _load_bundle_module()
+        _, read_bundle, _, schema_checksum, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         source_path = Path(source_path)
 
+        if mode != "replace":
+            raise ValueError(
+                f"unsupported import mode '{mode}'; only 'replace' is supported."
+            )
+
         if checksum:
-            import hashlib as _hashlib
-            actual = "sha256:" + _hashlib.sha256(source_path.read_bytes()).hexdigest()
+            actual = file_sha256(source_path)
             if actual != checksum:
                 raise ValueError(
                     f"bundle checksum mismatch: expected {checksum}, got {actual}"
@@ -828,23 +892,45 @@ class HypervecServerEngine:
                         f"collection dim {meta.dim}."
                     )
 
+            target_schema_cksum = schema_checksum(meta.schema)
+            if manifest.get("schema_checksum") != target_schema_cksum:
+                raise ConflictError(
+                    f"bundle schema is incompatible with collection "
+                    f"'{collection_name}' (schema_checksum mismatch)."
+                )
+            for field, meta_value in (
+                ("id_field", meta.id_field),
+                ("vector_field", meta.vector_field),
+                ("text_field", meta.text_field),
+            ):
+                bundle_value = manifest.get(field)
+                if bundle_value is not None and bundle_value != meta_value:
+                    raise ConflictError(
+                        f"bundle {field} '{bundle_value}' does not match "
+                        f"collection '{collection_name}' {field} '{meta_value}'."
+                    )
+
             index_path = Path(meta.index_path)
             index_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = index_path.with_suffix(index_path.suffix + ".import.tmp")
-            try:
-                tmp.write_bytes(index_bytes)
-                loaded = self._read_index(tmp)
-                tmp.replace(index_path)
-            except Exception:
+            tmp = index_path.with_suffix(index_path.suffix + ".tmp")
+            tmp.write_bytes(index_bytes)
+            loaded = self._read_index(tmp)
+            if manifest.get("dim") is not None and int(loaded.d) != int(manifest["dim"]):
                 tmp.unlink(missing_ok=True)
-                raise
-
-            self.scalar_store.import_rows(
-                collection_name,
-                scalar_rows,
-                replace=(mode == "replace"),
-            )
-
+                raise ConflictError(
+                    f"index dim {loaded.d} does not match manifest dim "
+                    f"{manifest['dim']}."
+                )
+            if not (int(loaded.n_total) == int(manifest["total"]) == len(scalar_rows)):
+                tmp.unlink(missing_ok=True)
+                raise ConflictError(
+                    f"bundle is inconsistent: index.n_total={loaded.n_total}, "
+                    f"manifest.total={manifest['total']}, "
+                    f"scalar_rows={len(scalar_rows)}."
+                )
+            tmp.replace(index_path)
+            self.scalar_store.import_rows(collection_name, scalar_rows, replace=True)
+            new_data_version = meta.data_version + 1
             file_info = index_file_info(index_path)
             updated = self.meta_store.bump_version(
                 collection_name,
@@ -853,6 +939,8 @@ class HypervecServerEngine:
                 flushed_at=time.time(),
                 data_state="ready",
                 last_known_total=len(scalar_rows),
+                data_version=new_data_version,
+                index_version=new_data_version,
                 **file_info,
             )
             self._indexes[collection_name] = loaded
@@ -878,9 +966,11 @@ class HypervecServerEngine:
         This is NOT drop_collection — the collection entry in collections.json
         is preserved so users can re-identify their collections after logout.
 
-        require_exported=True (default): refuse to purge if last_exported_at is
-        not set on the metadata, preventing accidental data loss when the
-        bundle download step was skipped.
+        require_exported=True (default): refuse to purge unless the most recent
+        export covers the current data snapshot (exported_data_version ==
+        data_version).  This prevents data loss when new rows were inserted
+        after the last export, or when the bundle download step was skipped
+        entirely.
 
         Security note: SQLite DROP + VACUUM + secure_delete reduces plain-file
         residue but is not a cryptographic erase.  SSD wear-levelling, OS
@@ -890,22 +980,26 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
-            if require_exported and not meta.last_exported_at:
+            if require_exported and meta.exported_data_version != meta.data_version:
                 raise ConflictError(
-                    f"collection '{collection_name}' has no recorded export; "
-                    "call export_collection_bundle() first, or pass "
-                    "require_exported=False to force purge."
+                    f"collection '{collection_name}' has no export matching the "
+                    f"current data (exported_data_version="
+                    f"{meta.exported_data_version} != data_version="
+                    f"{meta.data_version}); call export_collection_bundle() "
+                    "first, or pass require_exported=False to force purge."
                 )
             last_known_total = self.scalar_store.count(collection_name)
 
             # Evict from memory
             self._indexes.pop(collection_name, None)
 
-            # Delete index file(s)
+            # Delete index file and any stray tmp files.
             index_path = Path(meta.index_path)
             index_path.unlink(missing_ok=True)
-            for leftover in index_path.parent.glob("*.tmp"):
-                leftover.unlink(missing_ok=True)
+            collection_dir = self._collection_dir(collection_name)
+            for leftover in collection_dir.glob("*.tmp"):
+                if leftover.is_file():
+                    leftover.unlink(missing_ok=True)
 
             # Purge scalar table
             self.scalar_store.purge_collection_rows(collection_name)
@@ -917,6 +1011,8 @@ class HypervecServerEngine:
                 data_state="purged",
                 last_purged_at=purged_at,
                 last_known_total=last_known_total,
+                data_version=meta.data_version + 1,
+                index_version=0,
                 # Reset index file info so describe reflects no live index
                 index_checksum=None,
                 index_size_bytes=None,

@@ -36,6 +36,17 @@ class CollectionMeta:
     last_exported_at: float | None = None
     last_purged_at: float | None = None
     bundle_format: str | None = None
+    # Dual version tracking for consistency / export-eligibility guarantees.
+    # data_version increments on every scalar-data mutation (insert / import
+    # commit / purge).  index_version is set equal to data_version whenever the
+    # index is (re)built from that data (flush / upload_index / import commit).
+    # The index is fresh iff index_version == data_version.
+    data_version: int = 1
+    index_version: int = 0               # 0 = never built -> stale until first flush
+    exported_data_version: int | None = None
+    exported_bundle_checksum: str | None = None
+    # Durable commit-intent record for in-flight bundle imports (Phase 3).
+    import_txn: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -63,6 +74,11 @@ class CollectionMeta:
             last_exported_at=data.get("last_exported_at"),
             last_purged_at=data.get("last_purged_at"),
             bundle_format=data.get("bundle_format"),
+            data_version=int(data.get("data_version", 1)),
+            index_version=int(data.get("index_version", 0)),
+            exported_data_version=data.get("exported_data_version"),
+            exported_bundle_checksum=data.get("exported_bundle_checksum"),
+            import_txn=data.get("import_txn"),
         )
 
 

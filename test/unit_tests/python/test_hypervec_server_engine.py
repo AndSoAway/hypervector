@@ -15,6 +15,10 @@ class FakeIndexFlatL2:
     def train(self, x) -> None:
         self.is_trained = True
 
+    @property
+    def n_total(self) -> int:
+        return int(self.vectors.shape[0])
+
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
 
@@ -30,9 +34,11 @@ class FakeHypervec:
     kMetricL2 = 1
     kMetricInnerProduct = 0
 
-    def __init__(self) -> None:
+    def __init__(self, *, write_index_fail: bool = False, delay: float = 0.0) -> None:
         self.saved_index = None
         self.constructor_calls = []
+        self.write_index_fail = write_index_fail
+        self.delay = delay
 
     def IndexFlatL2(self, d: int):
         self.constructor_calls.append(("IndexFlatL2", d))
@@ -67,10 +73,18 @@ class FakeHypervec:
         return FakeIndexFlatL2(d, trained=False)
 
     def write_index(self, index, path: str) -> None:
+        if self.delay:
+            import time as _time
+            _time.sleep(self.delay)
+        if self.write_index_fail:
+            raise RuntimeError("injected write_index failure")
         self.saved_index = index
         Path(path).write_text("fake", encoding="utf-8")
 
     def read_index(self, path: str):
+        if self.delay:
+            import time as _time
+            _time.sleep(self.delay)
         return self.saved_index
 
 
@@ -349,9 +363,86 @@ def test_engine_purge_requires_export_by_default(tmp_path):
         engine.purge_collection_data("col1", require_exported=True)
     except Exception as exc:
         assert type(exc).__name__ == "ConflictError"
-        assert "no recorded export" in str(exc)
+        assert "no export matching the current data" in str(exc)
     else:
         raise AssertionError("should have raised ConflictError")
+
+
+def test_engine_export_bundle_rejects_stale_index(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Insert more rows WITHOUT flushing — index is now stale.
+    engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("stale-index export should raise ConflictError")
+
+    # After re-flush the export succeeds and records the exported data version.
+    engine.flush("col1")
+    result = engine.export_collection_bundle("col1")
+    assert result["bundle_checksum"].startswith("sha256:")
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version == meta.data_version
+    assert meta.exported_bundle_checksum == result["bundle_checksum"]
+
+
+def test_engine_flush_marks_index_fresh(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    meta = engine.meta_store.get("col1")
+    assert meta.index_version == meta.data_version
+
+
+def test_engine_purge_blocked_when_data_changed_after_export(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    # New data lands after the export — the historical export no longer covers
+    # the current snapshot, so purge must be refused.
+    engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "no export matching the current data" in str(exc)
+    else:
+        raise AssertionError("purge after post-export insert should raise ConflictError")
+
+    # Re-export to cover the new data, then purge is allowed.
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    result = engine.purge_collection_data("col1", require_exported=True)
+    assert result["purged"] is True
+
+
+def test_engine_export_rejects_inconsistent_counts(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Force a mismatch between scalar count and meta.total without going stale
+    # (bypass insert()'s version bump by writing to the scalar store directly).
+    engine.scalar_store.insert_batch("col1", [(1, "b", [2.0, 3.0], "yo", {})])
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "inconsistent" in str(exc)
+    else:
+        raise AssertionError("inconsistent counts should raise ConflictError")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
@@ -365,7 +456,11 @@ def test_engine_import_bundle_restores_data(tmp_path):
         ],
     )
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    # Export to an explicit path outside the collection dir — this mirrors the
+    # real flow where the client downloads the bundle off-server before purge,
+    # which wipes the collection directory.
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", bundle_dst)
     engine.purge_collection_data("col1", require_exported=True)
 
     # Verify purged state
@@ -412,7 +507,7 @@ def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    export_result = engine.export_collection_bundle("col1", tmp_path / "b.hypervec-bundle")
 
     engine.purge_collection_data("col1")
     try:
@@ -492,3 +587,44 @@ def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
         assert "purged" in str(exc)
     else:
         raise AssertionError("export_collection_bundle after purge should raise ConflictError")
+
+
+# ---------------------------------------------------------------------------
+# Import validation (mode / schema)
+# ---------------------------------------------------------------------------
+
+
+def test_engine_import_rejects_non_replace_mode(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}, {"id": "b", "vector": [2.0, 3.0], "contents": "world"}])
+    engine.flush("col1")
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    bundle_path = engine.export_collection_bundle("col1", bundle_dst)["path"]
+
+    try:
+        engine.import_collection_bundle("col1", bundle_path, mode="append")
+    except ValueError as exc:
+        assert "mode" in str(exc)
+    else:
+        raise AssertionError("non-replace mode should raise ValueError")
+
+
+def test_engine_import_rejects_incompatible_schema(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}, {"id": "b", "vector": [2.0, 3.0], "contents": "world"}])
+    engine.flush("col1")
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    bundle_path = engine.export_collection_bundle("col1", bundle_dst)["path"]
+    engine.purge_collection_data("col1", require_exported=True)
+    # Mutate the target schema so its checksum no longer matches the bundle.
+    engine.meta_store.update("col1", schema={"fields": [{"name": "different"}]})
+
+    try:
+        engine.import_collection_bundle("col1", bundle_path)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "schema" in str(exc)
+    else:
+        raise AssertionError("incompatible schema should raise ConflictError")

@@ -179,3 +179,14 @@ def read_bundle(
 def bundle_checksum(bundle_path: Path) -> str:
     """Return the SHA-256 checksum of a bundle file on disk."""
     return _sha256_file(bundle_path)
+
+
+def schema_checksum(schema: dict[str, Any] | None) -> str:
+    """Return a deterministic SHA-256 checksum of a collection schema dict.
+
+    Used to verify that a bundle's schema is compatible with the target
+    collection before importing.
+    """
+    return _sha256_bytes(
+        json.dumps(schema or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )

@@ -59,6 +59,8 @@ class ConflictError(Exception):
 
 class HypervecServerEngine:
     INDEX_FILE = "index.hypervec"
+    _IMPORT_STAGING_SUFFIX = ".import.staging"
+    _PRE_IMPORT_SUFFIX = ".pre-import"
 
     _INDEX_EXAMPLES: tuple[dict[str, Any], ...] = (
         {
@@ -210,6 +212,86 @@ class HypervecServerEngine:
         self._indexes: dict[str, Any] = {}
         self._locks: dict[str, threading.RLock] = {}
         self._global_lock = threading.RLock()
+        self._recover_interrupted_imports()
+
+    def _recover_interrupted_imports(self) -> None:
+        """Resolve bundle imports interrupted by a crash/restart.
+
+        For each collection whose metadata is still marked "importing" (or that
+        carries an import_txn record), decide whether the commit switch had
+        completed and roll forward, otherwise roll back to the pre-import state.
+        Idempotent — safe to run on every startup.
+        """
+        for meta in self.meta_store.list_all():
+            if meta.data_state != "importing" and not meta.import_txn:
+                continue
+            name = meta.collection_name
+            txn = meta.import_txn or {}
+            index_path = Path(meta.index_path)
+            staging_index = index_path.with_suffix(
+                index_path.suffix + self._IMPORT_STAGING_SUFFIX
+            )
+            pre_import = index_path.with_suffix(
+                index_path.suffix + self._PRE_IMPORT_SUFFIX
+            )
+            expected_total = txn.get("total")
+            new_data_version = txn.get("new_data_version", meta.data_version + 1)
+
+            switch_done = (
+                not self.scalar_store.has_staging(name)
+                and index_path.exists()
+                and (
+                    expected_total is None
+                    or self.scalar_store.count(name) == int(expected_total)
+                )
+            )
+            if switch_done:
+                # Roll forward: the atomic swaps completed; only the metadata
+                # finalize was lost.
+                file_info = index_file_info(index_path)
+                self.meta_store.bump_version(
+                    name,
+                    dim=txn.get("dim") or meta.dim,
+                    total=int(expected_total) if expected_total is not None else meta.total,
+                    flushed_at=time.time(),
+                    data_state="ready",
+                    last_known_total=int(expected_total) if expected_total is not None else meta.last_known_total,
+                    data_version=new_data_version,
+                    index_version=new_data_version,
+                    import_txn=None,
+                    **file_info,
+                )
+                staging_index.unlink(missing_ok=True)
+                pre_import.unlink(missing_ok=True)
+                self.logger.warning(
+                    "recovered interrupted import for '%s' (rolled forward).", name
+                )
+                continue
+
+            # Roll back: discard staging, restore the pre-import index if we had
+            # renamed it aside.
+            self.scalar_store.rollback_staging(name)
+            staging_index.unlink(missing_ok=True)
+            if pre_import.exists():
+                pre_import.replace(index_path)
+                restored_state = txn.get("prev_state") or "ready"
+                self.meta_store.update(name, data_state=restored_state, import_txn=None)
+                self.logger.warning(
+                    "recovered interrupted import for '%s' (rolled back).", name
+                )
+            elif index_path.exists():
+                restored_state = txn.get("prev_state") or "ready"
+                self.meta_store.update(name, data_state=restored_state, import_txn=None)
+                self.logger.warning(
+                    "recovered interrupted import for '%s' (kept live index).", name
+                )
+            else:
+                # Neither a live nor a pre-import index survived.
+                self.meta_store.update(name, data_state="invalid", import_txn=None)
+                self.logger.error(
+                    "interrupted import for '%s' left no recoverable index; "
+                    "marked invalid.", name
+                )
 
     @staticmethod
     def validate_collection_name(name: str) -> str:
@@ -606,11 +688,6 @@ class HypervecServerEngine:
             raise ValueError("limit must be positive.")
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
-            if meta.data_state == "invalid":
-                raise ConflictError(
-                    f"collection '{collection_name}' is in 'invalid' state; "
-                    "restore a valid bundle before searching."
-                )
             if collection_name not in self._indexes:
                 self.load_collection(collection_name)
             meta = self._meta_or_raise(collection_name)
@@ -778,14 +855,19 @@ class HypervecServerEngine:
                     f"collection '{collection_name}' data has been purged — "
                     "nothing to export."
                 )
+            if meta.data_state in ("importing", "invalid"):
+                raise ConflictError(
+                    f"collection '{collection_name}' is in '{meta.data_state}' "
+                    "state and cannot be exported; restore a valid bundle first."
+                )
             index_path = Path(meta.index_path)
             if not index_path.exists():
                 raise FileNotFoundError(
                     f"collection '{collection_name}' index has not been flushed; "
                     "call flush() before exporting a bundle."
                 )
-            # Freshness gate: refuse to export a bundle whose index does not
-            # reflect the current data (e.g. insert-after-flush).  Otherwise
+            # P0-1 freshness gate: refuse to export a bundle whose index does
+            # not reflect the current data (e.g. insert-after-flush).  Otherwise
             # the bundle could ship index.n_total != scalar rows.
             if meta.index_version != meta.data_version:
                 raise ConflictError(
@@ -794,7 +876,7 @@ class HypervecServerEngine:
                     f"data_version={meta.data_version}); call flush() before "
                     "exporting a bundle."
                 )
-            # Consistency triad: index.n_total == scalar count == meta.total
+            # P0-1 consistency triad: index.n_total == scalar count == meta.total
             # and index.d == meta.dim, verified against the live index object.
             index = self._indexes.get(collection_name)
             if index is None:
@@ -821,6 +903,17 @@ class HypervecServerEngine:
             manifest = create_bundle(
                 collection_name, index_path, scalar_rows, meta, output_path
             )
+            # Defense in depth: the manifest is derived from meta, so confirm
+            # it agrees with the freshly-observed index and scalar counts.
+            if not (
+                int(manifest["total"]) == scalar_count
+                and (meta.dim is None or int(manifest["dim"]) == int(index.d))
+            ):
+                raise ConflictError(
+                    f"collection '{collection_name}' bundle manifest disagrees "
+                    f"with observed state (manifest.total={manifest['total']}, "
+                    f"scalar_count={scalar_count})."
+                )
             bundle_size = output_path.stat().st_size
             bundle_cksum = file_sha256(output_path)
             self.meta_store.update(
@@ -851,17 +944,22 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         """Restore a collection from a previously exported bundle.
 
-        Validates the bundle fully before touching any live state, then writes
-        the new index file and imports scalar rows, then bumps metadata.
+        Transactional restore: the index is written to a staging file and the
+        scalar rows to a staging table, both leaving the live state untouched.
+        Only after everything validates does a commit step atomically swap the
+        index file, scalar table, and metadata into place.  Any failure before
+        the swap leaves the collection exactly as it was; a crash mid-swap is
+        resolved on the next startup by _recover_interrupted_imports().
 
         Raises FileNotFoundError if the collection metadata does not exist.
         Raises ValueError on format errors or checksum mismatches.
-        Raises ConflictError on collection_name / dim / schema mismatch.
+        Raises ConflictError on collection_name / dim mismatch.
         """
         _, read_bundle, _, schema_checksum, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         source_path = Path(source_path)
 
+        # ---- Validate everything BEFORE touching any live state ----
         if mode != "replace":
             raise ValueError(
                 f"unsupported import mode '{mode}'; only 'replace' is supported."
@@ -892,6 +990,9 @@ class HypervecServerEngine:
                         f"collection dim {meta.dim}."
                     )
 
+            # Schema compatibility: the bundle's schema must match the target
+            # collection's, verified via the same deterministic checksum used
+            # when the bundle was created.
             target_schema_cksum = schema_checksum(meta.schema)
             if manifest.get("schema_checksum") != target_schema_cksum:
                 raise ConflictError(
@@ -912,37 +1013,82 @@ class HypervecServerEngine:
 
             index_path = Path(meta.index_path)
             index_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = index_path.with_suffix(index_path.suffix + ".tmp")
-            tmp.write_bytes(index_bytes)
-            loaded = self._read_index(tmp)
+            staging_index = index_path.with_suffix(
+                index_path.suffix + self._IMPORT_STAGING_SUFFIX
+            )
+            pre_import = index_path.with_suffix(
+                index_path.suffix + self._PRE_IMPORT_SUFFIX
+            )
+            new_data_version = meta.data_version + 1
+            prev_state = meta.data_state
+
+            # ---- Stage index into a side file and validate it ----
+            try:
+                staging_index.write_bytes(index_bytes)
+                loaded = self._read_index(staging_index)
+            except Exception:
+                staging_index.unlink(missing_ok=True)
+                raise
             if manifest.get("dim") is not None and int(loaded.d) != int(manifest["dim"]):
-                tmp.unlink(missing_ok=True)
+                staging_index.unlink(missing_ok=True)
                 raise ConflictError(
-                    f"index dim {loaded.d} does not match manifest dim "
+                    f"staged index dim {loaded.d} does not match manifest dim "
                     f"{manifest['dim']}."
                 )
             if not (int(loaded.n_total) == int(manifest["total"]) == len(scalar_rows)):
-                tmp.unlink(missing_ok=True)
+                staging_index.unlink(missing_ok=True)
                 raise ConflictError(
                     f"bundle is inconsistent: index.n_total={loaded.n_total}, "
                     f"manifest.total={manifest['total']}, "
                     f"scalar_rows={len(scalar_rows)}."
                 )
-            tmp.replace(index_path)
-            self.scalar_store.import_rows(collection_name, scalar_rows, replace=True)
-            new_data_version = meta.data_version + 1
-            file_info = index_file_info(index_path)
-            updated = self.meta_store.bump_version(
+
+            # ---- Stage scalar rows into a side table ----
+            try:
+                self.scalar_store.import_rows_to_staging(collection_name, scalar_rows)
+            except Exception:
+                staging_index.unlink(missing_ok=True)
+                self.scalar_store.rollback_staging(collection_name)
+                raise
+
+            # ---- Durable commit-intent marker ----
+            self.meta_store.update(
                 collection_name,
-                dim=manifest.get("dim") or meta.dim,
-                total=len(scalar_rows),
-                flushed_at=time.time(),
-                data_state="ready",
-                last_known_total=len(scalar_rows),
-                data_version=new_data_version,
-                index_version=new_data_version,
-                **file_info,
+                data_state="importing",
+                import_txn={
+                    "stage": "prepared",
+                    "new_data_version": new_data_version,
+                    "prev_state": prev_state,
+                    "total": len(scalar_rows),
+                    "dim": manifest.get("dim") or meta.dim,
+                    "source_checksum": manifest.get("index_checksum"),
+                },
             )
+
+            # ---- Commit switch: index -> scalar -> metadata ----
+            try:
+                if index_path.exists():
+                    index_path.replace(pre_import)
+                staging_index.replace(index_path)
+                self.scalar_store.commit_staging(collection_name)
+                file_info = index_file_info(index_path)
+                updated = self.meta_store.bump_version(
+                    collection_name,
+                    dim=manifest.get("dim") or meta.dim,
+                    total=len(scalar_rows),
+                    flushed_at=time.time(),
+                    data_state="ready",
+                    last_known_total=len(scalar_rows),
+                    data_version=new_data_version,
+                    index_version=new_data_version,
+                    import_txn=None,
+                    **file_info,
+                )
+                pre_import.unlink(missing_ok=True)
+            except Exception:
+                # Mid-switch failure — leave the durable markers in place and
+                # let startup recovery (or an immediate retry) resolve it.
+                raise
             self._indexes[collection_name] = loaded
             return {
                 "uploaded": True,
@@ -993,7 +1139,7 @@ class HypervecServerEngine:
             # Evict from memory
             self._indexes.pop(collection_name, None)
 
-            # Delete index file and any stray tmp files.
+            # Delete index file and server-generated temp files.
             index_path = Path(meta.index_path)
             index_path.unlink(missing_ok=True)
             collection_dir = self._collection_dir(collection_name)

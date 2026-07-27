@@ -590,18 +590,136 @@ def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Import validation (mode / schema)
+# Phase 3: import transaction + crash recovery
+# ---------------------------------------------------------------------------
+
+
+def _make_exported_bundle(tmp_path):
+    """Create a collection and export a bundle to a stable off-collection path.
+
+    Returns (engine, fake, bundle_path).  The bundle is written outside the
+    collection directory so it survives a subsequent purge (as it would in the
+    real flow, where the client downloads it off-server first).
+    """
+    engine, fake = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", bundle_dst)
+    return engine, fake, export_result["path"]
+
+
+def test_engine_import_index_write_failure_leaves_live_state_intact(tmp_path):
+    from pathlib import Path
+
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    # Keep a live copy of data (don't purge) so we can prove it survives.
+    assert engine.scalar_store.count("col1") == 2
+    meta_before = engine.meta_store.get("col1")
+
+    # Arm read_index to fail while validating the staged index.
+    def _boom_read(path):
+        raise RuntimeError("injected read_index failure")
+
+    original = engine._read_index
+    engine._read_index = _boom_read
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on staged-index failure")
+    finally:
+        engine._read_index = original
+
+    # Live scalar rows untouched; no residue; state not left "importing".
+    assert engine.scalar_store.count("col1") == 2
+    assert not engine.scalar_store.has_staging("col1")
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+
+
+def test_engine_import_commit_staging_failure_recoverable(tmp_path):
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+
+    # Fail during the scalar commit switch.
+    def _boom_commit(name):
+        raise RuntimeError("injected commit_staging failure")
+
+    original = engine.scalar_store.commit_staging
+    engine.scalar_store.commit_staging = _boom_commit
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on commit failure")
+    finally:
+        engine.scalar_store.commit_staging = original
+
+    # Metadata is left mid-import; a fresh engine on the same data_root must
+    # recover it (roll back, since the scalar switch never completed).
+    module = load_engine_module()
+    fake2 = FakeHypervec()
+    fake2.saved_index = fake.saved_index
+    engine2 = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake2)
+    meta = engine2.meta_store.get("col1")
+    assert meta.data_state != "importing"
+    assert meta.import_txn is None
+    assert not engine2.scalar_store.has_staging("col1")
+
+
+def test_engine_recover_rolls_forward_completed_switch(tmp_path):
+    """If the switch completed but metadata finalize was lost, roll forward."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+    engine.import_collection_bundle("col1", bundle_path)
+
+    # Simulate a crash right before the metadata finalize by re-marking the
+    # collection "importing" while the live index + scalar rows are in place.
+    meta = engine.meta_store.get("col1")
+    engine.meta_store.update(
+        "col1",
+        data_state="importing",
+        import_txn={
+            "stage": "prepared",
+            "new_data_version": meta.data_version + 1,
+            "prev_state": "purged",
+            "total": 2,
+            "dim": 2,
+        },
+    )
+
+    module = load_engine_module()
+    fake2 = FakeHypervec()
+    fake2.saved_index = fake.saved_index
+    engine2 = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake2)
+    recovered = engine2.meta_store.get("col1")
+    assert recovered.data_state == "ready"
+    assert recovered.import_txn is None
+    assert recovered.index_version == recovered.data_version
+    assert engine2.scalar_store.count("col1") == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: import validation (mode / schema)
 # ---------------------------------------------------------------------------
 
 
 def test_engine_import_rejects_non_replace_mode(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
-    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}, {"id": "b", "vector": [2.0, 3.0], "contents": "world"}])
-    engine.flush("col1")
-    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
-    bundle_path = engine.export_collection_bundle("col1", bundle_dst)["path"]
-
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
     try:
         engine.import_collection_bundle("col1", bundle_path, mode="append")
     except ValueError as exc:
@@ -611,12 +729,7 @@ def test_engine_import_rejects_non_replace_mode(tmp_path):
 
 
 def test_engine_import_rejects_incompatible_schema(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
-    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}, {"id": "b", "vector": [2.0, 3.0], "contents": "world"}])
-    engine.flush("col1")
-    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
-    bundle_path = engine.export_collection_bundle("col1", bundle_dst)["path"]
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
     engine.purge_collection_data("col1", require_exported=True)
     # Mutate the target schema so its checksum no longer matches the bundle.
     engine.meta_store.update("col1", schema={"fields": [{"name": "different"}]})

@@ -201,6 +201,47 @@ def test_scalar_store_export_rows_propagates_database_error(tmp_path):
         raise AssertionError("corrupt database should propagate, not return []")
 
 
+def test_scalar_store_staging_commit_swaps_live_table(tmp_path):
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    store.ensure_table("demo")
+    store.insert_batch("demo", [(0, "old", [1.0], "old", {})])
+
+    # Stage new rows — live table must be untouched until commit.
+    store.import_rows_to_staging(
+        "demo",
+        [
+            {"row_id": 0, "doc_id": "a", "vector": [0.0, 1.0], "text_content": "hello", "metadata": {}},
+            {"row_id": 1, "doc_id": "b", "vector": [2.0, 3.0], "text_content": "world", "metadata": {}},
+        ],
+    )
+    assert store.has_staging("demo") is True
+    assert store.count("demo") == 1  # live still has the old row
+    assert store.get_by_row_ids("demo", [0])[0]["doc_id"] == "old"
+
+    store.commit_staging("demo")
+    assert store.has_staging("demo") is False
+    assert store.count("demo") == 2
+    assert store.get_by_row_ids("demo", [0])[0]["doc_id"] == "a"
+
+
+def test_scalar_store_rollback_staging_keeps_live_table(tmp_path):
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    store.ensure_table("demo")
+    store.insert_batch("demo", [(0, "live", [1.0], "live", {})])
+
+    store.import_rows_to_staging(
+        "demo",
+        [{"row_id": 0, "doc_id": "staged", "vector": [9.0], "text_content": "x", "metadata": {}}],
+    )
+    store.rollback_staging("demo")
+
+    assert store.has_staging("demo") is False
+    assert store.count("demo") == 1
+    assert store.get_by_row_ids("demo", [0])[0]["doc_id"] == "live"
+
+
 def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
     module = load_module("hypervec_meta_store")
     import json

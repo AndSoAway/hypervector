@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 
 class FakeEngine:
@@ -360,3 +361,179 @@ def test_export_sample_cli_reports_existing_target(tmp_path, capsys):
     assert error.value.code == 2
     assert "already exists" in capsys.readouterr().err
     assert output_path.read_text(encoding="utf-8") == "existing"
+
+
+def test_main_starts_uvicorn_using_only_config_file(tmp_path, monkeypatch):
+    module = load_http_module()
+    config_path = tmp_path / "hypervec.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root = data
+host = uvicorn-host
+port = 8443
+server = uvicorn
+certfile = tls/server.crt
+keyfile = tls/server.key
+
+[logging]
+log_level = error
+""",
+        encoding="utf-8",
+    )
+    app = object()
+    app_data_roots = []
+    run_calls = []
+    uvicorn = ModuleType("uvicorn")
+    uvicorn.run = lambda *args, **kwargs: run_calls.append((args, kwargs))
+    monkeypatch.setattr(
+        module,
+        "create_app",
+        lambda *, data_root: app_data_roots.append(data_root) or app,
+    )
+    monkeypatch.setattr(module, "configure_logging", lambda config: None)
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+
+    module.main(["--config", str(config_path)])
+
+    assert app_data_roots == [str((tmp_path / "data").resolve())]
+    assert run_calls[0][1] == {
+        "host": "uvicorn-host",
+        "port": 8443,
+        "log_level": "error",
+        "access_log": True,
+        "ssl_certfile": str((tmp_path / "tls/server.crt").resolve()),
+        "ssl_keyfile": str((tmp_path / "tls/server.key").resolve()),
+    }
+
+
+def test_main_starts_hypercorn_using_only_config_file(tmp_path, monkeypatch):
+    module = load_http_module()
+    config_path = tmp_path / "hypervec.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root = data
+host = hypercorn-host
+port = 9443
+server = hypercorn
+certfile = tls/server.crt
+keyfile = tls/server.key
+
+[logging]
+log_level = critical
+""",
+        encoding="utf-8",
+    )
+    app = object()
+    served = []
+
+    class FakeHypercornConfig:
+        pass
+
+    async def serve(fake_app, fake_config):
+        served.append((fake_app, fake_config))
+
+    hypercorn = ModuleType("hypercorn")
+    hypercorn.__path__ = []
+    hypercorn_asyncio = ModuleType("hypercorn.asyncio")
+    hypercorn_asyncio.serve = serve
+    hypercorn_config = ModuleType("hypercorn.config")
+    hypercorn_config.Config = FakeHypercornConfig
+    monkeypatch.setitem(sys.modules, "hypercorn", hypercorn)
+    monkeypatch.setitem(sys.modules, "hypercorn.asyncio", hypercorn_asyncio)
+    monkeypatch.setitem(sys.modules, "hypercorn.config", hypercorn_config)
+    monkeypatch.setattr(
+        module,
+        "create_app",
+        lambda *, data_root: app_data_roots.append(data_root) or app,
+    )
+    app_data_roots = []
+    monkeypatch.setattr(module, "configure_logging", lambda config: None)
+
+    module.main(["--config", str(config_path)])
+
+    assert app_data_roots == [str((tmp_path / "data").resolve())]
+    assert len(served) == 1
+    fake_app, fake_config = served[0]
+    assert fake_app is app
+    assert fake_config.bind == ["hypercorn-host:9443"]
+    assert fake_config.loglevel == "critical"
+    assert fake_config.alpn_protocols == ["h2", "http/1.1"]
+
+
+def test_run_server_passes_logging_switch_to_uvicorn(tmp_path, monkeypatch):
+    module = load_http_module()
+    config = module.resolve_config(
+        None,
+        {
+            "data_root": str(tmp_path),
+            "server": "uvicorn",
+            "log_level": "error",
+            "enable_logging": False,
+        },
+    )
+    app = object()
+    run_calls = []
+    uvicorn = ModuleType("uvicorn")
+    uvicorn.run = lambda *args, **kwargs: run_calls.append((args, kwargs))
+    monkeypatch.setattr(module, "create_app", lambda **kwargs: app)
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+
+    module.run_server(config)
+
+    assert run_calls == [
+        (
+            (app,),
+            {
+                "host": "127.0.0.1",
+                "port": 8080,
+                "log_level": "error",
+                "access_log": False,
+            },
+        )
+    ]
+
+
+def test_run_server_passes_http2_and_logging_switch_to_hypercorn(
+    tmp_path, monkeypatch
+):
+    module = load_http_module()
+    config = module.resolve_config(
+        None,
+        {
+            "data_root": str(tmp_path),
+            "log_level": "critical",
+            "enable_logging": False,
+            "enable_http2": False,
+        },
+    )
+    app = object()
+    served = []
+
+    class FakeHypercornConfig:
+        accesslog = "unchanged"
+
+    async def serve(fake_app, fake_config):
+        served.append((fake_app, fake_config))
+
+    hypercorn = ModuleType("hypercorn")
+    hypercorn.__path__ = []
+    hypercorn_asyncio = ModuleType("hypercorn.asyncio")
+    hypercorn_asyncio.serve = serve
+    hypercorn_config = ModuleType("hypercorn.config")
+    hypercorn_config.Config = FakeHypercornConfig
+    monkeypatch.setitem(sys.modules, "hypercorn", hypercorn)
+    monkeypatch.setitem(sys.modules, "hypercorn.asyncio", hypercorn_asyncio)
+    monkeypatch.setitem(sys.modules, "hypercorn.config", hypercorn_config)
+    monkeypatch.setattr(module, "create_app", lambda **kwargs: app)
+
+    module.run_server(config)
+
+    assert len(served) == 1
+    fake_app, fake_config = served[0]
+    assert fake_app is app
+    assert fake_config.bind == ["127.0.0.1:8080"]
+    assert fake_config.loglevel == "critical"
+    assert fake_config.alpn_protocols == ["http/1.1"]
+    assert fake_config.accesslog is None

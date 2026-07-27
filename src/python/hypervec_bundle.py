@@ -42,10 +42,31 @@ _MANIFEST = "manifest.json"
 _INDEX = "index.hypervec"
 _SCALAR = "scalar.jsonl"
 
+# v1 manifest fields that must be present for an import to be accepted.
+_REQUIRED_MANIFEST_FIELDS = ("index_checksum", "scalar_checksum", "schema_checksum")
+
+# Zip-bomb guards: a bundle contains exactly three known members.  Reject
+# anything with extra entries, an implausibly large uncompressed payload, or an
+# extreme compression ratio.
+_ALLOWED_MEMBERS = frozenset((_MANIFEST, _INDEX, _SCALAR))
+_MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB total
+_MAX_COMPRESSION_RATIO = 200
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def schema_checksum(schema: dict[str, Any] | None) -> str:
+    """Deterministic SHA-256 of a collection schema.
+
+    Must match the serialization used in create_bundle so import-time schema
+    compatibility checks compare like with like.
+    """
+    return _sha256_bytes(
+        json.dumps(schema or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
 
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -86,9 +107,7 @@ def create_bundle(
     scalar_bytes = ("\n".join(scalar_lines) + "\n").encode("utf-8") if scalar_lines else b""
     scalar_checksum = _sha256_bytes(scalar_bytes)
 
-    schema_checksum = _sha256_bytes(
-        json.dumps(meta.schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    )
+    schema_cksum = schema_checksum(meta.schema)
 
     manifest: dict[str, Any] = {
         "format": BUNDLE_FORMAT,
@@ -102,7 +121,7 @@ def create_bundle(
         "index_checksum": index_checksum,
         "index_size_bytes": index_size_bytes,
         "scalar_checksum": scalar_checksum,
-        "schema_checksum": schema_checksum,
+        "schema_checksum": schema_cksum,
         "exported_at": time.time(),
     }
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -134,7 +153,32 @@ def read_bundle(
 
     try:
         with zipfile.ZipFile(bundle_path, "r") as zf:
-            names = zf.namelist()
+            infos = zf.infolist()
+            names = [i.filename for i in infos]
+            # Zip-bomb / tampering guard: only the three known members are
+            # allowed, and the total uncompressed size and per-entry compression
+            # ratio must stay within sane bounds.  We never extractall().
+            extra = set(names) - _ALLOWED_MEMBERS
+            if extra:
+                raise ValueError(
+                    f"bundle contains unexpected entries {sorted(extra)}: {bundle_path}"
+                )
+            total_uncompressed = 0
+            for info in infos:
+                total_uncompressed += info.file_size
+                if info.compress_size > 0:
+                    ratio = info.file_size / info.compress_size
+                    if ratio > _MAX_COMPRESSION_RATIO:
+                        raise ValueError(
+                            f"bundle entry '{info.filename}' has suspicious "
+                            f"compression ratio {ratio:.0f} (limit "
+                            f"{_MAX_COMPRESSION_RATIO}): {bundle_path}"
+                        )
+            if total_uncompressed > _MAX_UNCOMPRESSED_BYTES:
+                raise ValueError(
+                    f"bundle uncompressed size {total_uncompressed} exceeds limit "
+                    f"{_MAX_UNCOMPRESSED_BYTES}: {bundle_path}"
+                )
             for required in (_MANIFEST, _INDEX, _SCALAR):
                 if required not in names:
                     raise ValueError(
@@ -152,16 +196,24 @@ def read_bundle(
             f"expected '{BUNDLE_FORMAT}'"
         )
 
+    # v1 bundles must carry all integrity checksums — reject partial manifests
+    # rather than silently skipping verification.
+    missing = [f for f in _REQUIRED_MANIFEST_FIELDS if not manifest.get(f)]
+    if missing:
+        raise ValueError(
+            f"bundle manifest is missing required v1 field(s) {missing}: {bundle_path}"
+        )
+
     # Verify checksums
     actual_index_checksum = _sha256_bytes(index_bytes)
-    if manifest.get("index_checksum") and manifest["index_checksum"] != actual_index_checksum:
+    if manifest["index_checksum"] != actual_index_checksum:
         raise ValueError(
             f"index checksum mismatch: manifest={manifest['index_checksum']} "
             f"actual={actual_index_checksum}"
         )
 
     actual_scalar_checksum = _sha256_bytes(scalar_bytes)
-    if manifest.get("scalar_checksum") and manifest["scalar_checksum"] != actual_scalar_checksum:
+    if manifest["scalar_checksum"] != actual_scalar_checksum:
         raise ValueError(
             f"scalar checksum mismatch: manifest={manifest['scalar_checksum']} "
             f"actual={actual_scalar_checksum}"
@@ -173,20 +225,23 @@ def read_bundle(
         if line:
             scalar_rows.append(json.loads(line))
 
+    # Row-id continuity / uniqueness and count agreement.
+    if manifest.get("total") is not None and int(manifest["total"]) != len(scalar_rows):
+        raise ValueError(
+            f"bundle manifest.total {manifest['total']} does not match "
+            f"{len(scalar_rows)} scalar rows."
+        )
+    row_ids = [int(r["row_id"]) for r in scalar_rows]
+    if len(set(row_ids)) != len(row_ids):
+        raise ValueError("bundle scalar rows contain duplicate row_id values.")
+    if row_ids and sorted(row_ids) != list(range(len(row_ids))):
+        raise ValueError(
+            "bundle scalar rows are not contiguous from 0; row_id sequence is invalid."
+        )
+
     return manifest, index_bytes, scalar_rows
 
 
 def bundle_checksum(bundle_path: Path) -> str:
     """Return the SHA-256 checksum of a bundle file on disk."""
     return _sha256_file(bundle_path)
-
-
-def schema_checksum(schema: dict[str, Any] | None) -> str:
-    """Return a deterministic SHA-256 checksum of a collection schema dict.
-
-    Used to verify that a bundle's schema is compatible with the target
-    collection before importing.
-    """
-    return _sha256_bytes(
-        json.dumps(schema or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    )

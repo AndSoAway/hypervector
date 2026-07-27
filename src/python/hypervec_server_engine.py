@@ -33,6 +33,7 @@ def _load_bundle_module():
             create_bundle,
             read_bundle,
             bundle_checksum,
+            schema_checksum,
             BUNDLE_FORMAT,
         )
     except ImportError:
@@ -41,9 +42,10 @@ def _load_bundle_module():
             create_bundle,
             read_bundle,
             bundle_checksum,
+            schema_checksum,
             BUNDLE_FORMAT,
         )
-    return create_bundle, read_bundle, bundle_checksum, BUNDLE_FORMAT
+    return create_bundle, read_bundle, bundle_checksum, schema_checksum, BUNDLE_FORMAT
 
 
 class ConflictError(Exception):
@@ -686,6 +688,11 @@ class HypervecServerEngine:
             raise ValueError("limit must be positive.")
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
+            if meta.data_state == "invalid":
+                raise ConflictError(
+                    f"collection '{collection_name}' is in 'invalid' state; "
+                    "restore a valid bundle before searching."
+                )
             if collection_name not in self._indexes:
                 self.load_collection(collection_name)
             meta = self._meta_or_raise(collection_name)
@@ -844,7 +851,7 @@ class HypervecServerEngine:
         if the index is stale (index_version != data_version), or if the
         index / scalar / metadata row counts and dimensions do not agree.
         """
-        create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
+        create_bundle, _, _, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
@@ -852,6 +859,11 @@ class HypervecServerEngine:
                 raise ConflictError(
                     f"collection '{collection_name}' data has been purged — "
                     "nothing to export."
+                )
+            if meta.data_state in ("importing", "invalid"):
+                raise ConflictError(
+                    f"collection '{collection_name}' is in '{meta.data_state}' "
+                    "state and cannot be exported; restore a valid bundle first."
                 )
             index_path = Path(meta.index_path)
             if not index_path.exists():
@@ -963,11 +975,16 @@ class HypervecServerEngine:
         Raises ValueError on format errors or checksum mismatches.
         Raises ConflictError on collection_name / dim mismatch.
         """
-        _, read_bundle, _, BUNDLE_FORMAT = _load_bundle_module()
+        _, read_bundle, _, schema_checksum, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
         source_path = Path(source_path)
 
         # ---- Validate everything BEFORE touching any live state ----
+        if mode != "replace":
+            raise ValueError(
+                f"unsupported import mode '{mode}'; only 'replace' is supported."
+            )
+
         if checksum:
             actual = file_sha256(source_path)
             if actual != checksum:
@@ -991,6 +1008,27 @@ class HypervecServerEngine:
                     raise ConflictError(
                         f"bundle dim {manifest['dim']} does not match "
                         f"collection dim {meta.dim}."
+                    )
+
+            # Schema compatibility: the bundle's schema must match the target
+            # collection's, verified via the same deterministic checksum used
+            # when the bundle was created.
+            target_schema_cksum = schema_checksum(meta.schema)
+            if manifest.get("schema_checksum") != target_schema_cksum:
+                raise ConflictError(
+                    f"bundle schema is incompatible with collection "
+                    f"'{collection_name}' (schema_checksum mismatch)."
+                )
+            for field, meta_value in (
+                ("id_field", meta.id_field),
+                ("vector_field", meta.vector_field),
+                ("text_field", meta.text_field),
+            ):
+                bundle_value = manifest.get(field)
+                if bundle_value is not None and bundle_value != meta_value:
+                    raise ConflictError(
+                        f"bundle {field} '{bundle_value}' does not match "
+                        f"collection '{collection_name}' {field} '{meta_value}'."
                     )
 
             index_path = Path(meta.index_path)

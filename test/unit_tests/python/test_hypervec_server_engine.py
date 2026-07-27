@@ -779,3 +779,33 @@ def test_engine_export_failure_leaves_no_residue(tmp_path):
     export_tmp = coll_dir / ".export.tmp"
     if export_tmp.exists():
         assert not list(export_tmp.glob("*.hypervec-bundle"))
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: import validation (mode / schema)
+# ---------------------------------------------------------------------------
+
+
+def test_engine_import_rejects_non_replace_mode(tmp_path):
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
+    try:
+        engine.import_collection_bundle("col1", bundle_path, mode="append")
+    except ValueError as exc:
+        assert "mode" in str(exc)
+    else:
+        raise AssertionError("non-replace mode should raise ValueError")
+
+
+def test_engine_import_rejects_incompatible_schema(tmp_path):
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+    # Mutate the target schema so its checksum no longer matches the bundle.
+    engine.meta_store.update("col1", schema={"fields": [{"name": "different"}]})
+
+    try:
+        engine.import_collection_bundle("col1", bundle_path)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "schema" in str(exc)
+    else:
+        raise AssertionError("incompatible schema should raise ConflictError")

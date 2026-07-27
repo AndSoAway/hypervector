@@ -195,3 +195,168 @@ def test_config_cli_only_exposes_explicit_business_overrides():
         "log_to_file": True,
         "log_file_path": "hypervec.log",
     }
+
+
+def test_main_keeps_legacy_cli_only_startup_compatible(tmp_path, monkeypatch):
+    module = load_http_module()
+    started = []
+    configured_logging = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "run_server", started.append)
+    monkeypatch.setattr(module, "configure_logging", configured_logging.append)
+
+    module.main(
+        [
+            "--data-root",
+            "data",
+            "--host",
+            "legacy-host",
+            "--port",
+            "9090",
+            "--server",
+            "uvicorn",
+            "--log-level",
+            "warning",
+            "--certfile",
+            "server.crt",
+            "--keyfile",
+            "server.key",
+        ]
+    )
+
+    assert len(started) == 1
+    config = started[0]
+    assert config.server.data_root == str((tmp_path / "data").resolve())
+    assert config.server.host == "legacy-host"
+    assert config.server.port == 9090
+    assert config.server.server == "uvicorn"
+    assert config.server.enable_http2 is True
+    assert config.defaults.default_index_type == "hnswflat"
+    assert config.defaults.default_metric_type == "l2"
+    assert config.server.certfile == str((tmp_path / "server.crt").resolve())
+    assert config.server.keyfile == str((tmp_path / "server.key").resolve())
+    assert config.logging.log_level == "warning"
+    assert configured_logging == [config.logging]
+
+
+def test_main_merges_config_file_and_cli_before_starting(tmp_path, monkeypatch):
+    module = load_http_module()
+    config_path = tmp_path / "hypervec.ini"
+    config_path.write_text(
+        """\
+[server]
+data_root = data
+host = config-host
+port = 8081
+server = hypercorn
+enable_http2 = false
+
+[defaults]
+default_index_type = hnswlvq
+default_metric_type = l2
+
+[logging]
+log_level = info
+""",
+        encoding="utf-8",
+    )
+    captured = []
+    configured_logging = []
+    monkeypatch.setattr(module, "run_server", captured.append)
+    monkeypatch.setattr(module, "configure_logging", configured_logging.append)
+
+    module.main(
+        [
+            "--config",
+            str(config_path),
+            "--host",
+            "cli-host",
+            "--port",
+            "9090",
+            "--server",
+            "uvicorn",
+            "--enable-http2",
+            "--default-index-type",
+            "flat",
+            "--default-metric-type",
+            "ip",
+            "--log-level",
+            "error",
+        ]
+    )
+
+    assert len(captured) == 1
+    config = captured[0]
+    assert config.server.data_root == str((tmp_path / "data").resolve())
+    assert config.server.host == "cli-host"
+    assert config.server.port == 9090
+    assert config.server.server == "uvicorn"
+    assert config.server.enable_http2 is True
+    assert config.defaults.default_index_type == "flat"
+    assert config.defaults.default_metric_type == "ip"
+    assert config.logging.log_level == "error"
+    assert configured_logging == [config.logging]
+
+
+def test_main_reports_configuration_errors_with_argparse_exit(
+    tmp_path, monkeypatch, capsys
+):
+    import pytest
+
+    module = load_http_module()
+    monkeypatch.setattr(
+        module,
+        "run_server",
+        lambda config: (_ for _ in ()).throw(AssertionError("server started")),
+    )
+
+    cases = [
+        ([], "[server].data_root"),
+        (
+            ["--data-root", str(tmp_path / "data"), "--certfile", "server.crt"],
+            "configured together",
+        ),
+        (
+            ["--config", str(tmp_path / "missing.ini")],
+            "configuration file does not exist",
+        ),
+    ]
+    for argv, expected in cases:
+        with pytest.raises(SystemExit) as error:
+            module.main(argv)
+        assert error.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "usage:" in stderr
+        assert expected in stderr
+        assert "Traceback" not in stderr
+
+
+def test_export_sample_cli_does_not_start_server(tmp_path, monkeypatch):
+    module = load_http_module()
+    output_path = tmp_path / "hypervec.ini"
+
+    def fail_if_started(config):
+        raise AssertionError(f"server unexpectedly started with {config!r}")
+
+    monkeypatch.setattr(module, "run_server", fail_if_started)
+    module.main(["--export-sample-config", str(output_path)])
+
+    golden_path = Path(__file__).parents[3] / "configs" / "hypervec.ini.sample"
+    assert output_path.read_text(encoding="utf-8") == golden_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_export_sample_cli_reports_existing_target(tmp_path, capsys):
+    import pytest
+
+    module = load_http_module()
+    output_path = tmp_path / "hypervec.ini"
+    output_path.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as error:
+        module.main(["--export-sample-config", str(output_path)])
+
+    assert error.value.code == 2
+    assert "already exists" in capsys.readouterr().err
+    assert output_path.read_text(encoding="utf-8") == "existing"

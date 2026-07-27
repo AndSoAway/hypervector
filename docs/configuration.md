@@ -674,3 +674,121 @@ sample 导出分支位于 `data_root` 必填校验之前。
 - Uvicorn 当前只支持 HTTP/1.1，因此该字段不会改变 Uvicorn 启动参数。
 - Hypercorn 自身仍可能处理明文 h2c 升级；首期配置项只承诺控制启动时的 HTTP/2 协议声明，不实现自定义 ASGI 协议栈。
 - `defaults.default_index_type` 和 `defaults.default_metric_type` 是后续 collection 默认策略的统一入口；本期只加载、校验和暴露，不改变请求级显式参数及当前 engine 默认逻辑。
+
+## 12. 日志应用设计
+
+### 12.1 HyperVector Python 日志
+
+`configure_logging()` 配置 `hypervec` logger namespace，而不清空宿主程序的 root logger：
+
+- engine 默认 logger `hypervec.server` 作为子 logger 生效。
+- loader logger `hypervec.loader` 作为子 logger 对配置完成后的日志生效。
+- 配置函数只清理自己创建并标记的 handler，重复调用不重复输出。
+- 调用方显式传给 `HypervecServerEngine` 的自定义 logger 不由该函数替换、清理或重新配置。
+- `enable_logging=false` 时禁用该 logger namespace 并不创建 handler。
+- `log_to_stderr=true` 创建 `StreamHandler(sys.stderr)`。
+- `log_to_file=true` 创建 UTF-8、append 模式 `FileHandler`。
+- formatter 使用稳定的时间、level、logger name 和 message 格式，不引入 JSON logging。
+
+`python -m hypervec.hypervec_http_server` 会先执行 `hypervec.__init__`，而当前 `__init__.py` 会立即导入 `loader`。因此 loader 在 CLI 解析前产生的导入期日志无法被本期 `LoggingConfig` 追溯控制；调整 package loader 时机不在本期范围。
+
+### 12.2 ASGI server 日志边界
+
+- `logging.log_level` 继续传给 Uvicorn `log_level` 和 Hypercorn `loglevel`。
+- `enable_logging=false` 时，`run_server()` 在对应 ASGI API 支持的范围内关闭 access log。
+- `log_to_stderr/log_to_file` 首期只承诺控制 HyperVector Python logger handler。Uvicorn/Hypercorn 可能安装自己的 error/access handler，首期不承诺将所有 ASGI 内部日志重定向到 `log_file_path`。
+- C++ `verbose` 直接 stderr 输出不受 `LoggingConfig` 控制。
+
+这一边界使 `LoggingConfig` 可供后续专用日志模块直接消费，同时不在当前任务中重构 ASGI 日志系统。
+
+## 13. Sample 生成设计
+
+`render_sample_config()` 保证：
+
+- 按 `CONFIG_OPTIONS` 声明顺序输出。
+- 固定使用 LF 换行并以单个换行结尾。
+- 每项输出描述、默认值和 choices/范围注释。
+- bool 统一输出 `true/false`。
+- `None` 输出为空值。
+- 不读取当前环境、CLI 或用户文件，保证输出可重复。
+
+`configs/hypervec.ini.sample` 作为 golden file，单元测试断言其内容与 `render_sample_config()` 完全一致。
+
+## 14. 可测试性设计
+
+### 14.1 配置核心
+
+`hypervec_config.py` 可独立测试：
+
+- 默认对象。
+- 文件存在/不存在、空文件和非法 INI。
+- 未知/重复 section/key。
+- bool/int/string/path 解析。
+- 单项和交叉校验。
+- 默认 < 文件 < CLI 覆盖。
+- sample render/export。
+- logging handler 组合和文件打开错误。
+
+### 14.2 HTTP 启动链路
+
+单元测试不绑定真实端口：
+
+- Uvicorn 路径 monkeypatch `uvicorn.run()`，断言 app/host/port/log level/TLS/access log 参数。
+- Hypercorn 路径使用 fake `Config` 和 `serve()`，断言 bind/loglevel/TLS/ALPN。
+- `main(argv)` 直接传入测试参数，不修改进程 `sys.argv`。
+- `--export-sample-config` 测试断言不调用 `run_server()`。
+- 保留已有 `create_app(data_root=..., engine=...)` route 测试。
+
+## 15. 兼容性
+
+### 15.1 必须保持
+
+- 原有 `python -m hypervec.hypervec_http_server --data-root ...` 命令继续可用。
+- 现有 7 个 CLI 参数名保持。
+- host/port/server/log level/TLS 对 Uvicorn/Hypercorn 的传递保持。
+- `create_app()` 公开签名保持。
+- `scripts/build_arm_pyhypervec_server.sh` 当前转发的 CLI 命令无需修改即可继续工作。
+
+### 15.2 有意变更
+
+- `--data-root` 从 parser 阶段必填改为合并后必填，以允许由 INI 提供。
+- CLI 业务默认值从 `argparse` 移到 `CONFIG_OPTIONS`，但在无配置文件且 CLI 未覆盖时，最终有效值不变。
+- Python 日志从固定 `logging.INFO` 改为 `LoggingConfig`，默认仍为 info + stderr。
+
+## 16. 设计风险与控制
+
+| 风险 | 控制方式 |
+|---|---|
+| CLI parser 默认值意外覆盖 INI | 业务参数全部使用 `argparse.SUPPRESS` |
+| 默认值多处漂移 | `CONFIG_OPTIONS` 唯一持有值，dataclass/sample/help 从表生成 |
+| 未知 key 被忽略 | strict parser + section/key allowlist |
+| 文件中的相对路径随工作目录变化 | 相对于配置文件目录解析 |
+| 日志重复 handler | 只管理带内部标记的 handler，重复初始化先替换自己的 handler |
+| 配置核心被 ASGI/SWIG 依赖绑定 | 纯标准库模块，ASGI 在 server 入口延迟导入 |
+| 一次引入过多参数 | 仅增加 Server/Logging 和两个只读预留默认值，SIMD、请求、客户端和算法保持现状 |
+| sample 与代码不一致 | metadata render + golden test |
+
+## 17. 设计评审结论
+
+| 评审项 | 结论 | 设计保证 |
+|---|---|---|
+| 默认值是否只维护一处 | 通过 | `CONFIG_OPTIONS.default` 为唯一默认值来源 |
+| 未显式 CLI 是否会覆盖文件 | 不会 | `argparse.SUPPRESS` + 只提取存在的 destination |
+| 能否不绑定真实端口测试 | 可以 | `run_server()` 职责拆分，monkeypatch Uvicorn/Hypercorn |
+| 配置核心是否依赖 Web/SWIG | 不依赖 | `hypervec_config.py` 只使用标准库 |
+| 日志作用边界是否明确 | 明确 | 管理配置完成后的 HyperVector Python logger，ASGI 同步 level/access 开关，不承诺 loader 导入期或 ASGI 内部 handler |
+| 配置格式、类型、校验和错误是否可实施 | 可实施 | 本文档已定义具体表和 API |
+
+## 18. 验收标准
+
+实现完成后，维护者应能仅依据本文档回答：
+
+- 为什么使用 INI，为什么不使用 JSON。
+- 本期哪些参数进入配置模块，哪些明确不进入。
+- 配置对象、元数据表和默认值如何组织。
+- 文件和 CLI 如何合并，为什么未传 CLI 不会覆盖文件。
+- 文件级、单项和交叉字段错误分别在哪一层检查。
+- 配置错误如何定位并如何向 CLI 用户呈现。
+- sample 如何从元数据生成并防止漂移。
+- 日志配置能控制什么，哪些 ASGI/C++ 日志不在首期承诺内。
+- 新模块如何进入 CMake 和 Python package 组装流程。

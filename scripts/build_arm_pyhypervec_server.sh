@@ -158,12 +158,14 @@ print("has IndexHNSWFlat:", hasattr(hypervec, "IndexHNSWFlat"))
 import hypervec.hypervec_index_io as index_io
 import hypervec.hypervec_meta_store as meta_store
 import hypervec.hypervec_scalar_store as scalar_store
+import hypervec.hypervec_config as config
 import hypervec.hypervec_http_server as server
 import hypercorn
 import h2
 print("index io module:", index_io.__file__)
 print("meta store module:", meta_store.__file__)
 print("scalar store module:", scalar_store.__file__)
+print("config module:", config.__file__)
 print("server module:", server.__file__)
 print("hypercorn:", hypercorn.__file__)
 print("h2:", h2.__file__)

@@ -19,11 +19,13 @@ import numpy as np
 try:
     from .hypervec_index_io import index_file_info
     from .hypervec_meta_store import CollectionMeta, MetaStore
+    from .rwlock import RWLock
     from .hypervec_scalar_store import ScalarStore
 except ImportError:  # pragma: no cover - supports direct file loading in tests
     sys.path.insert(0, str(Path(__file__).parent))
     from hypervec_index_io import index_file_info
     from hypervec_meta_store import CollectionMeta, MetaStore
+    from rwlock import RWLock
     from hypervec_scalar_store import ScalarStore
 
 
@@ -196,7 +198,7 @@ class HypervecServerEngine:
         self.meta_store = meta_store or MetaStore(self.data_root / "collections.json")
         self.scalar_store = scalar_store or ScalarStore(self.data_root / "scalar.db")
         self._indexes: dict[str, Any] = {}
-        self._locks: dict[str, threading.RLock] = {}
+        self._locks: dict[str, RWLock] = {}
         self._global_lock = threading.RLock()
 
     @staticmethod
@@ -213,9 +215,9 @@ class HypervecServerEngine:
             )
         return name
 
-    def _lock_for(self, collection_name: str) -> threading.RLock:
+    def _lock_for(self, collection_name: str) -> RWLock:
         with self._global_lock:
-            return self._locks.setdefault(collection_name, threading.RLock())
+            return self._locks.setdefault(collection_name, RWLock())
 
     def _collection_dir(self, collection_name: str) -> Path:
         return self.collections_root / self.validate_collection_name(collection_name)
@@ -436,7 +438,7 @@ class HypervecServerEngine:
         index_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             if self.meta_store.get(collection_name) is not None:
                 raise FileExistsError(f"collection '{collection_name}' already exists.")
             self._collection_dir(collection_name).mkdir(parents=True, exist_ok=True)
@@ -455,7 +457,7 @@ class HypervecServerEngine:
 
     def drop_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             existed = self.meta_store.delete(collection_name)
             self._indexes.pop(collection_name, None)
             self.scalar_store.drop_table(collection_name)
@@ -479,7 +481,7 @@ class HypervecServerEngine:
 
     def insert(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             self.scalar_store.ensure_table(collection_name)
             dim = meta.dim
@@ -512,7 +514,7 @@ class HypervecServerEngine:
 
     def flush(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if meta.dim is None:
                 raise ValueError(f"collection '{collection_name}' has no rows.")
@@ -546,25 +548,34 @@ class HypervecServerEngine:
 
     def load_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             index_path = Path(meta.index_path)
             if not index_path.exists():
                 raise FileNotFoundError(
                     f"collection '{collection_name}' index has not been flushed."
                 )
-            self._indexes[collection_name] = self._read_index(index_path)
-            return {
-                "loaded": True,
-                "collection_name": collection_name,
-                "total": meta.total,
-                "dim": meta.dim,
-                "version": meta.version,
-            }
+            return self._load_collection_unlocked(collection_name, meta=meta)
+
+    def _load_collection_unlocked(
+        self,
+        collection_name: str,
+        *,
+        meta: CollectionMeta | None = None,
+    ) -> dict[str, Any]:
+        meta = meta or self._meta_or_raise(collection_name)
+        self._indexes[collection_name] = self._read_index(Path(meta.index_path))
+        return {
+            "loaded": True,
+            "collection_name": collection_name,
+            "total": meta.total,
+            "dim": meta.dim,
+            "version": meta.version,
+        }
 
     def close_collection(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             self._indexes.pop(collection_name, None)
             return {"closed": True, "collection_name": collection_name}
 
@@ -583,9 +594,19 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
-        with self._lock_for(collection_name):
-            if collection_name not in self._indexes:
-                self.load_collection(collection_name)
+        lock = self._lock_for(collection_name)
+        if collection_name not in self._indexes:
+            with lock.write_lock():
+                if collection_name not in self._indexes:
+                    meta = self._meta_or_raise(collection_name)
+                    index_path = Path(meta.index_path)
+                    if not index_path.exists():
+                        raise FileNotFoundError(
+                            f"collection '{collection_name}' index has not been flushed."
+                        )
+                    self._load_collection_unlocked(collection_name, meta=meta)
+
+        with lock.read_lock():
             meta = self._meta_or_raise(collection_name)
             if meta.dim is None:
                 raise ValueError(f"collection '{collection_name}' has no vector dimension.")
@@ -596,15 +617,23 @@ class HypervecServerEngine:
                 raise ValueError(f"query dim {query.shape[1]} != collection dim {meta.dim}.")
 
             index = self._indexes[collection_name]
-            candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
+            if filter:
+                candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
+            else:
+                candidate_k = min(meta.total, int(limit))
             distances, labels = self._search_index(index, query, candidate_k, search_params)
             requested = set(output_fields or [])
             results: list[list[dict[str, Any]]] = []
             for q_labels, q_distances in zip(labels, distances):
-                row_ids = [int(label) for label in q_labels if int(label) >= 0]
+                pairs = [
+                    (int(label), float(distance))
+                    for label, distance in zip(q_labels, q_distances)
+                    if int(label) >= 0
+                ]
+                row_ids = [row_id for row_id, _ in pairs]
                 scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
                 hits = []
-                for rank, (row_id, scalar) in enumerate(zip(row_ids, scalars)):
+                for (row_id, distance), scalar in zip(pairs, scalars):
                     if scalar is None:
                         continue
                     row = {
@@ -618,11 +647,10 @@ class HypervecServerEngine:
                         entity = {key: value for key, value in row.items() if key in requested}
                     else:
                         entity = dict(row)
-                    distance_index = list(q_labels).index(row_id)
                     hits.append(
                         {
                             "id": row.get(meta.id_field, row_id),
-                            "distance": float(q_distances[distance_index]),
+                            "distance": distance,
                             "entity": entity,
                         }
                     )
@@ -683,7 +711,7 @@ class HypervecServerEngine:
         checksum: str | None = None,
     ) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if version is not None and int(version) < int(meta.version):
                 raise ValueError(
@@ -737,7 +765,7 @@ class HypervecServerEngine:
         """
         create_bundle, _, _, BUNDLE_FORMAT = _load_bundle_module()
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if meta.data_state == "purged":
                 raise ConflictError(
@@ -818,7 +846,7 @@ class HypervecServerEngine:
                 f"does not match target '{collection_name}'."
             )
 
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
 
             if meta.dim is not None and manifest.get("dim") is not None:
@@ -888,7 +916,7 @@ class HypervecServerEngine:
         block level.
         """
         collection_name = self.validate_collection_name(collection_name)
-        with self._lock_for(collection_name):
+        with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             if require_exported and not meta.last_exported_at:
                 raise ConflictError(

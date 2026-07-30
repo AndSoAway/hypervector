@@ -64,7 +64,9 @@ void index_train(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  Py_BEGIN_ALLOW_THREADS
   index->Train(n, data);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
@@ -74,7 +76,9 @@ void index_add(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  Py_BEGIN_ALLOW_THREADS
   index->Add(n, data);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 }
 
@@ -93,7 +97,9 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
+  Py_BEGIN_ALLOW_THREADS
   index->Search(n, data, k, distances.data(), labels.data(), params);
+  Py_END_ALLOW_THREADS
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);

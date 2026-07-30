@@ -604,6 +604,7 @@ class HypervecServerEngine:
                         raise FileNotFoundError(
                             f"collection '{collection_name}' index has not been flushed."
                         )
+                    # side-effect: loads index into _indexes for subsequent searches.
                     self._load_collection_unlocked(collection_name, meta=meta)
 
         with lock.read_lock():

@@ -90,6 +90,7 @@ static void read_lvq(LocalVectorQuantizer& lvq, IOReader* f) {
   lvq.SetDerivedValues();
   READVECTOR(lvq.local_centroids);
   READVECTOR(lvq.residual_codebooks);
+  lvq.BuildDecodedCodebooks();
   lvq.is_trained = true;
 }
 

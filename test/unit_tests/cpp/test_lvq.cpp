@@ -69,6 +69,8 @@ TEST(LocalVectorQuantizer, TrainEncodeDecodeSmoke) {
   lvq.Train(n, x.data());
   EXPECT_TRUE(lvq.is_trained);
   EXPECT_GT(lvq.code_size, 0);
+  EXPECT_EQ(lvq.decoded_codebooks.size(),
+            static_cast<size_t>(lvq.nlocal * lvq.ksub * lvq.d));
 
   std::vector<uint8_t> code(lvq.code_size);
   std::vector<float> decoded(d);
@@ -159,6 +161,7 @@ TEST(IndexLVQ, PersistenceRoundtrip) {
   EXPECT_EQ(dst->lvq.nbits, src.lvq.nbits);
   EXPECT_EQ(dst->lvq.local_centroids, src.lvq.local_centroids);
   EXPECT_EQ(dst->lvq.residual_codebooks, src.lvq.residual_codebooks);
+  EXPECT_EQ(dst->lvq.decoded_codebooks, src.lvq.decoded_codebooks);
 
   std::vector<float> ds(static_cast<size_t>(nq) * k);
   std::vector<float> dl(static_cast<size_t>(nq) * k);
@@ -185,4 +188,5 @@ TEST(LocalVectorQuantizer, StandaloneIORoundtrip) {
   EXPECT_EQ(dst->nbits, src.nbits);
   EXPECT_EQ(dst->local_centroids, src.local_centroids);
   EXPECT_EQ(dst->residual_codebooks, src.residual_codebooks);
+  EXPECT_EQ(dst->decoded_codebooks, src.decoded_codebooks);
 }

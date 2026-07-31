@@ -218,6 +218,32 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_pa
         assert fake.constructor_calls[-1] == expected
 
 
+def test_hypervec_server_engine_passes_nprobe_to_ivf_search(tmp_path):
+    module = load_engine_module()
+    engine = module.HypervecServerEngine(
+        str(tmp_path), hypervec_module=FakeHypervec()
+    )
+    calls = []
+
+    class FakeIVFIndex:
+        def search_with_nprobe(self, query, k, nprobe):
+            calls.append((query, k, nprobe))
+            return [[0.1]], [[3]]
+
+        def search(self, query, k):
+            raise AssertionError("default IVF search should not be used")
+
+    query = np.asarray([[0.0, 1.0]], dtype=np.float32)
+    result = engine._search_index(
+        FakeIVFIndex(), query, 1, {"nprobe": 32}
+    )
+
+    assert result == ([[0.1]], [[3]])
+    assert len(calls) == 1
+    assert calls[0][0] is query
+    assert calls[0][1:] == (1, 32)
+
+
 def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
     module = load_engine_module()
     fake = FakeHypervec()

@@ -58,15 +58,30 @@ void read_float32_matrix(PyObject* obj, hypervec::idx_t expected_d,
   }
 }
 
+template <typename Callable>
+void call_without_python_gil(Callable callable) {
+  PyThreadState* thread_state = PyEval_SaveThread();
+  try {
+    callable();
+  } catch (...) {
+    PyEval_RestoreThread(thread_state);
+    throw;
+  }
+  PyEval_RestoreThread(thread_state);
+}
+
 void index_train(hypervec::Index* index, PyObject* obj) {
   const float* data = nullptr;
   hypervec::idx_t n = 0;
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
-  Py_BEGIN_ALLOW_THREADS
-  index->Train(n, data);
-  Py_END_ALLOW_THREADS
+  try {
+    call_without_python_gil([&] { index->Train(n, data); });
+  } catch (...) {
+    PyBuffer_Release(&view);
+    throw;
+  }
   PyBuffer_Release(&view);
 }
 
@@ -76,9 +91,12 @@ void index_add(hypervec::Index* index, PyObject* obj) {
   hypervec::idx_t d = 0;
   Py_buffer view;
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
-  Py_BEGIN_ALLOW_THREADS
-  index->Add(n, data);
-  Py_END_ALLOW_THREADS
+  try {
+    call_without_python_gil([&] { index->Add(n, data); });
+  } catch (...) {
+    PyBuffer_Release(&view);
+    throw;
+  }
   PyBuffer_Release(&view);
 }
 
@@ -97,9 +115,14 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
 
   std::vector<float> distances(static_cast<size_t>(n * k));
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(n * k));
-  Py_BEGIN_ALLOW_THREADS
-  index->Search(n, data, k, distances.data(), labels.data(), params);
-  Py_END_ALLOW_THREADS
+  try {
+    call_without_python_gil([&] {
+      index->Search(n, data, k, distances.data(), labels.data(), params);
+    });
+  } catch (...) {
+    PyBuffer_Release(&view);
+    throw;
+  }
   PyBuffer_Release(&view);
 
   PyObject* py_distances = PyList_New(n);
@@ -186,20 +209,27 @@ struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 };
 
-struct IndexIVFFlat : Index {
-  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
-};
-
 struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
 
-struct IndexIVFLVQ : Index {
+%nodefaultctor IndexIVF;
+struct IndexIVF : Index {
+  idx_t nlist;
+  idx_t nprobe;
+};
+%clearnodefaultctor IndexIVF;
+
+struct IndexIVFFlat : IndexIVF {
+  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
+};
+
+struct IndexIVFLVQ : IndexIVF {
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 };
 
-struct IndexIVFPQ : Index {
+struct IndexIVFPQ : IndexIVF {
   IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
              MetricType metric = kMetricL2);
 };

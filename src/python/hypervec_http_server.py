@@ -6,7 +6,7 @@
 import argparse
 import logging
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
 try:
     from .hypervec_server_engine import ConflictError, HypervecServerEngine
@@ -16,22 +16,22 @@ except ImportError:  # pragma: no cover - supports direct file execution
 
 def _require_fastapi():
     try:
-        from fastapi import FastAPI, HTTPException, Query, Request, Response
+        from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "HyperVec HTTP server requires fastapi and pydantic."
         ) from exc
-    return FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field
+    return Body, FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field
 
 
 def create_app(
     *,
     data_root: str,
-    engine: HypervecServerEngine | None = None,
+    engine: Optional[HypervecServerEngine] = None,
 ) -> Any:
-    FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field = _require_fastapi()
+    Body, FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field = _require_fastapi()
     engine = engine or HypervecServerEngine(data_root)
 
     class CreateCollectionRequest(BaseModel):
@@ -47,11 +47,11 @@ def create_app(
         search_params: dict[str, Any] = Field(default_factory=dict)
         output_fields: list[str] = Field(default_factory=list)
         filter: str = ""
-        consistency_level: str | None = None
+        consistency_level: Optional[str] = None
 
     class SyncCheckRequest(BaseModel):
         client_version: int
-        client_checksum: str | None = None
+        client_checksum: Optional[str] = None
 
     def fail(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
@@ -107,7 +107,7 @@ def create_app(
     @app.post("/collections/{collection_name}/create")
     def create_collection(
         collection_name: str,
-        request: CreateCollectionRequest,
+        request: CreateCollectionRequest = Body(...),
     ) -> dict[str, Any]:
         try:
             return engine.create_collection(
@@ -126,7 +126,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/insert")
-    def insert(collection_name: str, request: InsertRequest) -> dict[str, Any]:
+    def insert(collection_name: str, request: InsertRequest = Body(...)) -> dict[str, Any]:
         try:
             return engine.insert(collection_name, request.data)
         except Exception as exc:
@@ -154,7 +154,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/search")
-    def search(collection_name: str, request: SearchRequest) -> dict[str, Any]:
+    def search(collection_name: str, request: SearchRequest = Body(...)) -> dict[str, Any]:
         try:
             return {
                 "results": engine.search(
@@ -178,7 +178,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/sync-check")
-    def sync_check(collection_name: str, request: SyncCheckRequest) -> dict[str, Any]:
+    def sync_check(collection_name: str, request: SyncCheckRequest = Body(...)) -> dict[str, Any]:
         try:
             return engine.sync_check(
                 collection_name,
@@ -213,8 +213,8 @@ def create_app(
     async def upload_index(
         collection_name: str,
         request: Request,
-        version: int | None = Query(default=None),
-        checksum: str | None = Query(default=None),
+        version: Optional[int] = Query(default=None),
+        checksum: Optional[str] = Query(default=None),
     ) -> dict[str, Any]:
         try:
             body = await request.body()
@@ -285,7 +285,7 @@ def create_app(
     async def upload_bundle(
         collection_name: str,
         request: Request,
-        checksum: str | None = Query(default=None),
+        checksum: Optional[str] = Query(default=None),
         mode: str = Query(default="replace"),
     ) -> dict[str, Any]:
         """Upload (restore) a collection data bundle.
@@ -319,7 +319,7 @@ def create_app(
     @app.post("/collections/{collection_name}/purge-data")
     def purge_data(
         collection_name: str,
-        request: PurgeDataRequest = PurgeDataRequest(),
+        request: Optional[PurgeDataRequest] = Body(default=None),
     ) -> dict[str, Any]:
         """Purge user data (index + scalar rows) while keeping collection metadata.
 
@@ -328,6 +328,7 @@ def create_app(
         to destroy data without a prior bundle export.
         """
         try:
+            request = request or PurgeDataRequest()
             return engine.purge_collection_data(
                 collection_name,
                 require_exported=request.require_exported,

@@ -267,6 +267,33 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
   }
 }
 
+%extend IndexIVFFlat {
+  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
+                               hypervec::idx_t nprobe) {
+    hypervec::IVFSearchParameters params;
+    params.nprobe = nprobe;
+    return index_search_with_params($self, x, k, &params);
+  }
+}
+
+%extend IndexIVFLVQ {
+  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
+                               hypervec::idx_t nprobe) {
+    hypervec::IVFSearchParameters params;
+    params.nprobe = nprobe;
+    return index_search_with_params($self, x, k, &params);
+  }
+}
+
+%extend IndexIVFPQ {
+  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
+                               hypervec::idx_t nprobe) {
+    hypervec::IVFSearchParameters params;
+    params.nprobe = nprobe;
+    return index_search_with_params($self, x, k, &params);
+  }
+}
+
 }  // namespace hypervec
 
 %pythoncode %{

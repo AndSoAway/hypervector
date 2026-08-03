@@ -361,6 +361,9 @@ class HypervecServerEngine:
         ef_search = params.get("ef_search", params.get("ef"))
         if ef_search is not None and hasattr(index, "search_with_ef"):
             return index.search_with_ef(query, k, int(ef_search))
+        nprobe = params.get("nprobe")
+        if nprobe is not None and hasattr(index, "search_with_nprobe"):
+            return index.search_with_nprobe(query, k, int(nprobe))
         return index.search(query, k)
 
     def _write_index(self, index: Any, path: Path) -> None:

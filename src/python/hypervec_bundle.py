@@ -45,12 +45,97 @@ _SCALAR = "scalar.jsonl"
 # v1 manifest fields that must be present for an import to be accepted.
 _REQUIRED_MANIFEST_FIELDS = ("index_checksum", "scalar_checksum", "schema_checksum")
 
+# Label strategy describes how index labels map to scalar row_ids.  v1 uses
+# "implicit_sequential": index label i corresponds to the row whose row_id == i,
+# which requires row_ids to be exactly 0..total-1 with no gaps.  Future versions
+# may add explicit label maps; recording the strategy in the manifest lets
+# readers pick the right validation without guessing.
+LABEL_STRATEGY_IMPLICIT_SEQUENTIAL = "implicit_sequential"
+_DEFAULT_LABEL_STRATEGY = LABEL_STRATEGY_IMPLICIT_SEQUENTIAL
+
 # Zip-bomb guards: a bundle contains exactly three known members.  Reject
 # anything with extra entries, an implausibly large uncompressed payload, or an
 # extreme compression ratio.
 _ALLOWED_MEMBERS = frozenset((_MANIFEST, _INDEX, _SCALAR))
 _MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB total
 _MAX_COMPRESSION_RATIO = 200
+
+
+def _is_int(value: Any) -> bool:
+    """True only for genuine ints — bool is explicitly rejected.
+
+    row_id is used as an index label, so a stray ``True`` (which ``isinstance``
+    would otherwise accept as ``1``) must not silently become row_id 1.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_index_label_mapping(
+    scalar_rows: list[dict[str, Any]],
+    *,
+    total: int,
+    dim: int | None = None,
+    label_strategy: str = _DEFAULT_LABEL_STRATEGY,
+) -> None:
+    """Validate that scalar rows can be addressed by index labels.
+
+    Proving ``index.n_total == total == len(scalar_rows)`` only shows the counts
+    agree — it does not show that index label *i* can be resolved to a scalar
+    row.  For the v1 ``implicit_sequential`` strategy that resolution is
+    ``row_id == label``, so every row must carry a unique integer row_id that
+    exactly covers ``0..total-1``.  Each row's vector must also be 1-D and, when
+    ``dim`` is given, match it.
+
+    Raises ValueError on any violation.
+    """
+    if label_strategy != LABEL_STRATEGY_IMPLICIT_SEQUENTIAL:
+        raise ValueError(
+            f"unsupported label_strategy '{label_strategy}'; "
+            f"only '{LABEL_STRATEGY_IMPLICIT_SEQUENTIAL}' is supported."
+        )
+
+    if len(scalar_rows) != int(total):
+        raise ValueError(
+            f"scalar row count {len(scalar_rows)} does not match total {total}."
+        )
+
+    seen: set[int] = set()
+    for i, row in enumerate(scalar_rows):
+        if "row_id" not in row:
+            raise ValueError(f"scalar row at position {i} is missing row_id.")
+        row_id = row["row_id"]
+        if not _is_int(row_id):
+            raise ValueError(
+                f"scalar row at position {i} has non-integer row_id "
+                f"{row_id!r} (type {type(row_id).__name__})."
+            )
+        if row_id in seen:
+            raise ValueError(f"duplicate row_id {row_id} in scalar rows.")
+        seen.add(row_id)
+
+        vector = row.get("vector")
+        if vector is not None:
+            if not isinstance(vector, (list, tuple)):
+                raise ValueError(
+                    f"scalar row {row_id} vector must be a 1-D list, "
+                    f"got {type(vector).__name__}."
+                )
+            if any(isinstance(v, (list, tuple)) for v in vector):
+                raise ValueError(f"scalar row {row_id} vector must be 1-D.")
+            if dim is not None and len(vector) != int(dim):
+                raise ValueError(
+                    f"scalar row {row_id} vector dim {len(vector)} does not "
+                    f"match manifest dim {dim}."
+                )
+
+    expected = set(range(int(total)))
+    if seen != expected:
+        missing = sorted(expected - seen)
+        extra = sorted(seen - expected)
+        raise ValueError(
+            f"row_ids must cover 0..{int(total) - 1} exactly; "
+            f"missing={missing[:10]} extra={extra[:10]}."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +207,7 @@ def create_bundle(
         "index_size_bytes": index_size_bytes,
         "scalar_checksum": scalar_checksum,
         "schema_checksum": schema_cksum,
+        "label_strategy": _DEFAULT_LABEL_STRATEGY,
         "exported_at": time.time(),
     }
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -225,19 +311,26 @@ def read_bundle(
         if line:
             scalar_rows.append(json.loads(line))
 
-    # Row-id continuity / uniqueness and count agreement.
-    if manifest.get("total") is not None and int(manifest["total"]) != len(scalar_rows):
+    # manifest.total is mandatory: the label-mapping validation below is keyed
+    # off it, and a hand-crafted bundle that omits it must fail with a clear
+    # error rather than a downstream KeyError.
+    if manifest.get("total") is None:
         raise ValueError(
-            f"bundle manifest.total {manifest['total']} does not match "
-            f"{len(scalar_rows)} scalar rows."
+            f"bundle manifest is missing required field 'total': {bundle_path}"
         )
-    row_ids = [int(r["row_id"]) for r in scalar_rows]
-    if len(set(row_ids)) != len(row_ids):
-        raise ValueError("bundle scalar rows contain duplicate row_id values.")
-    if row_ids and sorted(row_ids) != list(range(len(row_ids))):
-        raise ValueError(
-            "bundle scalar rows are not contiguous from 0; row_id sequence is invalid."
+
+    # Index-label ↔ row_id mapping: counts alone don't prove label i resolves to
+    # a scalar row.  Validate row_id type/uniqueness/coverage and vector shape
+    # according to the manifest's declared label strategy (default v1).
+    try:
+        validate_index_label_mapping(
+            scalar_rows,
+            total=int(manifest["total"]),
+            dim=manifest.get("dim"),
+            label_strategy=manifest.get("label_strategy", _DEFAULT_LABEL_STRATEGY),
         )
+    except ValueError as exc:
+        raise ValueError(f"bundle {bundle_path} is invalid: {exc}") from exc
 
     return manifest, index_bytes, scalar_rows
 

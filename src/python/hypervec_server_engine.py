@@ -515,6 +515,7 @@ class HypervecServerEngine:
             "data_version": meta.data_version,
             "index_version": meta.index_version,
             "exported_data_version": meta.exported_data_version,
+            "exported_index_version": meta.exported_index_version,
             "manifest": manifest,
         }
 
@@ -601,14 +602,22 @@ class HypervecServerEngine:
                     key: value for key, value in row.items() if key not in structured_fields
                 }
                 rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
-            self.scalar_store.insert_batch(collection_name, rows)
-            total = self.scalar_store.count(collection_name)
+
+            # Crash-window safety (PR13-3.3): the scalar write (SQLite) and the
+            # data_version bump (collections.json) cannot commit in one atomic
+            # transaction.  Bump data_version FIRST so that if we crash between
+            # the two writes, export eligibility is already invalidated
+            # (exported_data_version != data_version) and purge is refused —
+            # failing safe (a spurious re-export) rather than unsafe (purging
+            # rows that were just added but never exported).
             self.meta_store.update(
                 collection_name,
                 dim=dim,
-                total=total,
                 data_version=meta.data_version + 1,
             )
+            self.scalar_store.insert_batch(collection_name, rows)
+            total = self.scalar_store.count(collection_name)
+            self.meta_store.update(collection_name, total=total)
             self._indexes.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
@@ -758,6 +767,7 @@ class HypervecServerEngine:
             "data_version": meta.data_version,
             "index_version": meta.index_version,
             "exported_data_version": meta.exported_data_version,
+            "exported_index_version": meta.exported_index_version,
         }
 
     def sync_check(
@@ -943,6 +953,8 @@ class HypervecServerEngine:
                 bundle_format=BUNDLE_FORMAT,
                 exported_data_version=meta.data_version,
                 exported_bundle_checksum=bundle_cksum,
+                exported_index_version=meta.index_version,
+                exported_index_checksum=meta.index_checksum,
             )
             return {
                 "collection_name": collection_name,
@@ -1042,51 +1054,65 @@ class HypervecServerEngine:
             new_data_version = meta.data_version + 1
             prev_state = meta.data_state
 
-            # ---- Stage index into a side file and validate it ----
+            # ---- Prepare phase: stage everything, validate, leave live state
+            # untouched.  A single try/except guarantees that ANY failure here
+            # (index write, corrupt-index deserialization, dim/count mismatch,
+            # illegal manifest["total"], staging-table write, commit-intent
+            # write, etc.) cleans up both the staging index file and the
+            # staging scalar table before propagating — no partial residue.
+            committing = False
             try:
+                # Stage index into a side file and validate it.
                 staging_index.write_bytes(index_bytes)
                 loaded = self._read_index(staging_index)
-            except Exception:
-                staging_index.unlink(missing_ok=True)
-                raise
-            if manifest.get("dim") is not None and int(loaded.d) != int(manifest["dim"]):
-                staging_index.unlink(missing_ok=True)
-                raise ConflictError(
-                    f"staged index dim {loaded.d} does not match manifest dim "
-                    f"{manifest['dim']}."
-                )
-            if not (int(loaded.n_total) == int(manifest["total"]) == len(scalar_rows)):
-                staging_index.unlink(missing_ok=True)
-                raise ConflictError(
-                    f"bundle is inconsistent: index.n_total={loaded.n_total}, "
-                    f"manifest.total={manifest['total']}, "
-                    f"scalar_rows={len(scalar_rows)}."
-                )
+                if manifest.get("dim") is not None and int(loaded.d) != int(manifest["dim"]):
+                    raise ConflictError(
+                        f"staged index dim {loaded.d} does not match manifest dim "
+                        f"{manifest['dim']}."
+                    )
+                if not (int(loaded.n_total) == int(manifest["total"]) == len(scalar_rows)):
+                    raise ConflictError(
+                        f"bundle is inconsistent: index.n_total={loaded.n_total}, "
+                        f"manifest.total={manifest['total']}, "
+                        f"scalar_rows={len(scalar_rows)}."
+                    )
 
-            # ---- Stage scalar rows into a side table ----
-            try:
+                # Stage scalar rows into a side table.
                 self.scalar_store.import_rows_to_staging(collection_name, scalar_rows)
-            except Exception:
+
+                # Durable commit-intent marker.  Written inside the try so that
+                # if it fails, the staging artifacts are still cleaned up here.
+                self.meta_store.update(
+                    collection_name,
+                    data_state="importing",
+                    import_txn={
+                        "stage": "prepared",
+                        "new_data_version": new_data_version,
+                        "prev_state": prev_state,
+                        "total": len(scalar_rows),
+                        "dim": manifest.get("dim") or meta.dim,
+                        "source_checksum": manifest.get("index_checksum"),
+                    },
+                )
+            except BaseException:
+                # Still fully reversible — nothing live was touched.  Sweep the
+                # staging index + staging table and restore data_state if the
+                # commit-intent marker had already been written.
                 staging_index.unlink(missing_ok=True)
                 self.scalar_store.rollback_staging(collection_name)
+                cur = self.meta_store.get(collection_name)
+                if cur is not None and (cur.data_state == "importing" or cur.import_txn):
+                    self.meta_store.update(
+                        collection_name, data_state=prev_state, import_txn=None
+                    )
                 raise
 
-            # ---- Durable commit-intent marker ----
-            self.meta_store.update(
-                collection_name,
-                data_state="importing",
-                import_txn={
-                    "stage": "prepared",
-                    "new_data_version": new_data_version,
-                    "prev_state": prev_state,
-                    "total": len(scalar_rows),
-                    "dim": manifest.get("dim") or meta.dim,
-                    "source_checksum": manifest.get("index_checksum"),
-                },
-            )
-
-            # ---- Commit switch: index -> scalar -> metadata ----
+            # ---- Commit switch: index -> scalar -> metadata.  Once we begin
+            # replacing live state this is no longer locally reversible; a crash
+            # mid-switch is resolved deterministically by
+            # _recover_interrupted_imports() on the next startup.
             try:
+                committing = True
                 if index_path.exists():
                     index_path.replace(pre_import)
                 staging_index.replace(index_path)
@@ -1105,9 +1131,12 @@ class HypervecServerEngine:
                     **file_info,
                 )
                 pre_import.unlink(missing_ok=True)
-            except Exception:
-                # Mid-switch failure — leave the durable markers in place and
-                # let startup recovery (or an immediate retry) resolve it.
+            except BaseException:
+                # Mid-switch failure — leave the durable markers (data_state=
+                # importing + import_txn) in place and let startup recovery roll
+                # forward or back.  Do NOT delete staging blindly here: recovery
+                # needs it to decide direction.
+                assert committing  # documents that we are past the reversible point
                 raise
             self._indexes[collection_name] = loaded
             return {
@@ -1146,14 +1175,29 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name):
             meta = self._meta_or_raise(collection_name)
-            if require_exported and meta.exported_data_version != meta.data_version:
-                raise ConflictError(
-                    f"collection '{collection_name}' has no export matching the "
-                    f"current data (exported_data_version="
-                    f"{meta.exported_data_version} != data_version="
-                    f"{meta.data_version}); call export_collection_bundle() "
-                    "first, or pass require_exported=False to force purge."
+            if require_exported:
+                # Purge eligibility must bind BOTH the data snapshot and the
+                # index snapshot.  Checking data_version alone is insufficient:
+                # upload_index() can swap the live index without touching
+                # data_version, so an export taken before that swap would still
+                # match on data_version yet no longer reflect the live index.
+                data_covered = meta.exported_data_version == meta.data_version
+                index_covered = (
+                    meta.exported_index_version == meta.index_version
+                    and meta.exported_index_checksum == meta.index_checksum
                 )
+                if not (data_covered and index_covered):
+                    raise ConflictError(
+                        f"collection '{collection_name}' has no export matching "
+                        f"the current data+index snapshot "
+                        f"(exported_data_version={meta.exported_data_version} vs "
+                        f"data_version={meta.data_version}; "
+                        f"exported_index_version={meta.exported_index_version} vs "
+                        f"index_version={meta.index_version}; "
+                        f"index_checksum match={meta.exported_index_checksum == meta.index_checksum}); "
+                        "call export_collection_bundle() first, or pass "
+                        "require_exported=False to force purge."
+                    )
             last_known_total = self.scalar_store.count(collection_name)
 
             # Evict from memory
@@ -1203,6 +1247,14 @@ class HypervecServerEngine:
                 index_size_bytes=None,
                 flushed_at=None,
                 total=0,
+                # Reset export-eligibility snapshot: a fresh export must be taken
+                # before the (now empty / re-imported) collection can be purged
+                # again.  Leaving stale exported_index_* here could spuriously
+                # match the post-purge index_version=0 / checksum=None state.
+                exported_data_version=None,
+                exported_bundle_checksum=None,
+                exported_index_version=None,
+                exported_index_checksum=None,
             )
             return {
                 "purged": True,

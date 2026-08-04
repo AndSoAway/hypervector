@@ -118,7 +118,7 @@ UltraRAG 客户有明确的数据安全要求：用户数据可以在运行期�
 {"require_exported": true}
 ```
 
-`require_exported=true` 时，server 要求最近一次成功导出**恰好覆盖当前数据快照**（`exported_data_version == data_version`）。若导出后又发生 insert / import / purge 使数据版本前进，或从未导出过，server 拒绝执行 purge，防止新增数据在未导出的情况下被永久删除。
+`require_exported=true` 时，server 要求最近一次成功导出**同时覆盖当前的数据快照与索引快照**（`exported_data_version == data_version` 且 `exported_index_version == index_version` 且 `exported_index_checksum == index_checksum`）。若导出后又发生 insert / import / purge 使数据版本前进，或 `upload_index` 替换了索引（数据版本不变但索引变了），或从未导出过，server 拒绝执行 purge，防止新增数据或新索引在未导出的情况下被永久删除。
 
 purge 执行的操作：
 - 从内存中移除 index（`_indexes`）
@@ -151,7 +151,7 @@ purge 执行的操作：
 | 状态码 | 原因 |
 |---|---|
 | 404 | collection 不存在 |
-| 409 | `require_exported=true` 但最近导出未覆盖当前数据快照（`exported_data_version != data_version`） |
+| 409 | `require_exported=true` 但最近导出未覆盖当前数据+索引快照（`exported_data_version`/`exported_index_version`/`exported_index_checksum` 与当前不一致） |
 | 500 | 删除失败 |
 
 ---
@@ -170,6 +170,7 @@ purge 执行的操作：
 | `data_version` | int | 数据版本，每次 insert / import / purge 递增 |
 | `index_version` | int | 索引版本，flush / upload_index / import 时置为当时的 `data_version`；`index_version == data_version` 表示索引与数据一致（新鲜） |
 | `exported_data_version` | int \| null | 最近一次成功导出所覆盖的 `data_version`，用于 purge 资格判断 |
+| `exported_index_version` | int \| null | 最近一次成功导出所覆盖的 `index_version`，purge 资格同时校验此项 |
 
 ---
 
@@ -178,7 +179,10 @@ purge 执行的操作：
 为避免联调中发现的数据丢失 / 不一致问题，bundle 体系提供以下保障：
 
 - **导出一致性**：导出前校验索引新鲜（`index_version == data_version`）且 `index.n_total == scalar 行数 == metadata.total`、`index.d == dim`；任一不满足返回 409，提示先 `flush`。因此导出的 bundle 三份内容（manifest / index / scalar）始终自洽。
-- **导出资格与 purge**：导出成功记录 `exported_data_version`；purge（`require_exported=true`）要求它等于当前 `data_version`，杜绝“导出后又新增数据再 purge”导致的永久丢失。
+- **导出资格与 purge**：导出成功记录 `exported_data_version`、`exported_index_version` 与 `exported_index_checksum`；purge（`require_exported=true`）要求这三者与当前 `data_version` / `index_version` / `index_checksum` 全部一致，杜绝“导出后又新增数据再 purge”或“导出后 upload_index 换索引再 purge”导致的永久丢失。
+- **索引 label 映射**：导入前校验 bundle 的 `row_id` 为唯一整数（排除 bool）且恰好覆盖 `0..total-1`，每行 vector 一维且维度等于 manifest.dim；manifest 记录 `label_strategy`（v1 为 `implicit_sequential`），保证 index label 能正确映射到 scalar row，而非仅数量相等。
+- **insert 崩溃安全**：insert 先推进 `data_version`（使旧导出资格失效）再写标量数据；两次持久化之间崩溃时 purge 会被拒绝（fail-safe），不会误删未导出的新数据。
+- **导入清理**：导入的 staging 阶段（写 staging 索引 / staging 表 / commit-intent）任一步失败都统一清理 staging 文件与表并恢复 `data_state`；commit 切换阶段崩溃则由启动恢复前滚或回滚。
 - **导入事务性**：导入先把索引写入 `index.hypervec.import.staging`、把行写入暂存表 `docs_<name>__import` 并完成校验，全部通过后才在一次提交中原子切换 index 文件、scalar 表与 metadata；期间以 `data_state=importing` + `import_txn` 作为持久化提交意图记录。任一步失败都回滚到导入前状态。
 - **崩溃恢复**：服务启动时扫描 `importing` 状态，切换已完成则前滚定稿、否则回滚；无法恢复时标记 `invalid` 并阻断 search/export，直至重新导入有效 bundle。
 - **bundle 完整性**：v1 bundle 必须带齐 `index_checksum` / `scalar_checksum` / `schema_checksum`（缺失即拒绝）；读取时校验校验和、ZIP 条目白名单、解压体积与压缩比上限，并校验 `row_id` 连续唯一。导入时还校验 schema、字段名与目标 collection 兼容。

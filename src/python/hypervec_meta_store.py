@@ -45,6 +45,12 @@ class CollectionMeta:
     index_version: int = 0               # 0 = never built -> stale until first flush
     exported_data_version: int | None = None
     exported_bundle_checksum: str | None = None
+    # Index snapshot covered by the last successful export.  Purge eligibility
+    # must bind BOTH the data snapshot and the index snapshot: upload_index()
+    # can replace the index without changing data_version, so an old export
+    # that no longer matches the live index must not authorize a purge.
+    exported_index_version: int | None = None
+    exported_index_checksum: str | None = None
     # Durable commit-intent record for in-flight bundle imports (Phase 3).
     import_txn: dict[str, Any] | None = None
 
@@ -78,6 +84,8 @@ class CollectionMeta:
             index_version=int(data.get("index_version", 0)),
             exported_data_version=data.get("exported_data_version"),
             exported_bundle_checksum=data.get("exported_bundle_checksum"),
+            exported_index_version=data.get("exported_index_version"),
+            exported_index_checksum=data.get("exported_index_checksum"),
             import_txn=data.get("import_txn"),
         )
 

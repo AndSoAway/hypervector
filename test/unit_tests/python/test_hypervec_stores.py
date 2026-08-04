@@ -279,4 +279,6 @@ def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
     assert meta.index_version == 0
     assert meta.exported_data_version is None
     assert meta.exported_bundle_checksum is None
+    assert meta.exported_index_version is None
+    assert meta.exported_index_checksum is None
     assert meta.import_txn is None

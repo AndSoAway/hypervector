@@ -427,13 +427,43 @@ def test_engine_purge_blocked_when_data_changed_after_export(tmp_path):
     assert result["purged"] is True
 
 
+def test_engine_purge_blocked_when_index_changed_after_export(tmp_path):
+    """PR13-3.2: upload_index after export changes the index snapshot without
+    touching data_version, so a historical export must not authorize purge."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+
+    # Replace the live index via upload_index (data unchanged).  Write a source
+    # with different bytes so the uploaded index has a different checksum than
+    # the one captured at export time.
+    from pathlib import Path
+    src = tmp_path / "reupload.hypervec"
+    src.write_bytes(b"a-different-index-payload")
+    engine.upload_index("col1", src)
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "index" in str(exc).lower()
+    else:
+        raise AssertionError("purge after post-export upload_index should raise ConflictError")
+
+    # Re-export to cover the new index snapshot, then purge is allowed.
+    engine.export_collection_bundle("col1")
+    result = engine.purge_collection_data("col1", require_exported=True)
+    assert result["purged"] is True
+
+
 def test_engine_export_rejects_inconsistent_counts(tmp_path):
     engine, _ = make_engine(tmp_path)
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
     # Force a mismatch between scalar count and meta.total without going stale
-    # (bypass insert()'s version bump by writing to the scalar store directly).
     engine.scalar_store.insert_batch("col1", [(1, "b", [2.0, 3.0], "yo", {})])
 
     try:
@@ -443,6 +473,47 @@ def test_engine_export_rejects_inconsistent_counts(tmp_path):
         assert "inconsistent" in str(exc)
     else:
         raise AssertionError("inconsistent counts should raise ConflictError")
+
+
+def test_engine_insert_crash_between_scalar_and_version_fails_safe(tmp_path):
+    """PR13-3.3: if we crash between the scalar write and the data_version
+    bump, export eligibility must already be invalidated so purge is refused
+    (fail-safe) rather than allowed (which would lose the just-added rows)."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    # At this point export covers the data: purge would be allowed.
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version == meta.data_version
+
+    # Simulate a crash during the second insert: the scalar write raises after
+    # data_version has already been bumped.
+    orig_insert_batch = engine.scalar_store.insert_batch
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected crash during scalar write")
+
+    engine.scalar_store.insert_batch = _boom
+    try:
+        engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+    except RuntimeError:
+        pass
+    finally:
+        engine.scalar_store.insert_batch = orig_insert_batch
+
+    # data_version was bumped first, so eligibility is invalidated even though
+    # the crash prevented the row from being written.
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version != meta.data_version
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+    else:
+        raise AssertionError("purge after crashed insert must be refused (fail-safe)")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
@@ -647,6 +718,68 @@ def test_engine_import_index_write_failure_leaves_live_state_intact(tmp_path):
     assert not list(coll_dir.glob("*.import.staging"))
     meta_after = engine.meta_store.get("col1")
     assert meta_after.data_state == meta_before.data_state
+
+
+def test_engine_import_staging_table_failure_cleans_up(tmp_path):
+    """PR13-3.4: a failure in the scalar-staging step must sweep the staging
+    index file too (unified prepare-phase cleanup), leaving no residue."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    meta_before = engine.meta_store.get("col1")
+
+    orig = engine.scalar_store.import_rows_to_staging
+
+    def _boom(name, rows):
+        raise RuntimeError("injected staging-table failure")
+
+    engine.scalar_store.import_rows_to_staging = _boom
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on staging-table failure")
+    finally:
+        engine.scalar_store.import_rows_to_staging = orig
+
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    assert not engine.scalar_store.has_staging("col1")
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+    assert meta_after.import_txn is None
+
+
+def test_engine_import_commit_intent_failure_cleans_up(tmp_path):
+    """PR13-3.4: if the durable commit-intent write fails, the prepare-phase
+    cleanup must remove the staging index + table and restore data_state."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    meta_before = engine.meta_store.get("col1")
+
+    orig_update = engine.meta_store.update
+
+    def _boom_update(name, **changes):
+        if changes.get("data_state") == "importing":
+            raise RuntimeError("injected commit-intent write failure")
+        return orig_update(name, **changes)
+
+    engine.meta_store.update = _boom_update
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on commit-intent failure")
+    finally:
+        engine.meta_store.update = orig_update
+
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    assert not engine.scalar_store.has_staging("col1")
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+    assert meta_after.import_txn is None
 
 
 def test_engine_import_commit_staging_failure_recoverable(tmp_path):

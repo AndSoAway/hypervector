@@ -36,6 +36,15 @@ class ScalarStore:
         safe = "".join(c if c.isalnum() or c == "_" else "_" for c in collection_name)
         return f"docs_{safe}"
 
+    @classmethod
+    def _staging_table(cls, collection_name: str) -> str:
+        """Name of the transient import-staging table for a collection.
+
+        Rows are loaded here first so the live docs_<name> table is never
+        dropped until an atomic commit rename swaps staging into place.
+        """
+        return cls._table(collection_name) + "__import"
+
     @staticmethod
     def _encode_vector(vector: Any) -> bytes:
         arr = np.asarray(vector, dtype=np.float32, order="C")
@@ -50,11 +59,9 @@ class ScalarStore:
             raise ValueError(f"stored vector dim {arr.size} does not match collection dim {dim}.")
         return arr.copy()
 
-    def ensure_table(self, collection_name: str) -> None:
-        table = self._table(collection_name)
-        conn = self._conn()
-        conn.execute(
-            f"""
+    @staticmethod
+    def _create_table_ddl(table: str) -> str:
+        return f"""
             CREATE TABLE IF NOT EXISTS "{table}" (
               row_id INTEGER PRIMARY KEY,
               doc_id TEXT UNIQUE NOT NULL,
@@ -65,7 +72,11 @@ class ScalarStore:
               updated_at REAL
             )
             """
-        )
+
+    def ensure_table(self, collection_name: str) -> None:
+        table = self._table(collection_name)
+        conn = self._conn()
+        conn.execute(self._create_table_ddl(table))
         conn.execute(f'CREATE INDEX IF NOT EXISTS "{table}_doc_id" ON "{table}"(doc_id)')
         conn.commit()
 
@@ -170,7 +181,21 @@ class ScalarStore:
                 f'SELECT row_id, doc_id, vector, text_content, metadata, '
                 f'created_at, updated_at FROM "{table}" ORDER BY row_id ASC'
             )
-        except Exception:
+        except sqlite3.OperationalError:
+            # Any OperationalError on the SELECT could be a missing table, a
+            # locked database, a corrupt schema, or a broken view.  Matching
+            # the exception text is fragile (e.g. a view whose dependency is
+            # missing also raises "no such table: main.<dep>"), so instead
+            # query sqlite_schema explicitly: return [] only when the object
+            # truly does not exist at all; propagate every other OperationalError
+            # (locked, corrupt, etc.) unchanged so callers never mistake a
+            # transient failure for a legitimately empty collection.
+            obj_exists = self._conn().execute(
+                "SELECT 1 FROM sqlite_schema WHERE type IN ('table','view') AND name=?",
+                (table,),
+            ).fetchone()
+            if obj_exists:
+                raise
             return []
         rows = []
         for row in cur.fetchall():
@@ -242,6 +267,88 @@ class ScalarStore:
         count_before = self.count(collection_name)
         self.drop_table(collection_name)
         return {"dropped": True, "count_before": count_before}
+
+    # ------------------------------------------------------------------
+    # Transactional import staging (Phase 3)
+    #
+    # Rows are loaded into a transient docs_<name>__import table first, leaving
+    # the live docs_<name> table untouched.  commit_staging() then performs an
+    # atomic (single-transaction) DROP + RENAME so the collection is never left
+    # with a half-imported live table.
+    # ------------------------------------------------------------------
+
+    def import_rows_to_staging(self, collection_name: str, rows: list[dict]) -> int:
+        """Load rows into the staging table, replacing any previous staging.
+
+        Never touches the live docs_<name> table.  Returns rows inserted.
+        """
+        staging = self._staging_table(collection_name)
+        conn = self._conn()
+        conn.execute(f'DROP TABLE IF EXISTS "{staging}"')
+        conn.execute(self._create_table_ddl(staging))
+        if rows:
+            now = time.time()
+            conn.executemany(
+                f"""
+                INSERT INTO "{staging}"
+                  (row_id, doc_id, vector, text_content, metadata, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        int(r["row_id"]),
+                        str(r["doc_id"]),
+                        sqlite3.Binary(self._encode_vector(r["vector"])),
+                        r.get("text_content", ""),
+                        json.dumps(
+                            dict(r.get("metadata") or {}),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        r.get("created_at") or now,
+                        r.get("updated_at") or now,
+                    )
+                    for r in rows
+                ],
+            )
+        conn.commit()
+        return len(rows)
+
+    def commit_staging(self, collection_name: str) -> None:
+        """Atomically swap the staging table into the live table.
+
+        Runs DROP live + RENAME staging -> live in one SQLite transaction, so
+        the file is never observed with the live table dropped but staging not
+        yet renamed.
+        """
+        table = self._table(collection_name)
+        staging = self._staging_table(collection_name)
+        conn = self._conn()
+        conn.execute("BEGIN")
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+            conn.execute(f'ALTER TABLE "{staging}" RENAME TO "{table}"')
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS "{table}_doc_id" ON "{table}"(doc_id)'
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def rollback_staging(self, collection_name: str) -> None:
+        """Drop the staging table (if any).  Live table is left untouched."""
+        self._conn().execute(
+            f'DROP TABLE IF EXISTS "{self._staging_table(collection_name)}"'
+        )
+        self._conn().commit()
+
+    def has_staging(self, collection_name: str) -> bool:
+        cur = self._conn().execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (self._staging_table(collection_name),),
+        )
+        return cur.fetchone() is not None
 
     def checkpoint_and_vacuum(self) -> None:
         """Flush WAL and compact the SQLite file.

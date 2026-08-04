@@ -89,8 +89,10 @@ void IndexHNSW::Add(idx_t n, const float* x) {
   // Prepare level assignment for all vectors (including existing ones)
   hnsw.PrepareLevelTab(n_total, false);
 
-  // Create distance computer for building
-  auto dis = storage->GetDistanceComputer();
+  // Create distance computer for building.
+  // Must go through storage_distance_computer() so similarity metrics (IP,
+  // Jaccard) are negated — HNSW graph traversal assumes "smaller is better".
+  auto dis = storage_distance_computer(storage);
 
   // For single-threaded building, Add vectors one by one
   std::vector<omp_lock_t> locks(n_total + 1);
@@ -124,8 +126,10 @@ void IndexHNSW::Reset() {
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
   // Use HNSW graph-based Search
-  // Get distance computer from storage
-  auto dis = storage->GetDistanceComputer();
+  // Get distance computer from storage.
+  // Must go through storage_distance_computer() so similarity metrics are
+  // negated — HNSW graph traversal assumes "smaller is better".
+  auto dis = storage_distance_computer(storage);
 
   // Do not mutate the process-global OpenMP thread count here. Concurrent
   // Python callers may run Search() after the SWIG layer releases the GIL, so
@@ -172,7 +176,7 @@ void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
 }
 
 DistanceComputer* IndexHNSW::GetDistanceComputer() const {
-  return storage->GetDistanceComputer();
+  return storage_distance_computer(storage);
 }
 
 /**************************************************************

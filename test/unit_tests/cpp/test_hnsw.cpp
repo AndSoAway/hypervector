@@ -264,6 +264,109 @@ TEST(HNSW, HNSWFlatInnerProductSerialization) {
     EXPECT_FLOAT_EQ(dist_before[1], dist_after[1]);
 }
 
+// ------------------------------------------------------------------
+// Verifies that IndexHNSW correctly uses storage_distance_computer()
+// for all metric types, including similarity metrics (IP, Jaccard).
+//
+// storage_distance_computer() wraps similarity metrics with
+// NegativeDistanceComputer so HNSW's "smaller=better" graph traversal
+// sees negated similarity values. Without it, IP/Jaccard recall is
+// near zero (random).
+// ------------------------------------------------------------------
+
+struct HNSWMetricRecallTest
+    : public testing::TestWithParam<
+          std::tuple<hypervec::MetricType, const char*, bool>> {
+  void SetUp() override {
+    dim = 64;
+    nb = 2000;
+    nq = 200;
+    k = 10;
+    bool is_similarity = std::get<2>(GetParam());
+
+    xb.resize(dim * nb);
+    xq.resize(dim * nq);
+    if (is_similarity) {
+      // Jaccard requires positive values; use uniform [0,1] for
+      // both similarity metrics to keep the test consistent.
+      hypervec::FloatRand(xb.data(), dim * nb, 12345);
+      hypervec::FloatRand(xq.data(), dim * nq, 67890);
+      for (auto& v : xb) v = std::abs(v);
+      for (auto& v : xq) v = std::abs(v);
+    } else {
+      hypervec::FloatRand(xb.data(), dim * nb, 12345);
+      hypervec::FloatRand(xq.data(), dim * nq, 67890);
+    }
+  }
+
+  int dim;
+  int nb;
+  int nq;
+  int k;
+  std::vector<float> xb;
+  std::vector<float> xq;
+};
+
+TEST_P(HNSWMetricRecallTest, HNSWRecallVsBruteForce) {
+  auto metric_type = std::get<0>(GetParam());
+  std::string metric_name = std::get<1>(GetParam());
+  bool is_similarity = std::get<2>(GetParam());
+
+  // --- ground truth: brute-force ---
+  hypervec::IndexFlat gt_index(dim, metric_type);
+  gt_index.Add(nb, xb.data());
+
+  std::vector<float> gt_dist(k * nq);
+  std::vector<hypervec::idx_t> gt_labels(k * nq);
+  gt_index.Search(nq, xq.data(), k, gt_dist.data(), gt_labels.data());
+
+  // --- HNSW under test ---
+  hypervec::IndexHNSWFlat hnsw_index(dim, 32, metric_type);
+  hnsw_index.hnsw.ef_construction = 40;
+  hnsw_index.hnsw.ef_search = 16;
+  hnsw_index.Add(nb, xb.data());
+
+  std::vector<float> hnsw_dist(k * nq);
+  std::vector<hypervec::idx_t> hnsw_labels(k * nq);
+  hnsw_index.Search(nq, xq.data(), k, hnsw_dist.data(), hnsw_labels.data());
+
+  // --- recall@k ---
+  int correct = 0;
+  int total = nq * k;
+  for (int i = 0; i < nq; i++) {
+    for (int j = 0; j < k; j++) {
+      for (int l = 0; l < k; l++) {
+        if (hnsw_labels[i * k + j] == gt_labels[i * k + l]) {
+          correct++;
+          break;
+        }
+      }
+    }
+  }
+  float recall = static_cast<float>(correct) / static_cast<float>(total);
+
+  if (is_similarity) {
+    // After fix: storage_distance_computer() wraps similarity metrics with
+    // NegativeDistanceComputer, so HNSW sees negated values and "smaller is
+    // better" traversal works correctly. Recall should be high.
+    EXPECT_GT(recall, 0.80f)
+        << metric_name << " recall@" << k << " = " << recall
+        << " — expected >0.80 (NegativeDistanceComputer should be applied).";
+  } else {
+    EXPECT_GT(recall, 0.80f)
+        << metric_name << " recall@" << k << " = " << recall
+        << " — expected >0.80 (control, unaffected by similarity wrapping).";
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HNSWMetricRecall,
+    HNSWMetricRecallTest,
+    testing::Values(
+        std::make_tuple(hypervec::kMetricL2, "L2", false),
+        std::make_tuple(hypervec::kMetricInnerProduct, "IP", true),
+        std::make_tuple(hypervec::kMetricJaccard, "Jaccard", true)));
+
 class HNSWTest : public testing::Test {
    protected:
     HNSWTest() {

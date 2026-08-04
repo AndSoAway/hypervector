@@ -181,15 +181,22 @@ class ScalarStore:
                 f'SELECT row_id, doc_id, vector, text_content, metadata, '
                 f'created_at, updated_at FROM "{table}" ORDER BY row_id ASC'
             )
-        except sqlite3.OperationalError as exc:
-            # Only a genuinely missing table means "empty collection".  Any
-            # other operational error (e.g. "database is locked") — as well as
-            # DatabaseError (corruption), ProgrammingError, etc. — must
-            # propagate so callers never mistake a failure for an empty export
-            # and wrongly record the data as exported.
-            if "no such table" in str(exc).lower():
-                return []
-            raise
+        except sqlite3.OperationalError:
+            # Any OperationalError on the SELECT could be a missing table, a
+            # locked database, a corrupt schema, or a broken view.  Matching
+            # the exception text is fragile (e.g. a view whose dependency is
+            # missing also raises "no such table: main.<dep>"), so instead
+            # query sqlite_schema explicitly: return [] only when the object
+            # truly does not exist at all; propagate every other OperationalError
+            # (locked, corrupt, etc.) unchanged so callers never mistake a
+            # transient failure for a legitimately empty collection.
+            obj_exists = self._conn().execute(
+                "SELECT 1 FROM sqlite_schema WHERE type IN ('table','view') AND name=?",
+                (table,),
+            ).fetchone()
+            if obj_exists:
+                raise
+            return []
         rows = []
         for row in cur.fetchall():
             dim = len(np.frombuffer(row["vector"], dtype=np.float32))

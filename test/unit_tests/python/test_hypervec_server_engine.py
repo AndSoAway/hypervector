@@ -942,3 +942,40 @@ def test_engine_import_rejects_incompatible_schema(tmp_path):
         assert "schema" in str(exc)
     else:
         raise AssertionError("incompatible schema should raise ConflictError")
+
+
+def test_engine_export_failure_does_not_update_eligibility(tmp_path):
+    """PR12: if export_rows() raises, last_exported_at must not be set and
+    purge must remain disallowed (fail-safe)."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    # Inject a failure in export_rows so the bundle write never completes.
+    def _boom(name):
+        raise RuntimeError("injected export_rows failure")
+
+    original = engine.scalar_store.export_rows
+    engine.scalar_store.export_rows = _boom
+    try:
+        try:
+            engine.export_collection_bundle("col1")
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("export should have raised")
+    finally:
+        engine.scalar_store.export_rows = original
+
+    meta = engine.meta_store.get("col1")
+    # Eligibility must be untouched — purge must still be refused.
+    assert meta.last_exported_at is None
+    assert meta.exported_data_version is None
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+    else:
+        raise AssertionError("purge should be refused after a failed export")

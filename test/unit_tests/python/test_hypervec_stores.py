@@ -282,3 +282,36 @@ def test_meta_store_new_fields_default_on_old_collections_json(tmp_path):
     assert meta.exported_index_version is None
     assert meta.exported_index_checksum is None
     assert meta.import_txn is None
+
+
+def test_scalar_store_export_rows_raises_for_anomalous_view(tmp_path):
+    """PR12: a view whose dependency is missing reports 'no such table: dep'
+    but the object exists in sqlite_schema — export_rows must raise, not
+    silently return an empty list."""
+    import sqlite3
+
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    conn = store._conn()
+    # Create an anomalous view: docs_demo exists in sqlite_schema but its
+    # dependency is missing, so a SELECT raises OperationalError.
+    conn.execute('CREATE VIEW "docs_demo" AS SELECT * FROM "missing_dep"')
+    conn.commit()
+
+    try:
+        store.export_rows("demo")
+    except sqlite3.OperationalError:
+        pass  # correct — object exists but is broken
+    else:
+        raise AssertionError(
+            "export_rows should propagate OperationalError for a broken view, "
+            "not silently return []"
+        )
+
+
+def test_scalar_store_export_rows_genuinely_missing_still_returns_empty(tmp_path):
+    """PR12: a collection whose table truly does not exist must still return []."""
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+    # Never created "never_existed"
+    assert store.export_rows("never_existed") == []

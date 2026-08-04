@@ -13,6 +13,11 @@ try:
 except ImportError:  # pragma: no cover - supports direct file execution
     from hypervec_server_engine import ConflictError, HypervecServerEngine
 
+# First-version bundle upload ceiling.  v1 buffers the whole bundle in memory,
+# so reject anything larger up front (both via Content-Length and actual size)
+# rather than risk exhausting server memory.
+_MAX_BUNDLE_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
 
 def _require_fastapi():
     try:
@@ -294,9 +299,25 @@ def create_app(
         The collection metadata entry must already exist (created beforehand).
         """
         try:
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared = int(content_length)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > _MAX_BUNDLE_UPLOAD_BYTES:
+                    raise ValueError(
+                        f"uploaded bundle is too large ({declared} bytes); "
+                        f"limit is {_MAX_BUNDLE_UPLOAD_BYTES} bytes."
+                    )
             body = await request.body()
             if not body:
                 raise ValueError("uploaded bundle body is empty.")
+            if len(body) > _MAX_BUNDLE_UPLOAD_BYTES:
+                raise ValueError(
+                    f"uploaded bundle is too large ({len(body)} bytes); "
+                    f"limit is {_MAX_BUNDLE_UPLOAD_BYTES} bytes."
+                )
             with tempfile.NamedTemporaryFile(delete=False, suffix=".hypervec-bundle") as f:
                 f.write(body)
                 tmp_path = f.name

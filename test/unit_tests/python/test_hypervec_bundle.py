@@ -155,3 +155,182 @@ def test_bundle_read_detects_index_checksum_mismatch(tmp_path):
         assert "checksum mismatch" in str(exc)
     else:
         raise AssertionError("should have raised ValueError for checksum mismatch")
+
+
+def test_bundle_read_rejects_missing_required_checksum(tmp_path):
+    bundle_mod = load_module("hypervec_bundle")
+
+    bad = tmp_path / "bad.hypervec-bundle"
+    with zipfile.ZipFile(bad, "w") as zf:
+        # Valid format + members but missing scalar_checksum/schema_checksum.
+        zf.writestr(
+            "manifest.json",
+            json.dumps({"format": bundle_mod.BUNDLE_FORMAT, "index_checksum": "sha256:x"}),
+        )
+        zf.writestr("index.hypervec", b"x")
+        zf.writestr("scalar.jsonl", b"")
+
+    try:
+        bundle_mod.read_bundle(bad)
+    except ValueError as exc:
+        assert "missing required v1 field" in str(exc)
+    else:
+        raise AssertionError("should reject manifest missing required checksums")
+
+
+def test_bundle_read_rejects_extra_zip_entries(tmp_path):
+    bundle_mod = load_module("hypervec_bundle")
+    meta_mod = load_module("hypervec_meta_store")
+
+    index_path = tmp_path / "index.hypervec"
+    index_path.write_bytes(b"real-index")
+    meta = make_fake_meta(meta_mod)
+    good = tmp_path / "good.hypervec-bundle"
+    bundle_mod.create_bundle("testcol", index_path, [], meta, good)
+
+    # Repack with an extra stray entry.
+    bomb = tmp_path / "bomb.hypervec-bundle"
+    with zipfile.ZipFile(good) as zin, zipfile.ZipFile(bomb, "w") as zout:
+        for item in zin.infolist():
+            zout.writestr(item, zin.read(item.filename))
+        zout.writestr("evil.bin", b"0" * 1024)
+
+    try:
+        bundle_mod.read_bundle(bomb)
+    except ValueError as exc:
+        assert "unexpected entries" in str(exc)
+    else:
+        raise AssertionError("should reject bundle with extra zip entries")
+
+
+def test_bundle_read_rejects_noncontiguous_row_ids(tmp_path):
+    bundle_mod = load_module("hypervec_bundle")
+    meta_mod = load_module("hypervec_meta_store")
+
+    index_path = tmp_path / "index.hypervec"
+    index_path.write_bytes(b"idx")
+    meta = make_fake_meta(meta_mod)
+    rows = [
+        {"row_id": 0, "doc_id": "a", "vector": [0.1, 0.2], "text_content": "", "metadata": {}},
+        {"row_id": 5, "doc_id": "b", "vector": [0.3, 0.4], "text_content": "", "metadata": {}},
+    ]
+    out = tmp_path / "gap.hypervec-bundle"
+    bundle_mod.create_bundle("testcol", index_path, rows, meta, out)
+
+    try:
+        bundle_mod.read_bundle(out)
+    except ValueError as exc:
+        assert "cover 0" in str(exc) or "contiguous" in str(exc) or "total" in str(exc)
+    else:
+        raise AssertionError("should reject non-contiguous row_ids")
+
+
+# ---------------------------------------------------------------------------
+# validate_index_label_mapping (PR13-3.1)
+# ---------------------------------------------------------------------------
+
+
+def _rows(*row_ids, dim=2):
+    return [
+        {"row_id": rid, "doc_id": f"d{i}", "vector": [0.1] * dim,
+         "text_content": "", "metadata": {}}
+        for i, rid in enumerate(row_ids)
+    ]
+
+
+def test_validate_label_mapping_accepts_contiguous():
+    m = load_module("hypervec_bundle")
+    # 0..2 in any order is valid
+    m.validate_index_label_mapping(_rows(2, 0, 1), total=3, dim=2)
+
+
+def test_validate_label_mapping_rejects_gap():
+    m = load_module("hypervec_bundle")
+    try:
+        m.validate_index_label_mapping(_rows(0, 2), total=2, dim=2)
+    except ValueError as exc:
+        assert "cover 0" in str(exc)
+    else:
+        raise AssertionError("gap in row_ids should be rejected")
+
+
+def test_validate_label_mapping_rejects_duplicate():
+    m = load_module("hypervec_bundle")
+    try:
+        m.validate_index_label_mapping(_rows(0, 0), total=2, dim=2)
+    except ValueError as exc:
+        assert "duplicate" in str(exc)
+    else:
+        raise AssertionError("duplicate row_id should be rejected")
+
+
+def test_validate_label_mapping_rejects_bool_row_id():
+    m = load_module("hypervec_bundle")
+    # True would pass isinstance(x, int); must be rejected explicitly.
+    rows = [{"row_id": True, "doc_id": "a", "vector": [0.1, 0.2], "metadata": {}}]
+    try:
+        m.validate_index_label_mapping(rows, total=1, dim=2)
+    except ValueError as exc:
+        assert "non-integer" in str(exc)
+    else:
+        raise AssertionError("bool row_id should be rejected")
+
+
+def test_validate_label_mapping_rejects_non_integer_row_id():
+    m = load_module("hypervec_bundle")
+    rows = [{"row_id": "0", "doc_id": "a", "vector": [0.1, 0.2], "metadata": {}}]
+    try:
+        m.validate_index_label_mapping(rows, total=1, dim=2)
+    except ValueError as exc:
+        assert "non-integer" in str(exc)
+    else:
+        raise AssertionError("string row_id should be rejected")
+
+
+def test_validate_label_mapping_rejects_wrong_vector_dim():
+    m = load_module("hypervec_bundle")
+    rows = [{"row_id": 0, "doc_id": "a", "vector": [0.1, 0.2, 0.3], "metadata": {}}]
+    try:
+        m.validate_index_label_mapping(rows, total=1, dim=2)
+    except ValueError as exc:
+        assert "vector dim" in str(exc)
+    else:
+        raise AssertionError("wrong vector dim should be rejected")
+
+
+def test_validate_label_mapping_rejects_2d_vector():
+    m = load_module("hypervec_bundle")
+    rows = [{"row_id": 0, "doc_id": "a", "vector": [[0.1, 0.2]], "metadata": {}}]
+    try:
+        m.validate_index_label_mapping(rows, total=1, dim=None)
+    except ValueError as exc:
+        assert "1-D" in str(exc)
+    else:
+        raise AssertionError("2-D vector should be rejected")
+
+
+def test_validate_label_mapping_rejects_unknown_strategy():
+    m = load_module("hypervec_bundle")
+    try:
+        m.validate_index_label_mapping(_rows(0), total=1, dim=2,
+                                       label_strategy="explicit_map")
+    except ValueError as exc:
+        assert "label_strategy" in str(exc)
+    else:
+        raise AssertionError("unknown strategy should be rejected")
+
+
+def test_bundle_manifest_records_label_strategy(tmp_path):
+    bundle_mod = load_module("hypervec_bundle")
+    meta_mod = load_module("hypervec_meta_store")
+    index_path = tmp_path / "index.hypervec"
+    index_path.write_bytes(b"idx")
+    meta = make_fake_meta(meta_mod)
+    rows = _rows(0, 1)
+    out = tmp_path / "b.hypervec-bundle"
+    manifest = bundle_mod.create_bundle("testcol", index_path, rows, meta, out)
+    assert manifest["label_strategy"] == bundle_mod.LABEL_STRATEGY_IMPLICIT_SEQUENTIAL
+    # round-trips through read_bundle
+    m2, _, rows2 = bundle_mod.read_bundle(out)
+    assert m2["label_strategy"] == bundle_mod.LABEL_STRATEGY_IMPLICIT_SEQUENTIAL
+    assert len(rows2) == 2

@@ -15,6 +15,10 @@ class FakeIndexFlatL2:
     def train(self, x) -> None:
         self.is_trained = True
 
+    @property
+    def n_total(self) -> int:
+        return int(self.vectors.shape[0])
+
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
 
@@ -30,9 +34,11 @@ class FakeHypervec:
     kMetricL2 = 1
     kMetricInnerProduct = 0
 
-    def __init__(self) -> None:
+    def __init__(self, *, write_index_fail: bool = False, delay: float = 0.0) -> None:
         self.saved_index = None
         self.constructor_calls = []
+        self.write_index_fail = write_index_fail
+        self.delay = delay
 
     def IndexFlatL2(self, d: int):
         self.constructor_calls.append(("IndexFlatL2", d))
@@ -67,10 +73,18 @@ class FakeHypervec:
         return FakeIndexFlatL2(d, trained=False)
 
     def write_index(self, index, path: str) -> None:
+        if self.delay:
+            import time as _time
+            _time.sleep(self.delay)
+        if self.write_index_fail:
+            raise RuntimeError("injected write_index failure")
         self.saved_index = index
         Path(path).write_text("fake", encoding="utf-8")
 
     def read_index(self, path: str):
+        if self.delay:
+            import time as _time
+            _time.sleep(self.delay)
         return self.saved_index
 
 
@@ -375,9 +389,157 @@ def test_engine_purge_requires_export_by_default(tmp_path):
         engine.purge_collection_data("col1", require_exported=True)
     except Exception as exc:
         assert type(exc).__name__ == "ConflictError"
-        assert "no recorded export" in str(exc)
+        assert "no export matching the current data" in str(exc)
     else:
         raise AssertionError("should have raised ConflictError")
+
+
+def test_engine_export_bundle_rejects_stale_index(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Insert more rows WITHOUT flushing — index is now stale.
+    engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("stale-index export should raise ConflictError")
+
+    # After re-flush the export succeeds and records the exported data version.
+    engine.flush("col1")
+    result = engine.export_collection_bundle("col1")
+    assert result["bundle_checksum"].startswith("sha256:")
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version == meta.data_version
+    assert meta.exported_bundle_checksum == result["bundle_checksum"]
+
+
+def test_engine_flush_marks_index_fresh(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    meta = engine.meta_store.get("col1")
+    assert meta.index_version == meta.data_version
+
+
+def test_engine_purge_blocked_when_data_changed_after_export(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    # New data lands after the export — the historical export no longer covers
+    # the current snapshot, so purge must be refused.
+    engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "no export matching the current data" in str(exc)
+    else:
+        raise AssertionError("purge after post-export insert should raise ConflictError")
+
+    # Re-export to cover the new data, then purge is allowed.
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    result = engine.purge_collection_data("col1", require_exported=True)
+    assert result["purged"] is True
+
+
+def test_engine_purge_blocked_when_index_changed_after_export(tmp_path):
+    """PR13-3.2: upload_index after export changes the index snapshot without
+    touching data_version, so a historical export must not authorize purge."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+
+    # Replace the live index via upload_index (data unchanged).  Write a source
+    # with different bytes so the uploaded index has a different checksum than
+    # the one captured at export time.
+    from pathlib import Path
+    src = tmp_path / "reupload.hypervec"
+    src.write_bytes(b"a-different-index-payload")
+    engine.upload_index("col1", src)
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "index" in str(exc).lower()
+    else:
+        raise AssertionError("purge after post-export upload_index should raise ConflictError")
+
+    # Re-export to cover the new index snapshot, then purge is allowed.
+    engine.export_collection_bundle("col1")
+    result = engine.purge_collection_data("col1", require_exported=True)
+    assert result["purged"] is True
+
+
+def test_engine_export_rejects_inconsistent_counts(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Force a mismatch between scalar count and meta.total without going stale
+    engine.scalar_store.insert_batch("col1", [(1, "b", [2.0, 3.0], "yo", {})])
+
+    try:
+        engine.export_collection_bundle("col1")
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "inconsistent" in str(exc)
+    else:
+        raise AssertionError("inconsistent counts should raise ConflictError")
+
+
+def test_engine_insert_crash_between_scalar_and_version_fails_safe(tmp_path):
+    """PR13-3.3: if we crash between the scalar write and the data_version
+    bump, export eligibility must already be invalidated so purge is refused
+    (fail-safe) rather than allowed (which would lose the just-added rows)."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    engine.export_collection_bundle("col1")
+    # At this point export covers the data: purge would be allowed.
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version == meta.data_version
+
+    # Simulate a crash during the second insert: the scalar write raises after
+    # data_version has already been bumped.
+    orig_insert_batch = engine.scalar_store.insert_batch
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected crash during scalar write")
+
+    engine.scalar_store.insert_batch = _boom
+    try:
+        engine.insert("col1", [{"id": "b", "vector": [2.0, 3.0], "contents": "yo"}])
+    except RuntimeError:
+        pass
+    finally:
+        engine.scalar_store.insert_batch = orig_insert_batch
+
+    # data_version was bumped first, so eligibility is invalidated even though
+    # the crash prevented the row from being written.
+    meta = engine.meta_store.get("col1")
+    assert meta.exported_data_version != meta.data_version
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+    else:
+        raise AssertionError("purge after crashed insert must be refused (fail-safe)")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
@@ -391,7 +553,11 @@ def test_engine_import_bundle_restores_data(tmp_path):
         ],
     )
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    # Export to an explicit path outside the collection dir — this mirrors the
+    # real flow where the client downloads the bundle off-server before purge,
+    # which wipes the collection directory.
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", bundle_dst)
     engine.purge_collection_data("col1", require_exported=True)
 
     # Verify purged state
@@ -438,7 +604,7 @@ def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    export_result = engine.export_collection_bundle("col1", tmp_path / "b.hypervec-bundle")
 
     engine.purge_collection_data("col1")
     try:
@@ -518,3 +684,324 @@ def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
         assert "purged" in str(exc)
     else:
         raise AssertionError("export_collection_bundle after purge should raise ConflictError")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: import transaction + crash recovery
+# ---------------------------------------------------------------------------
+
+
+def _make_exported_bundle(tmp_path):
+    """Create a collection and export a bundle to a stable off-collection path.
+
+    Returns (engine, fake, bundle_path).  The bundle is written outside the
+    collection directory so it survives a subsequent purge (as it would in the
+    real flow, where the client downloads it off-server first).
+    """
+    engine, fake = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert(
+        "col1",
+        [
+            {"id": "a", "vector": [0.0, 1.0], "contents": "hello"},
+            {"id": "b", "vector": [2.0, 3.0], "contents": "world"},
+        ],
+    )
+    engine.flush("col1")
+    bundle_dst = tmp_path / "downloaded.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", bundle_dst)
+    return engine, fake, export_result["path"]
+
+
+def test_engine_import_index_write_failure_leaves_live_state_intact(tmp_path):
+    from pathlib import Path
+
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    # Keep a live copy of data (don't purge) so we can prove it survives.
+    assert engine.scalar_store.count("col1") == 2
+    meta_before = engine.meta_store.get("col1")
+
+    # Arm read_index to fail while validating the staged index.
+    def _boom_read(path):
+        raise RuntimeError("injected read_index failure")
+
+    original = engine._read_index
+    engine._read_index = _boom_read
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on staged-index failure")
+    finally:
+        engine._read_index = original
+
+    # Live scalar rows untouched; no residue; state not left "importing".
+    assert engine.scalar_store.count("col1") == 2
+    assert not engine.scalar_store.has_staging("col1")
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+
+
+def test_engine_import_staging_table_failure_cleans_up(tmp_path):
+    """PR13-3.4: a failure in the scalar-staging step must sweep the staging
+    index file too (unified prepare-phase cleanup), leaving no residue."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    meta_before = engine.meta_store.get("col1")
+
+    orig = engine.scalar_store.import_rows_to_staging
+
+    def _boom(name, rows):
+        raise RuntimeError("injected staging-table failure")
+
+    engine.scalar_store.import_rows_to_staging = _boom
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on staging-table failure")
+    finally:
+        engine.scalar_store.import_rows_to_staging = orig
+
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    assert not engine.scalar_store.has_staging("col1")
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+    assert meta_after.import_txn is None
+
+
+def test_engine_import_commit_intent_failure_cleans_up(tmp_path):
+    """PR13-3.4: if the durable commit-intent write fails, the prepare-phase
+    cleanup must remove the staging index + table and restore data_state."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    meta_before = engine.meta_store.get("col1")
+
+    orig_update = engine.meta_store.update
+
+    def _boom_update(name, **changes):
+        if changes.get("data_state") == "importing":
+            raise RuntimeError("injected commit-intent write failure")
+        return orig_update(name, **changes)
+
+    engine.meta_store.update = _boom_update
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on commit-intent failure")
+    finally:
+        engine.meta_store.update = orig_update
+
+    coll_dir = engine._collection_dir("col1")
+    assert not list(coll_dir.glob("*.import.staging"))
+    assert not engine.scalar_store.has_staging("col1")
+    meta_after = engine.meta_store.get("col1")
+    assert meta_after.data_state == meta_before.data_state
+    assert meta_after.import_txn is None
+
+
+def test_engine_import_commit_staging_failure_recoverable(tmp_path):
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+
+    # Fail during the scalar commit switch.
+    def _boom_commit(name):
+        raise RuntimeError("injected commit_staging failure")
+
+    original = engine.scalar_store.commit_staging
+    engine.scalar_store.commit_staging = _boom_commit
+    try:
+        try:
+            engine.import_collection_bundle("col1", bundle_path)
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("import should have raised on commit failure")
+    finally:
+        engine.scalar_store.commit_staging = original
+
+    # Metadata is left mid-import; a fresh engine on the same data_root must
+    # recover it (roll back, since the scalar switch never completed).
+    module = load_engine_module()
+    fake2 = FakeHypervec()
+    fake2.saved_index = fake.saved_index
+    engine2 = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake2)
+    meta = engine2.meta_store.get("col1")
+    assert meta.data_state != "importing"
+    assert meta.import_txn is None
+    assert not engine2.scalar_store.has_staging("col1")
+
+
+def test_engine_recover_rolls_forward_completed_switch(tmp_path):
+    """If the switch completed but metadata finalize was lost, roll forward."""
+    engine, fake, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+    engine.import_collection_bundle("col1", bundle_path)
+
+    # Simulate a crash right before the metadata finalize by re-marking the
+    # collection "importing" while the live index + scalar rows are in place.
+    meta = engine.meta_store.get("col1")
+    engine.meta_store.update(
+        "col1",
+        data_state="importing",
+        import_txn={
+            "stage": "prepared",
+            "new_data_version": meta.data_version + 1,
+            "prev_state": "purged",
+            "total": 2,
+            "dim": 2,
+        },
+    )
+
+    module = load_engine_module()
+    fake2 = FakeHypervec()
+    fake2.saved_index = fake.saved_index
+    engine2 = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake2)
+    recovered = engine2.meta_store.get("col1")
+    assert recovered.data_state == "ready"
+    assert recovered.import_txn is None
+    assert recovered.index_version == recovered.data_version
+    assert engine2.scalar_store.count("col1") == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: purge residue cleanup + controlled export temp dir
+# ---------------------------------------------------------------------------
+
+
+def test_engine_purge_leaves_no_bundle_residue(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+    # Default (HTTP-style) export builds into the controlled .export.tmp dir.
+    engine.export_collection_bundle("col1")
+    # Simulate stray server-side artifacts a crash/abort could leave behind.
+    coll_dir = engine._collection_dir("col1")
+    (coll_dir / "col1.hypervec-bundle").write_bytes(b"leftover")
+    (coll_dir / "index.hypervec.import.staging").write_bytes(b"leftover")
+    (coll_dir / "index.hypervec.pre-import").write_bytes(b"leftover")
+
+    engine.purge_collection_data("col1", require_exported=True)
+
+    residue = []
+    for pattern in (
+        "*.hypervec-bundle",
+        "*.hypervec-bundle.tmp",
+        "*.import.staging",
+        "*.pre-import",
+        "*.tmp",
+    ):
+        residue += list(coll_dir.glob(pattern))
+    assert residue == [], f"purge left residue: {residue}"
+    assert not (coll_dir / ".export.tmp").exists()
+    assert not (coll_dir / "index.hypervec").exists()
+
+
+def test_engine_export_failure_leaves_no_residue(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    # Force create_bundle to raise mid-export by making the index file vanish
+    # right after the freshness/consistency checks would have read it... instead
+    # inject a failure via a monkeypatched scalar export.
+    def _boom_export(name):
+        raise RuntimeError("injected export_rows failure")
+
+    original = engine.scalar_store.export_rows
+    engine.scalar_store.export_rows = _boom_export
+    try:
+        try:
+            engine.export_collection_bundle("col1")
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("export should have raised")
+    finally:
+        engine.scalar_store.export_rows = original
+
+    coll_dir = engine._collection_dir("col1")
+    # No controlled temp dir or stray bundle survives a failed export.
+    assert not list(coll_dir.glob("*.hypervec-bundle"))
+    # export_rows failed before the temp dir was created, but if it exists it
+    # must be empty of bundles.
+    export_tmp = coll_dir / ".export.tmp"
+    if export_tmp.exists():
+        assert not list(export_tmp.glob("*.hypervec-bundle"))
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: import validation (mode / schema)
+# ---------------------------------------------------------------------------
+
+
+def test_engine_import_rejects_non_replace_mode(tmp_path):
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
+    try:
+        engine.import_collection_bundle("col1", bundle_path, mode="append")
+    except ValueError as exc:
+        assert "mode" in str(exc)
+    else:
+        raise AssertionError("non-replace mode should raise ValueError")
+
+
+def test_engine_import_rejects_incompatible_schema(tmp_path):
+    engine, _, bundle_path = _make_exported_bundle(tmp_path)
+    engine.purge_collection_data("col1", require_exported=True)
+    # Mutate the target schema so its checksum no longer matches the bundle.
+    engine.meta_store.update("col1", schema={"fields": [{"name": "different"}]})
+
+    try:
+        engine.import_collection_bundle("col1", bundle_path)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+        assert "schema" in str(exc)
+    else:
+        raise AssertionError("incompatible schema should raise ConflictError")
+
+
+def test_engine_export_failure_does_not_update_eligibility(tmp_path):
+    """PR12: if export_rows() raises, last_exported_at must not be set and
+    purge must remain disallowed (fail-safe)."""
+    engine, _ = make_engine(tmp_path)
+    engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
+    engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
+    engine.flush("col1")
+
+    # Inject a failure in export_rows so the bundle write never completes.
+    def _boom(name):
+        raise RuntimeError("injected export_rows failure")
+
+    original = engine.scalar_store.export_rows
+    engine.scalar_store.export_rows = _boom
+    try:
+        try:
+            engine.export_collection_bundle("col1")
+        except RuntimeError as exc:
+            assert "injected" in str(exc)
+        else:
+            raise AssertionError("export should have raised")
+    finally:
+        engine.scalar_store.export_rows = original
+
+    meta = engine.meta_store.get("col1")
+    # Eligibility must be untouched — purge must still be refused.
+    assert meta.last_exported_at is None
+    assert meta.exported_data_version is None
+
+    try:
+        engine.purge_collection_data("col1", require_exported=True)
+    except Exception as exc:
+        assert type(exc).__name__ == "ConflictError"
+    else:
+        raise AssertionError("purge should be refused after a failed export")

@@ -68,6 +68,28 @@ def test_scalar_store_keeps_vectors_and_metadata_by_row_id(tmp_path):
     assert rows[2]["text_content"] == "zero"
 
 
+def test_scalar_store_load_all_scalars_uses_exact_table_lookup(tmp_path):
+    module = load_module("hypervec_scalar_store")
+    store = module.ScalarStore(tmp_path / "scalar.db")
+
+    assert store.load_all_scalars("demo") == {}
+
+    store.ensure_table("demo")
+    store.insert_batch(
+        "demo",
+        [
+            (0, "a", [0.0, 1.0], "zero", {"source": "manual"}),
+            (1, "b", [2.0, 3.0], "one", {"source": "other"}),
+        ],
+    )
+
+    assert store.load_all_scalars("demo") == {
+        0: {"doc_id": "a", "text_content": "zero", "metadata": {"source": "manual"}},
+        1: {"doc_id": "b", "text_content": "one", "metadata": {"source": "other"}},
+    }
+    assert store.load_all_scalars("dem") == {}
+
+
 def test_scalar_store_rejects_duplicate_doc_id(tmp_path):
     module = load_module("hypervec_scalar_store")
     store = module.ScalarStore(tmp_path / "scalar.db")

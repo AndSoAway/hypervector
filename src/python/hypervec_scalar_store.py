@@ -164,6 +164,26 @@ class ScalarStore:
         }
         return [by_row_id.get(int(row_id)) for row_id in row_ids]
 
+    def load_all_scalars(self, collection_name: str) -> dict[int, dict[str, Any]]:
+        table = self._table(collection_name)
+        exists = self._conn().execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if exists is None:
+            return {}
+        cur = self._conn().execute(
+            f'SELECT row_id, doc_id, text_content, metadata FROM "{table}"'
+        )
+        return {
+            int(row["row_id"]): {
+                "doc_id": row["doc_id"],
+                "text_content": row["text_content"],
+                "metadata": json.loads(row["metadata"] or "{}"),
+            }
+            for row in cur.fetchall()
+        }
+
     # ------------------------------------------------------------------
     # Bundle export / import / purge helpers
     # ------------------------------------------------------------------

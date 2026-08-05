@@ -136,9 +136,11 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     assert not engine.sync_check("demo", client_version=2)["needs_sync"]
 
     engine.close_collection("demo")
+    assert "demo" not in engine._scalar_cache
     loaded = engine.load_collection("demo")
     assert loaded["loaded"]
     assert loaded["version"] == 2
+    assert sorted(engine._scalar_cache["demo"]) == [0, 1, 2]
 
     results = engine.search(
         "demo",

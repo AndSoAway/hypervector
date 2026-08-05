@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sys
@@ -198,6 +199,8 @@ class HypervecServerEngine:
         self.meta_store = meta_store or MetaStore(self.data_root / "collections.json")
         self.scalar_store = scalar_store or ScalarStore(self.data_root / "scalar.db")
         self._indexes: dict[str, Any] = {}
+        self._scalar_cache: dict[str, dict[int, dict[str, Any]]] = {}
+        self._scalar_cache_max_rows = int(os.getenv("HYPERVEC_SCALAR_CACHE_MAX_ROWS", "1000000"))
         self._locks: dict[str, RWLock] = {}
         self._global_lock = threading.RLock()
 
@@ -375,6 +378,21 @@ class HypervecServerEngine:
     def _read_index(self, path: Path) -> Any:
         return self.hypervec.read_index(str(path))
 
+    def _refresh_scalar_cache(self, collection_name: str, meta: CollectionMeta) -> None:
+        if self._scalar_cache_max_rows <= 0:
+            self._scalar_cache.pop(collection_name, None)
+            return
+        if meta.total is not None and int(meta.total) > self._scalar_cache_max_rows:
+            self._scalar_cache.pop(collection_name, None)
+            self.logger.info(
+                "Skipping scalar cache for collection '%s': %d rows exceeds limit %d.",
+                collection_name,
+                int(meta.total),
+                self._scalar_cache_max_rows,
+            )
+            return
+        self._scalar_cache[collection_name] = self.scalar_store.load_all_scalars(collection_name)
+
     def _filter_match(self, row: dict[str, Any], filter_expr: str) -> bool:
         expr = (filter_expr or "").strip()
         if not expr:
@@ -463,6 +481,7 @@ class HypervecServerEngine:
         with self._lock_for(collection_name).write_lock():
             existed = self.meta_store.delete(collection_name)
             self._indexes.pop(collection_name, None)
+            self._scalar_cache.pop(collection_name, None)
             self.scalar_store.drop_table(collection_name)
             collection_dir = self._collection_dir(collection_name)
             if collection_dir.exists():
@@ -513,6 +532,7 @@ class HypervecServerEngine:
             total = self.scalar_store.count(collection_name)
             self.meta_store.update(collection_name, dim=dim, total=total)
             self._indexes.pop(collection_name, None)
+            self._scalar_cache.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
     def flush(self, collection_name: str) -> dict[str, Any]:
@@ -539,6 +559,7 @@ class HypervecServerEngine:
                 **file_info,
             )
             self._indexes[collection_name] = index
+            self._refresh_scalar_cache(collection_name, updated)
             return {
                 "flushed": True,
                 "collection_name": collection_name,
@@ -568,6 +589,7 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         meta = meta or self._meta_or_raise(collection_name)
         self._indexes[collection_name] = self._read_index(Path(meta.index_path))
+        self._refresh_scalar_cache(collection_name, meta)
         return {
             "loaded": True,
             "collection_name": collection_name,
@@ -580,6 +602,7 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name).write_lock():
             self._indexes.pop(collection_name, None)
+            self._scalar_cache.pop(collection_name, None)
             return {"closed": True, "collection_name": collection_name}
 
     def search(
@@ -627,6 +650,7 @@ class HypervecServerEngine:
                 candidate_k = min(meta.total, int(limit))
             distances, labels = self._search_index(index, query, candidate_k, search_params)
             requested = set(output_fields or [])
+            cache = self._scalar_cache.get(collection_name)
             results: list[list[dict[str, Any]]] = []
             for q_labels, q_distances in zip(labels, distances):
                 pairs = [
@@ -635,7 +659,10 @@ class HypervecServerEngine:
                     if int(label) >= 0
                 ]
                 row_ids = [row_id for row_id, _ in pairs]
-                scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
+                if cache is not None:
+                    scalars = [cache.get(row_id) for row_id in row_ids]
+                else:
+                    scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
                 hits = []
                 for (row_id, distance), scalar in zip(pairs, scalars):
                     if scalar is None:

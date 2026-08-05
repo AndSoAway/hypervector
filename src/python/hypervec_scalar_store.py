@@ -345,7 +345,7 @@ class ScalarStore:
 
     def has_staging(self, collection_name: str) -> bool:
         cur = self._conn().execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
             (self._staging_table(collection_name),),
         )
         return cur.fetchone() is not None

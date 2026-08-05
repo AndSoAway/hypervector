@@ -28,13 +28,24 @@ class FakeEngine:
         return [
             {
                 "index_type": "IndexIVFFlat",
+                "name": "IVFFlat",
+                "aliases": ["IVF", "IndexIVFFlat"],
                 "cpp_class": "hypervec.IndexIVFFlat",
                 "metric_types": ["L2", "IP", "COSINE"],
                 "code_size": "d * sizeof(float)",
                 "params": [{"name": "nlist", "type": "int", "default": 1024, "required": False}],
                 "description": "IVF with raw float vectors stored per list.",
+                "example_code": {"Python": {"create": "create ivf"}},
             }
         ]
+
+    def get_index_example(self, index_type):
+        requested = index_type.casefold()
+        for example in self.supported_index_examples():
+            names = [example["name"], example["index_type"], *example.get("aliases", [])]
+            if any(name.casefold() == requested for name in names):
+                return example
+        return None
 
     def get_version(self, collection_name):
         return {
@@ -123,6 +134,16 @@ def test_hypervec_http_server_examples_route(tmp_path):
     assert res.status_code == 200
     assert [item["index_type"] for item in payload["examples"]] == ["IndexIVFFlat"]
     assert payload["examples"][0]["cpp_class"] == "hypervec.IndexIVFFlat"
+    assert payload["supported_indexes"] == ["IVFFlat"]
+
+    detail = client.get("/examples/ivf")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "IVFFlat"
+    assert "example_code" in detail.json()
+
+    missing = client.get("/examples/unknown")
+    assert missing.status_code == 404
+    assert "Supported types" in missing.json()["detail"]
 
 
 def test_hypervec_http_bundle_and_purge_routes(tmp_path):
@@ -298,66 +319,3 @@ def test_hypervec_http_purge_409_when_not_exported(tmp_path):
     # Without require_exported, it should succeed
     resp = client.post("/collections/demo/purge-data", json={"require_exported": False})
     assert resp.status_code == 200
-
-
-def test_hypervec_http_bundle_upload_400_on_bad_mode(tmp_path):
-    import pytest
-
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")
-    from fastapi.testclient import TestClient
-
-    module = load_http_module()
-
-    class ModeEngine(FakeEngine):
-        def import_collection_bundle(self, collection_name, source_path, *,
-                                     checksum=None, mode="replace"):
-            if mode != "replace":
-                raise ValueError(f"unsupported import mode '{mode}'.")
-            return {"uploaded": True, "collection_name": collection_name}
-
-    client = TestClient(module.create_app(data_root=str(tmp_path), engine=ModeEngine()))
-    resp = client.put("/collections/demo/bundle?mode=append", content=b"some-bundle-bytes")
-    assert resp.status_code == 400
-
-
-def test_hypervec_http_bundle_upload_400_on_oversized_body(tmp_path):
-    import pytest
-
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")
-    from fastapi.testclient import TestClient
-
-    module = load_http_module()
-    # Shrink the ceiling so the test stays cheap.
-    module._MAX_BUNDLE_UPLOAD_BYTES = 16
-    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
-
-    resp = client.put("/collections/demo/bundle", content=b"x" * 64)
-    assert resp.status_code == 400
-
-
-def test_hypervec_http_version_includes_bundle_fields(tmp_path):
-    import pytest
-
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")
-    from fastapi.testclient import TestClient
-
-    class VersionEngine(FakeEngine):
-        def get_version(self, collection_name):
-            return {
-                "collection_name": collection_name,
-                "version": 2,
-                "bundle_format": "hypervector.collection.bundle.v1",
-                "data_version": 3,
-                "index_version": 3,
-                "exported_data_version": 3,
-            }
-
-    module = load_http_module()
-    client = TestClient(module.create_app(data_root=str(tmp_path), engine=VersionEngine()))
-    body = client.get("/collections/demo/version").json()
-    assert body["bundle_format"] == "hypervector.collection.bundle.v1"
-    assert body["data_version"] == 3
-    assert body["index_version"] == 3

@@ -88,9 +88,27 @@ def create_app(
     @app.get("/examples")
     def examples() -> dict[str, Any]:
         try:
-            return {"examples": engine.supported_index_examples()}
+            supported = engine.supported_index_examples()
+            return {
+                "examples": supported,
+                "supported_indexes": [item["name"] for item in supported],
+            }
         except Exception as exc:
             raise fail(exc)
+
+    @app.get("/examples/{index_type}")
+    def get_example(index_type: str) -> dict[str, Any]:
+        example = engine.get_index_example(index_type)
+        if example is None:
+            supported = [item["name"] for item in engine.supported_index_examples()]
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Index type '{index_type}' not found. "
+                    f"Supported types: {supported}"
+                ),
+            )
+        return example
 
     @app.get("/collections/{collection_name}/exists")
     def has_collection(collection_name: str) -> dict[str, Any]:

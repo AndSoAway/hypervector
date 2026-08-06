@@ -146,6 +146,26 @@ def test_pyhypervec_client_examples(monkeypatch):
     assert calls == [("GET", "/examples", None)]
 
 
+def test_pyhypervec_client_get_examples(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        if path == "/examples":
+            return {"supported_indexes": ["HNSW"]}
+        return {"name": "HNSW", "description": "details"}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    assert client.get_examples()["supported_indexes"] == ["HNSW"]
+    assert client.get_examples("HNSW")["name"] == "HNSW"
+    assert calls == [
+        ("GET", "/examples", None),
+        ("GET", "/examples/HNSW", None),
+    ]
+
+
 def test_pyhypervec_client_version_and_sync_payload(monkeypatch):
     calls = []
     client = HypervecClient("http://localhost:8080")

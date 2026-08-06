@@ -366,6 +366,18 @@ class HypervecClient:
         res = self._request("GET", "/examples")
         return list(res.get("examples", []))
 
+    def get_examples(self, index_type: str | None = None) -> dict[str, Any]:
+        """Return the supported index list or detailed documentation for one index."""
+        if self._grpc is not None:
+            if index_type is not None:
+                raise RuntimeError(
+                    "Detailed index examples are currently available over HTTP only."
+                )
+            return {"examples": self._grpc.examples()}
+        if index_type is not None:
+            return self._request("GET", f"/examples/{index_type}")
+        return self._request("GET", "/examples")
+
     def get_collection_stats(
         self,
         collection_name: str,

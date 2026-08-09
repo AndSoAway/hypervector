@@ -1,5 +1,6 @@
 # HyperVec
 
+
 > 最新 `main` 同时支持 HTTP 与 gRPC 协议。gRPC 的安装、启动、URI 和 RPC 覆盖说明见 [docs/pyhypervec_grpc_server.md](docs/pyhypervec_grpc_server.md)。
 
 HyperVec is a library for efficient similarity search and clustering of dense vectors. It contains algorithms that search in sets of vectors of any size, up to ones that possibly do not fit in RAM. It also contains supporting code for evaluation and parameter tuning. HyperVec is written in C++ with complete wrappers for Python/numpy.
@@ -37,6 +38,7 @@ The following are entry points for documentation:
 - the [doxygen documentation](https://hypervec.ai/) gives per-class information extracted from code comments
 - to reproduce results from our research papers, [Polysemous codes](https://arxiv.org/abs/1609.01882), refer to the [benchmarks README](benchs/README.md). For [Link and code: Fast indexing with graphs and compact regression codes](https://arxiv.org/abs/1804.09996), see the [link_and_code README](benchs/link_and_code)
 - the [Collection Data Bundle API](docs/collection_bundle.md) documents the collection export / import / purge flow added for the UltraRAG user-exit scenario
+
 
 ## Authors
 

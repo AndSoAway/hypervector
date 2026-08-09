@@ -20,6 +20,7 @@ set(HYPERVEC_SRC
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
+  index/hnsw/index_hnsw_rabitq.cpp
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
@@ -46,6 +47,27 @@ set(HYPERVEC_SRC
   quantization/lvq/lvq_distance_computer.cpp
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
+  quantization/rabitq/random_orthogonal_matrix.cpp
+  quantization/rabitq/rabitq.cpp
+  quantization/rabitq/index_rabitq.cpp
+  quantization/rabitq/rabitq_distance_computer.cpp
+  quantization/rabitq/index_ivfrabitq.cpp
+  utils/utils.cpp
+  utils/distances/distances.cpp
+  utils/distances/distances_fused.cpp
+  utils/distances/distances_simd.cpp
+  utils/distances/extra_distances.cpp
+  utils/selector/id_selector.cpp
+  utils/simd/simd_levels.cpp
+)
+
+set(HYPERVEC_HEADERS
+  include/index/index.h
+  include/index/ivf/index_ivf.h
+  include/index/ivf/index_ivf_flat.h
+  include/utils/distances/metric_type.h
+  include/utils/log/assert.h
+  include/utils/log/exception.h
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_fused.cpp
@@ -93,6 +115,12 @@ set(HYPERVEC_HEADERS
   include/quantization/lvq/lvq_distance_computer.h
   include/quantization/lvq/index_lvq.h
   include/quantization/lvq/index_ivflvq.h
+  include/quantization/rabitq/random_orthogonal_matrix.h
+  include/quantization/rabitq/rabitq.h
+  include/quantization/rabitq/index_rabitq.h
+  include/quantization/rabitq/rabitq_distance_computer.h
+  include/quantization/rabitq/index_ivfrabitq.h
+  include/index/hnsw/index_hnsw_rabitq.h
   include/utils/distances/distances.h
   include/utils/simd/simd_levels.h
 )

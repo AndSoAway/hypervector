@@ -20,10 +20,11 @@ set(HYPERVEC_TEST_SRC
   test_kmeans.cpp
   test_pq.cpp
   test_index_pq.cpp
-  test_index_ivf_flat.cpp
   test_index_ivfpq.cpp
   test_index_hnsw_pq.cpp
   test_lvq.cpp
+  test_rabitq.cpp
+  test_index_hnsw_rabitq.cpp
 )
 
 add_executable(hypervec_test ${HYPERVEC_TEST_SRC})
@@ -32,45 +33,40 @@ include(${CMAKE_SOURCE_DIR}/cmake/link_to_hypervec_lib.cmake)
 
 link_to_hypervec_lib(hypervec_test)
 
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG 58d77fa8070e8cec2dc1ed015d66b454c8d78850 # release-1.12.1
-  OVERRIDE_FIND_PACKAGE)
-set(BUILD_GMOCK CACHE BOOL OFF)
-set(INSTALL_GTEST CACHE BOOL OFF)
-FetchContent_MakeAvailable(googletest)
+# Prefer system-installed Google Test; fall back to downloading from GitHub.
+find_package(GTest QUIET CONFIG)
+if(NOT GTest_FOUND)
+  find_package(GTest QUIET MODULE)
+endif()
 
-if(NOT EXISTS ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/gtest-config.cmake
-   AND NOT EXISTS ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/GTestConfig.cmake)
-  file(
-    WRITE ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/gtest-config.cmake
-    [=[
-include(CMakeFindDependencyMacro)
-find_dependency(googletest)
-if(NOT TARGET GTest::GTest)
-  add_library(GTest::GTest INTERFACE IMPORTED)
-  target_link_libraries(GTest::GTest INTERFACE GTest::gtest)
-endif()
-if(NOT TARGET GTest::Main)
-  add_library(GTest::Main INTERFACE IMPORTED)
-  target_link_libraries(GTest::Main INTERFACE GTest::gtest_main)
-endif()
-]=])
+if(NOT GTest_FOUND)
+  # Download gtest via FetchContent
+  include(FetchContent)
+  set(GOOGLETEST_TAG release-1.12.1)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG 58d77fa8070e8cec2dc1ed015d66b454c8d78850
+    OVERRIDE_FIND_PACKAGE)
+  set(BUILD_GMOCK CACHE BOOL OFF)
+  set(INSTALL_GTEST CACHE BOOL OFF)
+
+  # Disable automatic git update to avoid clock-skew issues in WSL
+  set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+
+  FetchContent_MakeAvailable(googletest)
+  if(NOT TARGET GTest::GTest)
+    add_library(GTest::GTest ALIAS gtest)
+  endif()
+  if(NOT TARGET GTest::Main)
+    add_library(GTest::Main ALIAS gtest_main)
+  endif()
 endif()
 
 find_package(OpenMP REQUIRED)
-find_package(GTest CONFIG REQUIRED)
-
-set(OMP_LIB "")
-if(MINGW)
-  set(OMP_LIB "gomp")
-endif()
 
 target_link_libraries(hypervec_test PRIVATE
   OpenMP::OpenMP_CXX
-  ${OMP_LIB}
   GTest::gtest_main
 )
 

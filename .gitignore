@@ -14,6 +14,7 @@ AGENTS.md
 *.dylib
 *.pyc
 *~
+/paper/
 /.pytest-*/
 /output/
 /build/
@@ -26,6 +27,7 @@ AGENTS.md
 /c_api/gpu/bin/
 /test/unit_tests/cpp/hypervec_test
 /test/unit_tests/cpp/gtest/
+/test/datasets/
 hypervec/python/swighypervec_avx2.swig
 hypervec/python/swighypervec_avx512.swig
 hypervec/python/swighypervec_avx512_spr.swig

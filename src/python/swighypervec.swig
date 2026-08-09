@@ -14,9 +14,11 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/ivf/index_ivf.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
+#include <quantization/rabitq/index_ivfrabitq.h>
 #include <persistence/index_io.h>
 
 #include <cstring>
@@ -209,6 +211,10 @@ struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 };
 
+struct IndexIVFFlat : Index {
+  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
+};
+
 struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
@@ -244,6 +250,11 @@ struct IndexHNSWPQ : Index {
               MetricType metric = kMetricL2);
 };
 
+struct IndexIVFRaBitQ : Index {
+  IndexIVFRaBitQ(Index* quantizer, size_t d, size_t nlist, int B,
+                 MetricType metric = kMetricL2);
+};
+
 void WriteIndex(const Index* idx, const char* fname, int io_flags = 0);
 Index* ReadIndex(const char* fname, int io_flags = 0);
 
@@ -265,29 +276,8 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
     params.ef_search = ef_search;
     return index_search_with_params($self, x, k, &params);
   }
-}
 
-%extend IndexIVFFlat {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
-    hypervec::IVFSearchParameters params;
-    params.nprobe = nprobe;
-    return index_search_with_params($self, x, k, &params);
-  }
-}
-
-%extend IndexIVFLVQ {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
-    hypervec::IVFSearchParameters params;
-    params.nprobe = nprobe;
-    return index_search_with_params($self, x, k, &params);
-  }
-}
-
-%extend IndexIVFPQ {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
+  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k, int nprobe) {
     hypervec::IVFSearchParameters params;
     params.nprobe = nprobe;
     return index_search_with_params($self, x, k, &params);

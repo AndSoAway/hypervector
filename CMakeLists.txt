@@ -20,7 +20,9 @@ project(HYPERVEC
   LANGUAGES CXX)
 include(GNUInstallDirs)
 
+
 set(CMAKE_CXX_STANDARD 20)
+
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
@@ -46,7 +48,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
   add_subdirectory(test/unit_tests)
-  if(NOT HYPERVEC_UNIT_TESTS_ONLY)
-    add_subdirectory(test/benchmarks)
-  endif()
+endif()
+if(NOT HYPERVEC_UNIT_TESTS_ONLY)
+  add_subdirectory(test/benchmarks)
 endif()

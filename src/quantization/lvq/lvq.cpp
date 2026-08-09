@@ -239,9 +239,18 @@ void LocalVectorQuantizer::DecodeBatch(idx_t n, const uint8_t* codes,
 void LocalVectorQuantizer::ComputeDistanceTable(const float* x,
                                                 float* dis_table) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  const size_t ncodewords = static_cast<size_t>(nlocal) * ksub;
-  fvec_L2sqr_ny(dis_table, x, decoded_codebooks.data(), static_cast<size_t>(d),
-                ncodewords);
+  std::vector<float> decoded(static_cast<size_t>(d));
+  for (idx_t local_id = 0; local_id < nlocal; local_id++) {
+    const float* centroid = GetLocalCentroid(local_id);
+    for (idx_t code_id = 0; code_id < ksub; code_id++) {
+      const float* residual = GetResidualCodeword(local_id, code_id);
+      for (idx_t j = 0; j < d; j++) {
+        decoded[static_cast<size_t>(j)] = centroid[j] + residual[j];
+      }
+      dis_table[local_id * ksub + code_id] =
+        fvec_L2sqr(x, decoded.data(), static_cast<size_t>(d));
+    }
+  }
 }
 
 float LocalVectorQuantizer::ApplyDistanceTable(const float* dis_table,

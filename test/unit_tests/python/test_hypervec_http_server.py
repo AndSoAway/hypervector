@@ -123,3 +123,241 @@ def test_hypervec_http_server_examples_route(tmp_path):
     assert res.status_code == 200
     assert [item["index_type"] for item in payload["examples"]] == ["IndexIVFFlat"]
     assert payload["examples"][0]["cpp_class"] == "hypervec.IndexIVFFlat"
+
+
+def test_hypervec_http_bundle_and_purge_routes(tmp_path):
+    import io
+    import zipfile
+
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    BUNDLE_FORMAT = "hypervector.collection.bundle.v1"
+
+    # Build a minimal fake bundle for upload tests
+    def make_fake_bundle() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            import json
+            manifest = {
+                "format": BUNDLE_FORMAT,
+                "collection_name": "demo",
+                "version": 2,
+                "dim": 2,
+                "total": 1,
+                "id_field": "id",
+                "vector_field": "vector",
+                "text_field": "contents",
+                "index_checksum": None,
+                "index_size_bytes": 4,
+                "scalar_checksum": None,
+                "schema_checksum": None,
+                "exported_at": 1000.0,
+            }
+            zf.writestr("manifest.json", json.dumps(manifest))
+            zf.writestr("index.hypervec", b"fake")
+            zf.writestr("scalar.jsonl", b"")
+        return buf.getvalue()
+
+    class BundleEngine(FakeEngine):
+        def export_collection_bundle(self, collection_name, output_path=None):
+            import hashlib as _h
+            data = make_fake_bundle()
+            path = tmp_path / f"{collection_name}.hypervec-bundle"
+            path.write_bytes(data)
+            return {
+                "collection_name": collection_name,
+                "path": str(path),
+                "bytes": len(data),
+                "version": 2,
+                "bundle_format": BUNDLE_FORMAT,
+                "bundle_checksum": "sha256:" + _h.sha256(data).hexdigest(),
+                "manifest": {},
+            }
+
+        def import_collection_bundle(self, collection_name, source_path, *,
+                                     checksum=None, mode="replace"):
+            return {
+                "uploaded": True,
+                "collection_name": collection_name,
+                "version": 3,
+                "total": 1,
+                "dim": 2,
+                "data_state": "ready",
+                "index_checksum": "sha256:abc",
+                "index_size_bytes": 4,
+            }
+
+        def purge_collection_data(self, collection_name, *, require_exported=True):
+            return {
+                "purged": True,
+                "collection_name": collection_name,
+                "metadata_preserved": True,
+                "scalar_deleted": True,
+                "index_deleted": True,
+                "memory_unloaded": True,
+                "data_state": "purged",
+                "last_known_total": 1,
+                "last_purged_at": 1000.0,
+            }
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=BundleEngine()))
+
+    # GET /collections/demo/bundle → 200 binary response
+    resp = client.get("/collections/demo/bundle")
+    assert resp.status_code == 200
+    assert resp.headers["x-hypervec-bundle-format"] == BUNDLE_FORMAT
+    assert resp.headers["x-hypervec-collection-version"] == "2"
+
+    # PUT /collections/demo/bundle → 200 JSON
+    bundle_bytes = make_fake_bundle()
+    resp = client.put("/collections/demo/bundle", content=bundle_bytes)
+    assert resp.status_code == 200
+    assert resp.json()["uploaded"] is True
+    assert resp.json()["data_state"] == "ready"
+
+    # POST /collections/demo/purge-data → 200 JSON
+    resp = client.post("/collections/demo/purge-data", json={"require_exported": True})
+    assert resp.status_code == 200
+    assert resp.json()["purged"] is True
+    assert resp.json()["data_state"] == "purged"
+
+    # POST without body (uses default)
+    resp = client.post("/collections/demo/purge-data")
+    assert resp.status_code == 200
+
+
+def test_hypervec_http_bundle_404_on_missing_collection(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    class ErrorEngine(FakeEngine):
+        def export_collection_bundle(self, collection_name, output_path=None):
+            raise FileNotFoundError(f"collection '{collection_name}' does not exist.")
+
+        def import_collection_bundle(self, collection_name, source_path, *,
+                                     checksum=None, mode="replace"):
+            raise FileNotFoundError(f"collection '{collection_name}' does not exist.")
+
+        def purge_collection_data(self, collection_name, *, require_exported=True):
+            raise FileNotFoundError(f"collection '{collection_name}' does not exist.")
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=ErrorEngine()))
+
+    assert client.get("/collections/missing/bundle").status_code == 404
+    assert client.put("/collections/missing/bundle", content=b"x").status_code == 404
+    assert client.post("/collections/missing/purge-data").status_code == 404
+
+
+def test_hypervec_http_bundle_upload_400_on_empty_body(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
+
+    resp = client.put("/collections/demo/bundle", content=b"")
+    assert resp.status_code == 400
+
+
+def test_hypervec_http_purge_409_when_not_exported(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    # Load the HTTP module first so hypervec.hypervec_server_engine is registered
+    # in sys.modules; then pull ConflictError from that same instance so that
+    # isinstance() in fail() recognises it and returns 409 (not 500).
+    module = load_http_module()
+    _ConflictError = module.ConflictError
+
+    class NoExportEngine(FakeEngine):
+        def purge_collection_data(self, collection_name, *, require_exported=True):
+            if require_exported:
+                raise _ConflictError("no recorded export")
+            return {"purged": True, "collection_name": collection_name}
+
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=NoExportEngine()))
+
+    resp = client.post("/collections/demo/purge-data", json={"require_exported": True})
+    assert resp.status_code == 409  # ConflictError → 409
+
+    # Without require_exported, it should succeed
+    resp = client.post("/collections/demo/purge-data", json={"require_exported": False})
+    assert resp.status_code == 200
+
+
+def test_hypervec_http_bundle_upload_400_on_bad_mode(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+
+    class ModeEngine(FakeEngine):
+        def import_collection_bundle(self, collection_name, source_path, *,
+                                     checksum=None, mode="replace"):
+            if mode != "replace":
+                raise ValueError(f"unsupported import mode '{mode}'.")
+            return {"uploaded": True, "collection_name": collection_name}
+
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=ModeEngine()))
+    resp = client.put("/collections/demo/bundle?mode=append", content=b"some-bundle-bytes")
+    assert resp.status_code == 400
+
+
+def test_hypervec_http_bundle_upload_400_on_oversized_body(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+    # Shrink the ceiling so the test stays cheap.
+    module._MAX_BUNDLE_UPLOAD_BYTES = 16
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
+
+    resp = client.put("/collections/demo/bundle", content=b"x" * 64)
+    assert resp.status_code == 400
+
+
+def test_hypervec_http_version_includes_bundle_fields(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    class VersionEngine(FakeEngine):
+        def get_version(self, collection_name):
+            return {
+                "collection_name": collection_name,
+                "version": 2,
+                "bundle_format": "hypervector.collection.bundle.v1",
+                "data_version": 3,
+                "index_version": 3,
+                "exported_data_version": 3,
+            }
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=VersionEngine()))
+    body = client.get("/collections/demo/version").json()
+    assert body["bundle_format"] == "hypervector.collection.bundle.v1"
+    assert body["data_version"] == 3
+    assert body["index_version"] == 3

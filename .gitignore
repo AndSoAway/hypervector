@@ -2,6 +2,8 @@
 CLAUDE.md
 AGENTS.md
 /.vscode/
+/todo.md
+/notes/
 *.log
 *.swp
 *.swo
@@ -12,8 +14,10 @@ AGENTS.md
 *.dylib
 *.pyc
 *~
-/build/
 /paper/
+/.pytest-*/
+/output/
+/build/
 /config.*
 /aclocal.m4
 /autom4te.cache/

@@ -68,6 +68,22 @@ set(HYPERVEC_HEADERS
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
   include/utils/log/exception.h
+  utils/utils.cpp
+  utils/distances/distances.cpp
+  utils/distances/distances_fused.cpp
+  utils/distances/distances_simd.cpp
+  utils/distances/extra_distances.cpp
+  utils/selector/id_selector.cpp
+  utils/simd/simd_levels.cpp
+)
+
+set(HYPERVEC_HEADERS
+  include/index/index.h
+  include/index/ivf/index_ivf.h
+  include/index/ivf/index_ivf_flat.h
+  include/utils/distances/metric_type.h
+  include/utils/log/assert.h
+  include/utils/log/exception.h
   include/utils/common/platform_macros.h
   include/utils/distances/distance_computer.h
   include/utils/structures/maybe_owned_vector.h

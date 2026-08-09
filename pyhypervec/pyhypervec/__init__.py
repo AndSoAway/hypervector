@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .client import HypervecClient
-from .exceptions import HypervecClientError, HypervecHTTPError
+from .exceptions import HypervecClientError, HypervecGrpcError, HypervecHTTPError
 from .schema import CollectionSchema, DataType, IndexParams
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "DataType",
     "HypervecClient",
     "HypervecClientError",
+    "HypervecGrpcError",
     "HypervecHTTPError",
     "IndexParams",
 ]

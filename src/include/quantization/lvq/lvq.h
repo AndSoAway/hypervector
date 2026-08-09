@@ -47,6 +47,7 @@ struct LocalVectorQuantizer {
 
   std::vector<float> local_centroids;
   std::vector<float> residual_codebooks;
+  std::vector<float> decoded_codebooks;
 
   LocalVectorQuantizer() = default;
   LocalVectorQuantizer(idx_t d, idx_t nlocal, int nbits);
@@ -66,6 +67,7 @@ struct LocalVectorQuantizer {
   }
 
   void SetDerivedValues();
+  void BuildDecodedCodebooks();
   void Train(idx_t n, const float* x, const LVQParameters& params = {});
   void ComputeCode(const float* x, uint8_t* code) const;
   void ComputeCodes(idx_t n, const float* x, uint8_t* codes) const;

@@ -97,6 +97,23 @@ void LocalVectorQuantizer::SetDerivedValues() {
   code_size = (static_cast<size_t>(local_nbits + nbits) + 7) / 8;
   local_centroids.resize(static_cast<size_t>(nlocal) * d);
   residual_codebooks.resize(static_cast<size_t>(nlocal) * ksub * d);
+  decoded_codebooks.resize(static_cast<size_t>(nlocal) * ksub * d);
+}
+
+void LocalVectorQuantizer::BuildDecodedCodebooks() {
+  decoded_codebooks.resize(static_cast<size_t>(nlocal) * ksub * d);
+#pragma omp parallel for if (nlocal > 1)
+  for (idx_t local_id = 0; local_id < nlocal; local_id++) {
+    const float* centroid = GetLocalCentroid(local_id);
+    for (idx_t code_id = 0; code_id < ksub; code_id++) {
+      const float* residual = GetResidualCodeword(local_id, code_id);
+      float* decoded = decoded_codebooks.data() +
+                       static_cast<size_t>(local_id * ksub + code_id) * d;
+      for (idx_t j = 0; j < d; j++) {
+        decoded[static_cast<size_t>(j)] = centroid[j] + residual[j];
+      }
+    }
+  }
 }
 
 void LocalVectorQuantizer::Train(idx_t n, const float* x,
@@ -163,6 +180,7 @@ void LocalVectorQuantizer::Train(idx_t n, const float* x,
     }
   }
   handleExceptions(exceptions);
+  BuildDecodedCodebooks();
   is_trained = true;
 }
 

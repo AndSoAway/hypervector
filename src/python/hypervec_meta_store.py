@@ -30,6 +30,29 @@ class CollectionMeta:
     created_at: float
     updated_at: float
     flushed_at: float | None = None
+    # Bundle / purge state fields (added for UltraRAG user-exit flow)
+    data_state: str = "ready"            # "ready" | "purged" | "importing" | "invalid"
+    last_known_total: int | None = None  # row count at last purge/export
+    last_exported_at: float | None = None
+    last_purged_at: float | None = None
+    bundle_format: str | None = None
+    # Dual version tracking for consistency / export-eligibility guarantees.
+    # data_version increments on every scalar-data mutation (insert / import
+    # commit / purge).  index_version is set equal to data_version whenever the
+    # index is (re)built from that data (flush / upload_index / import commit).
+    # The index is fresh iff index_version == data_version.
+    data_version: int = 1
+    index_version: int = 0               # 0 = never built -> stale until first flush
+    exported_data_version: int | None = None
+    exported_bundle_checksum: str | None = None
+    # Index snapshot covered by the last successful export.  Purge eligibility
+    # must bind BOTH the data snapshot and the index snapshot: upload_index()
+    # can replace the index without changing data_version, so an old export
+    # that no longer matches the live index must not authorize a purge.
+    exported_index_version: int | None = None
+    exported_index_checksum: str | None = None
+    # Durable commit-intent record for in-flight bundle imports (Phase 3).
+    import_txn: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,6 +75,18 @@ class CollectionMeta:
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
             flushed_at=data.get("flushed_at"),
+            data_state=str(data.get("data_state") or "ready"),
+            last_known_total=data.get("last_known_total"),
+            last_exported_at=data.get("last_exported_at"),
+            last_purged_at=data.get("last_purged_at"),
+            bundle_format=data.get("bundle_format"),
+            data_version=int(data.get("data_version", 1)),
+            index_version=int(data.get("index_version", 0)),
+            exported_data_version=data.get("exported_data_version"),
+            exported_bundle_checksum=data.get("exported_bundle_checksum"),
+            exported_index_version=data.get("exported_index_version"),
+            exported_index_checksum=data.get("exported_index_checksum"),
+            import_txn=data.get("import_txn"),
         )
 
 

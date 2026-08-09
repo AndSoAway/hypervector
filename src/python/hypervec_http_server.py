@@ -6,29 +6,37 @@
 import argparse
 import logging
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
-from .hypervec_server_engine import HypervecServerEngine
+try:
+    from .hypervec_server_engine import ConflictError, HypervecServerEngine
+except ImportError:  # pragma: no cover - supports direct file execution
+    from hypervec_server_engine import ConflictError, HypervecServerEngine
+
+# First-version bundle upload ceiling.  v1 buffers the whole bundle in memory,
+# so reject anything larger up front (both via Content-Length and actual size)
+# rather than risk exhausting server memory.
+_MAX_BUNDLE_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 
 def _require_fastapi():
     try:
-        from fastapi import FastAPI, HTTPException, Query, Request
+        from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "HyperVec HTTP server requires fastapi and pydantic."
         ) from exc
-    return FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field
+    return Body, FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field
 
 
 def create_app(
     *,
     data_root: str,
-    engine: HypervecServerEngine | None = None,
+    engine: Optional[HypervecServerEngine] = None,
 ) -> Any:
-    FastAPI, HTTPException, Query, Request, FileResponse, BaseModel, Field = _require_fastapi()
+    Body, FastAPI, HTTPException, Query, Request, Response, FileResponse, BaseModel, Field = _require_fastapi()
     engine = engine or HypervecServerEngine(data_root)
 
     class CreateCollectionRequest(BaseModel):
@@ -44,16 +52,16 @@ def create_app(
         search_params: dict[str, Any] = Field(default_factory=dict)
         output_fields: list[str] = Field(default_factory=list)
         filter: str = ""
-        consistency_level: str | None = None
+        consistency_level: Optional[str] = None
 
     class SyncCheckRequest(BaseModel):
         client_version: int
-        client_checksum: str | None = None
+        client_checksum: Optional[str] = None
 
     def fail(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
             return HTTPException(status_code=404, detail=str(exc))
-        if isinstance(exc, FileExistsError):
+        if isinstance(exc, (FileExistsError, ConflictError)):
             return HTTPException(status_code=409, detail=str(exc))
         if isinstance(exc, ValueError):
             return HTTPException(status_code=400, detail=str(exc))
@@ -104,7 +112,7 @@ def create_app(
     @app.post("/collections/{collection_name}/create")
     def create_collection(
         collection_name: str,
-        request: CreateCollectionRequest,
+        request: CreateCollectionRequest = Body(...),
     ) -> dict[str, Any]:
         try:
             return engine.create_collection(
@@ -123,7 +131,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/insert")
-    def insert(collection_name: str, request: InsertRequest) -> dict[str, Any]:
+    def insert(collection_name: str, request: InsertRequest = Body(...)) -> dict[str, Any]:
         try:
             return engine.insert(collection_name, request.data)
         except Exception as exc:
@@ -151,7 +159,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/search")
-    def search(collection_name: str, request: SearchRequest) -> dict[str, Any]:
+    def search(collection_name: str, request: SearchRequest = Body(...)) -> dict[str, Any]:
         try:
             return {
                 "results": engine.search(
@@ -175,7 +183,7 @@ def create_app(
             raise fail(exc)
 
     @app.post("/collections/{collection_name}/sync-check")
-    def sync_check(collection_name: str, request: SyncCheckRequest) -> dict[str, Any]:
+    def sync_check(collection_name: str, request: SyncCheckRequest = Body(...)) -> dict[str, Any]:
         try:
             return engine.sync_check(
                 collection_name,
@@ -210,8 +218,8 @@ def create_app(
     async def upload_index(
         collection_name: str,
         request: Request,
-        version: int | None = Query(default=None),
-        checksum: str | None = Query(default=None),
+        version: Optional[int] = Query(default=None),
+        checksum: Optional[str] = Query(default=None),
     ) -> dict[str, Any]:
         try:
             body = await request.body()
@@ -234,6 +242,118 @@ def create_app(
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+        except Exception as exc:
+            raise fail(exc)
+
+    # ------------------------------------------------------------------
+    # Bundle download / upload / purge-data
+    # ------------------------------------------------------------------
+
+    class PurgeDataRequest(BaseModel):
+        require_exported: bool = True
+
+    @app.get("/collections/{collection_name}/bundle")
+    def download_bundle(collection_name: str) -> Response:
+        """Download a collection data bundle (scalar rows + index).
+
+        Returns a ZIP file with manifest.json, index.hypervec, scalar.jsonl.
+        The bundle is generated on-the-fly into the collection's directory.
+        """
+        try:
+            result = engine.export_collection_bundle(collection_name)
+        except Exception as exc:
+            raise fail(exc)
+        bundle_path = result["path"]
+        with open(bundle_path, "rb") as f:
+            data = f.read()
+        import os as _os
+        try:
+            _os.unlink(bundle_path)
+        except OSError:
+            pass
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{collection_name}.hypervec-bundle"'
+            ),
+            "X-Hypervec-Collection-Version": str(result["version"]),
+            "X-Hypervec-Bundle-Format": result["bundle_format"],
+            "X-Hypervec-Bundle-Checksum": result["bundle_checksum"],
+            "X-Hypervec-Bundle-Size": str(result["bytes"]),
+        }
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    @app.put("/collections/{collection_name}/bundle")
+    async def upload_bundle(
+        collection_name: str,
+        request: Request,
+        checksum: Optional[str] = Query(default=None),
+        mode: str = Query(default="replace"),
+    ) -> dict[str, Any]:
+        """Upload (restore) a collection data bundle.
+
+        Restores scalar rows and index.hypervec from the uploaded bundle.
+        The collection metadata entry must already exist (created beforehand).
+        """
+        try:
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared = int(content_length)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > _MAX_BUNDLE_UPLOAD_BYTES:
+                    raise ValueError(
+                        f"uploaded bundle is too large ({declared} bytes); "
+                        f"limit is {_MAX_BUNDLE_UPLOAD_BYTES} bytes."
+                    )
+            body = await request.body()
+            if not body:
+                raise ValueError("uploaded bundle body is empty.")
+            if len(body) > _MAX_BUNDLE_UPLOAD_BYTES:
+                raise ValueError(
+                    f"uploaded bundle is too large ({len(body)} bytes); "
+                    f"limit is {_MAX_BUNDLE_UPLOAD_BYTES} bytes."
+                )
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".hypervec-bundle") as f:
+                f.write(body)
+                tmp_path = f.name
+            try:
+                return engine.import_collection_bundle(
+                    collection_name,
+                    tmp_path,
+                    checksum=checksum,
+                    mode=mode,
+                )
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except Exception as exc:
+            raise fail(exc)
+
+    @app.post("/collections/{collection_name}/purge-data")
+    def purge_data(
+        collection_name: str,
+        request: Optional[PurgeDataRequest] = Body(default=None),
+    ) -> dict[str, Any]:
+        """Purge user data (index + scalar rows) while keeping collection metadata.
+
+        Safe for UltraRAG user-exit flow: call download_bundle first, then
+        purge-data.  Set require_exported=false only if you intentionally want
+        to destroy data without a prior bundle export.
+        """
+        try:
+            request = request or PurgeDataRequest()
+            return engine.purge_collection_data(
+                collection_name,
+                require_exported=request.require_exported,
+            )
         except Exception as exc:
             raise fail(exc)
 

@@ -209,20 +209,27 @@ struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 };
 
-struct IndexIVFFlat : Index {
-  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
-};
-
 struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
 
-struct IndexIVFLVQ : Index {
+%nodefaultctor IndexIVF;
+struct IndexIVF : Index {
+  idx_t nlist;
+  idx_t nprobe;
+};
+%clearnodefaultctor IndexIVF;
+
+struct IndexIVFFlat : IndexIVF {
+  IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric = kMetricL2);
+};
+
+struct IndexIVFLVQ : IndexIVF {
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 };
 
-struct IndexIVFPQ : Index {
+struct IndexIVFPQ : IndexIVF {
   IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
              MetricType metric = kMetricL2);
 };
@@ -253,10 +260,26 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
     return index_search_with_params($self, x, k, nullptr);
   }
 
-  PyObject* search_with_ef(PyObject* x, hypervec::idx_t k, int ef_search) {
-    hypervec::SearchParametersHNSW params;
-    params.ef_search = ef_search;
-    return index_search_with_params($self, x, k, &params);
+  PyObject* search_with_params(PyObject* x, hypervec::idx_t k, PyObject* py_params) {
+    if (!PyDict_Check(py_params)) {
+      throw std::runtime_error("search_with_params: params must be a dict");
+    }
+    if (const auto* hnsw = dynamic_cast<const hypervec::IndexHNSW*>($self)) {
+      (void)hnsw;
+      hypervec::SearchParametersHNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* ivf = dynamic_cast<const hypervec::IndexIVF*>($self)) {
+      (void)ivf;
+      hypervec::IVFSearchParameters params;
+      PyObject* val = PyDict_GetItemString(py_params, "nprobe");
+      if (val) params.nprobe = static_cast<hypervec::idx_t>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    return index_search_with_params($self, x, k, nullptr);
   }
 }
 

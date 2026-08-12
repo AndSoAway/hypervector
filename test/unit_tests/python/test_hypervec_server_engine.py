@@ -25,6 +25,9 @@ class FakeIndexFlatL2:
         dists = np.take_along_axis(distances, labels, axis=1).astype(np.float32)
         return dists, labels
 
+    def search_with_params(self, x, k: int, params: dict):
+        return self.search(x, k)
+
 
 class FakeHypervec:
     kMetricL2 = 1
@@ -502,3 +505,50 @@ def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
         assert "purged" in str(exc)
     else:
         raise AssertionError("export_collection_bundle after purge should raise ConflictError")
+
+
+class _SpyIndex(FakeIndexFlatL2):
+    """Records params passed to search_with_params to verify delegation."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__(d)
+        self.last_params: dict | None = None
+
+    def search_with_params(self, x, k: int, params: dict):
+        self.last_params = params
+        return super().search(x, k)
+
+
+def _make_engine_with_spy(tmp_path):
+    module = load_engine_module()
+    fake = FakeHypervec()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
+    spy = _SpyIndex(2)
+    # Pre-populate the spy with one vector so search returns valid results
+    spy.vectors = np.array([[1.0, 0.0]], dtype=np.float32)
+    return engine, spy, module
+
+
+def test_search_index_delegates_params_dict(tmp_path):
+    engine, spy, _ = _make_engine_with_spy(tmp_path)
+    query = np.array([[1.0, 0.0]], dtype=np.float32)
+
+    engine._search_index(spy, query, k=1, search_params={"ef_search": 50})
+    assert spy.last_params == {"ef_search": 50}
+
+    engine._search_index(spy, query, k=1, search_params={"nprobe": 8})
+    assert spy.last_params == {"nprobe": 8}
+
+    engine._search_index(spy, query, k=1, search_params={})
+    assert spy.last_params == {}
+
+    engine._search_index(spy, query, k=1, search_params=None)
+    assert spy.last_params == {}
+
+
+def test_search_index_unknown_params_ignored(tmp_path):
+    engine, spy, _ = _make_engine_with_spy(tmp_path)
+    query = np.array([[1.0, 0.0]], dtype=np.float32)
+    # Unknown param key must not raise; index decides what to do with it
+    engine._search_index(spy, query, k=1, search_params={"unknown_param": 99})
+    assert spy.last_params == {"unknown_param": 99}

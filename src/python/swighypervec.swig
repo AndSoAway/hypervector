@@ -260,37 +260,26 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
     return index_search_with_params($self, x, k, nullptr);
   }
 
-  PyObject* search_with_ef(PyObject* x, hypervec::idx_t k, int ef_search) {
-    hypervec::SearchParametersHNSW params;
-    params.ef_search = ef_search;
-    return index_search_with_params($self, x, k, &params);
-  }
-}
-
-%extend IndexIVFFlat {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
-    hypervec::IVFSearchParameters params;
-    params.nprobe = nprobe;
-    return index_search_with_params($self, x, k, &params);
-  }
-}
-
-%extend IndexIVFLVQ {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
-    hypervec::IVFSearchParameters params;
-    params.nprobe = nprobe;
-    return index_search_with_params($self, x, k, &params);
-  }
-}
-
-%extend IndexIVFPQ {
-  PyObject* search_with_nprobe(PyObject* x, hypervec::idx_t k,
-                               hypervec::idx_t nprobe) {
-    hypervec::IVFSearchParameters params;
-    params.nprobe = nprobe;
-    return index_search_with_params($self, x, k, &params);
+  PyObject* search_with_params(PyObject* x, hypervec::idx_t k, PyObject* py_params) {
+    if (!PyDict_Check(py_params)) {
+      throw std::runtime_error("search_with_params: params must be a dict");
+    }
+    if (const auto* hnsw = dynamic_cast<const hypervec::IndexHNSW*>($self)) {
+      (void)hnsw;
+      hypervec::SearchParametersHNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* ivf = dynamic_cast<const hypervec::IndexIVF*>($self)) {
+      (void)ivf;
+      hypervec::IVFSearchParameters params;
+      PyObject* val = PyDict_GetItemString(py_params, "nprobe");
+      if (val) params.nprobe = static_cast<hypervec::idx_t>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    return index_search_with_params($self, x, k, nullptr);
   }
 }
 

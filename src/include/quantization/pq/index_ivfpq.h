@@ -92,6 +92,9 @@ struct IndexIVFPQ : IndexIVF {
    *  Called automatically by Train() when use_precomputed_table != 0; can
    *  also be called manually after toggling the flag on a trained index. */
   void PrecomputeTable();
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

@@ -104,6 +104,8 @@ add_library(hypervec ${HYPERVEC_SRC})
 
 target_include_directories(hypervec PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+target_include_directories(hypervec PRIVATE
+  ${PROJECT_SOURCE_DIR})
 
 set_target_properties(hypervec PROPERTIES
   POSITION_INDEPENDENT_CODE ON

@@ -11,6 +11,7 @@
 #include <utils/log/assert.h>
 #include <utils/simd/simd_dispatch.h>
 #include <index/flat/index_flat.h>
+#include <persistence/index_write_utils.h>
 #include <omp.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
@@ -512,6 +513,36 @@ void IndexFlat1D::Search(idx_t n, const float* x, idx_t k, float* distances,
     }
   done:;
   }
+}
+
+uint32_t IndexFlatL2::fourcc() const {
+  return hypervec::fourcc("IFlm");
+}
+
+void IndexFlatL2::write_body(IOWriter* f) const {
+  WRITEVECTOR(codes);
+}
+
+uint32_t IndexFlatIP::fourcc() const {
+  return hypervec::fourcc("IFlp");
+}
+
+void IndexFlatIP::write_body(IOWriter* f) const {
+  WRITEVECTOR(codes);
+}
+
+uint32_t IndexFlat::fourcc() const {
+  HYPERVEC_THROW_MSG(
+    "unsupported index type for writing: bare IndexFlat is only serializable "
+    "as IndexFlatL2 or IndexFlatIP");
+  return 0;
+}
+
+void IndexFlat::write_body(IOWriter* f) const {
+  (void)f;
+  HYPERVEC_THROW_MSG(
+    "unsupported index type for writing: bare IndexFlat is only serializable "
+    "as IndexFlatL2 or IndexFlatIP");
 }
 
 }  // namespace hypervec

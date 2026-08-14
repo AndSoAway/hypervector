@@ -19,6 +19,11 @@
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_pq.h>
 
+// TODO(tech-debt): clone_IndexHNSW uses the same dynamic_cast dispatch pattern
+// that WriteIndex used before PR #42. Follow-up: add virtual Index* clone()
+// const to the Index base class and let each subclass self-implement, mirroring
+// the fourcc()/write_body() refactor.
+
 namespace hypervec {
 
 IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {

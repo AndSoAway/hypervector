@@ -9,6 +9,7 @@
 #include <quantization/lvq/index_ivflvq.h>
 
 #include <invlists/inverted_lists.h>
+#include <persistence/index_write_utils.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
 #include <utils/structures/heap.h>
@@ -206,6 +207,31 @@ void IndexIVFLVQ::Reconstruct(idx_t key, float* recons) const {
   }
   HYPERVEC_THROW_FMT("IndexIVFLVQ::Reconstruct: key %" PRId64 " not found",
                      key);
+}
+
+uint32_t IndexIVFLVQ::fourcc() const {
+  return hypervec::fourcc("IVLQ");
+}
+
+void IndexIVFLVQ::write_body(IOWriter* f) const {
+  WRITE1(nlist);
+  WRITE1(nprobe);
+  WRITEVECTOR(centroids);
+  int8_t by_residual_i8 = by_residual ? 1 : 0;
+  WRITE1(by_residual_i8);
+  write_lvq(lvq, f);
+
+  for (size_t list_no = 0; list_no < nlist; list_no++) {
+    const size_t sz = invlists->list_size(list_no);
+    WRITE1(sz);
+    if (sz == 0) {
+      continue;
+    }
+    InvertedLists::ScopedIds ids(invlists, list_no);
+    InvertedLists::ScopedCodes codes(invlists, list_no);
+    WRITEANDCHECK(ids.get(), sz);
+    WRITEANDCHECK(codes.get(), sz * lvq.code_size);
+  }
 }
 
 }  // namespace hypervec

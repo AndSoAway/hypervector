@@ -29,6 +29,7 @@ set(HYPERVEC_SRC
   utils/common/buffer_list.cpp
   utils/common/range_search_result.cpp
   utils/log/exception.cpp
+  utils/config/runtime_config.cpp
   persistence/index_read.cpp
   persistence/index_write.cpp
   persistence/io.cpp
@@ -57,11 +58,13 @@ set(HYPERVEC_SRC
 
 set(HYPERVEC_HEADERS
   include/index/index.h
+  include/index/index_type.h
   include/index/ivf/index_ivf.h
   include/index/ivf/index_ivf_flat.h
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
   include/utils/log/exception.h
+  include/utils/config/runtime_config.h
   include/utils/common/platform_macros.h
   include/utils/distances/distance_computer.h
   include/utils/structures/maybe_owned_vector.h

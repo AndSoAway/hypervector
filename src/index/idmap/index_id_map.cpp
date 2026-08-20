@@ -117,4 +117,14 @@ size_t IndexIDMap::RemoveIds(const IDSelector& sel) {
   return 0;
 }
 
+uint32_t IndexIDMap::fourcc() const {
+  HYPERVEC_THROW_MSG("unsupported index type for writing: IndexIDMap");
+  return 0;
+}
+
+void IndexIDMap::write_body(IOWriter* f) const {
+  (void)f;
+  HYPERVEC_THROW_MSG("unsupported index type for writing: IndexIDMap");
+}
+
 }  // namespace hypervec

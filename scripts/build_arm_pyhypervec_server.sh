@@ -39,6 +39,11 @@ echo "[hypervec] data root: ${DATA_ROOT}"
 echo "[hypervec] server: ${SERVER_HOST}:${SERVER_PORT}"
 echo "[hypervec] server impl: ${SERVER_IMPL}"
 
+if [[ "${OPT_LEVEL}" != "generic" ]]; then
+  echo "[hypervec] HYPERVEC_OPT_LEVEL='${OPT_LEVEL}' is not supported by the current CMake build; use 'generic'." >&2
+  exit 1
+fi
+
 if command -v uname >/dev/null 2>&1; then
   ARCH="$(uname -m)"
   echo "[hypervec] machine arch: ${ARCH}"
@@ -126,11 +131,6 @@ cmake --build "${BUILD_DIR}" --target hypervec -j"$(nproc)"
 
 echo "[hypervec] building Python binding..."
 cmake --build "${BUILD_DIR}" --target swighypervec -j"$(nproc)"
-
-if [[ "${OPT_LEVEL}" == "sve" ]]; then
-  echo "[hypervec] building SVE Python binding..."
-  cmake --build "${BUILD_DIR}" --target swighypervec_sve -j"$(nproc)"
-fi
 
 echo "[hypervec] building hypervec wheel..."
 pushd "${BUILD_DIR}/src/python" >/dev/null

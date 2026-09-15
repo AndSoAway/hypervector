@@ -21,16 +21,67 @@ project(HYPERVEC
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
-# Valid values are generic, avx2, avx512, avx512_spr, sve.
-option(HYPERVEC_OPT_LEVEL "generic" "")
+# The current CMake build creates one portable CPU library.  Keep this as a
+# string cache entry so callers do not accidentally turn values such as
+# "generic" or "avx2" into a boolean.
+set(HYPERVEC_OPT_LEVEL "generic" CACHE STRING
+    "CPU optimization level (currently supported: generic)")
+set_property(CACHE HYPERVEC_OPT_LEVEL PROPERTY STRINGS generic)
+
+if(NOT HYPERVEC_OPT_LEVEL STREQUAL "generic")
+  message(FATAL_ERROR
+    "HYPERVEC_OPT_LEVEL='${HYPERVEC_OPT_LEVEL}' is not supported by the "
+    "current CMake build. Only 'generic' is available. The legacy dd, avx2, "
+    "avx512, avx512_spr, and sve modes require library targets that are not "
+    "implemented yet.")
+endif()
+
+option(BUILD_TESTING "Build the HyperVec test suite" OFF)
+option(HYPERVEC_UNIT_TESTS_ONLY "Skip performance benchmarks" OFF)
+option(HYPERVEC_FETCH_DEPS
+       "Allow CMake to download missing test/benchmark dependencies" OFF)
 option(HYPERVEC_ENABLE_MKL "Enable MKL." OFF)
 option(HYPERVEC_ENABLE_PYTHON "Build Python extension." OFF)
 option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
-option(HYPERVEC_ENABLE_EXTRAS "Build extras like benchmarks and demos" OFF)
+option(HYPERVEC_ENABLE_EXTRAS "Build C++ examples" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
+
+if(HYPERVEC_ENABLE_MKL)
+  message(FATAL_ERROR
+    "HYPERVEC_ENABLE_MKL is not implemented by the current CMake build. "
+    "Leave it OFF; CMake will select an available BLAS/LAPACK provider.")
+endif()
+
+if(HYPERVEC_ENABLE_C_API)
+  message(FATAL_ERROR
+    "HYPERVEC_ENABLE_C_API is not implemented by the current CMake build.")
+endif()
+
+if(HYPERVEC_USE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT HYPERVEC_LTO_SUPPORTED
+                      OUTPUT HYPERVEC_LTO_ERROR
+                      LANGUAGES CXX)
+  if(NOT HYPERVEC_LTO_SUPPORTED)
+    message(FATAL_ERROR
+      "HYPERVEC_USE_LTO=ON was requested, but IPO/LTO is unavailable: "
+      "${HYPERVEC_LTO_ERROR}")
+  endif()
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
+message(STATUS "HyperVec configuration:")
+message(STATUS "  optimization level : ${HYPERVEC_OPT_LEVEL}")
+message(STATUS "  build tests        : ${BUILD_TESTING}")
+message(STATUS "  fetch dependencies : ${HYPERVEC_FETCH_DEPS}")
+message(STATUS "  build Python       : ${HYPERVEC_ENABLE_PYTHON}")
+message(STATUS "  build examples     : ${HYPERVEC_ENABLE_EXTRAS}")
+message(STATUS "  enable LTO         : ${HYPERVEC_USE_LTO}")
 
 add_subdirectory(src)
 

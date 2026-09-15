@@ -10,6 +10,8 @@ name: python-wheel-check
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
@@ -35,6 +37,7 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DHYPERVEC_ENABLE_PYTHON=ON \
             -DHYPERVEC_ENABLE_EXTRAS=OFF \
+            -DHYPERVEC_FETCH_DEPS=OFF \
             -DHYPERVEC_OPT_LEVEL=generic \
             -DPython_EXECUTABLE=/tmp/hv-venv/bin/python
           /tmp/hv-venv/bin/cmake --build build-wheel --target swighypervec
@@ -50,7 +53,12 @@ jobs:
           /tmp/hv-venv/bin/pip install --force-reinstall --no-deps build-wheel/src/python/dist/*.whl
           /tmp/hv-venv/bin/python - <<'PY'
           import hypervec
-          import hypervec.hypervec_server_engine
+          import hypervec.examples_data
+          import hypervec.hypervec_bundle
           import hypervec.hypervec_http_server
+          import hypervec.hypervec_server_engine
+          import hypervec.rwlock
+          index = hypervec.IndexFlatL2(4)
+          assert index is not None
           print("import-ok")
           PY

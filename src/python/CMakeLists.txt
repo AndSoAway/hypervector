@@ -14,6 +14,9 @@ set(CMAKE_CXX_STANDARD 20)
 
 find_package(SWIG REQUIRED COMPONENTS python)
 include(${SWIG_USE_FILE})
+find_package(Python REQUIRED
+  COMPONENTS Interpreter Development.Module NumPy
+)
 
 set(UseSWIG_TARGET_NAME_PREFERENCE STANDARD)
 set(SWIG_SOURCE_FILE_EXTENSIONS swig)
@@ -40,25 +43,9 @@ macro(configure_swighypervec source)
     )
   endif()
 
-  if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
-    set_property(SOURCE ${source} APPEND PROPERTY
-      SWIG_FLAGS -DHYPERVEC_ENABLE_DD
-    )
-  endif()
 endmacro()
 
-# CMake's SWIG wrappers only allow tweaking certain settings at source level, so
-# we duplicate the source in order to override the module name.
-configure_file(swighypervec.swig ${CMAKE_CURRENT_SOURCE_DIR}/swighypervec_avx2.swig COPYONLY)
-configure_file(swighypervec.swig ${CMAKE_CURRENT_SOURCE_DIR}/swighypervec_avx512.swig COPYONLY)
-configure_file(swighypervec.swig ${CMAKE_CURRENT_SOURCE_DIR}/swighypervec_avx512_spr.swig COPYONLY)
-configure_file(swighypervec.swig ${CMAKE_CURRENT_SOURCE_DIR}/swighypervec_sve.swig COPYONLY)
-
 configure_swighypervec(swighypervec.swig)
-configure_swighypervec(swighypervec_avx2.swig)
-configure_swighypervec(swighypervec_avx512.swig)
-configure_swighypervec(swighypervec_avx512_spr.swig)
-configure_swighypervec(swighypervec_sve.swig)
 configure_swighypervec(hypervec_example_external_module.swig)
 
 if(TARGET hypervec)
@@ -66,14 +53,6 @@ if(TARGET hypervec)
   set(SWIG_MODULE_swighypervec_EXTRA_DEPS)
   foreach(h ${HYPERVEC_HEADERS})
     list(APPEND SWIG_MODULE_swighypervec_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
-    list(APPEND SWIG_MODULE_swighypervec_avx2_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
-    list(APPEND SWIG_MODULE_swighypervec_avx512_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
-    list(APPEND SWIG_MODULE_swighypervec_avx512_spr_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
-    list(APPEND SWIG_MODULE_swighypervec_sve_EXTRA_DEPS
       "${hypervec_SOURCE_DIR}/${h}")
     list(APPEND SWIG_MODULE_hypervec_example_external_module_EXTRA_DEPS
       "${hypervec_SOURCE_DIR}/${h}")
@@ -97,54 +76,6 @@ endif()
 
 configure_swig_doxygen(swighypervec)
 
-set_property(SOURCE swighypervec_avx2.swig
-  PROPERTY SWIG_MODULE_NAME swighypervec_avx2)
-swig_add_library(swighypervec_avx2
-  TYPE SHARED
-  LANGUAGE python
-  SOURCES swighypervec_avx2.swig
-)
-configure_swig_doxygen(swighypervec_avx2)
-if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx2" AND NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512" AND NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512_spr")
-  set_target_properties(swighypervec_avx2 PROPERTIES EXCLUDE_FROM_ALL TRUE)
-endif()
-
-set_property(SOURCE swighypervec_avx512.swig
-  PROPERTY SWIG_MODULE_NAME swighypervec_avx512)
-swig_add_library(swighypervec_avx512
-  TYPE SHARED
-  LANGUAGE python
-  SOURCES swighypervec_avx512.swig
-)
-configure_swig_doxygen(swighypervec_avx512)
-if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512")
-  set_target_properties(swighypervec_avx512 PROPERTIES EXCLUDE_FROM_ALL TRUE)
-endif()
-
-set_property(SOURCE swighypervec_avx512_spr.swig
-  PROPERTY SWIG_MODULE_NAME swighypervec_avx512_spr)
-swig_add_library(swighypervec_avx512_spr
-  TYPE SHARED
-  LANGUAGE python
-  SOURCES swighypervec_avx512_spr.swig
-)
-configure_swig_doxygen(swighypervec_avx512_spr)
-if(NOT HYPERVEC_OPT_LEVEL STREQUAL "avx512_spr")
-  set_target_properties(swighypervec_avx512_spr PROPERTIES EXCLUDE_FROM_ALL TRUE)
-endif()
-
-set_property(SOURCE swighypervec_sve.swig
-  PROPERTY SWIG_MODULE_NAME swighypervec_sve)
-swig_add_library(swighypervec_sve
-  TYPE SHARED
-  LANGUAGE python
-  SOURCES swighypervec_sve.swig
-)
-configure_swig_doxygen(swighypervec_sve)
-if(NOT HYPERVEC_OPT_LEVEL STREQUAL "sve")
-  set_target_properties(swighypervec_sve PROPERTIES EXCLUDE_FROM_ALL TRUE)
-endif()
-
 set_property(SOURCE hypervec_example_external_module.swig
   PROPERTY SWIG_MODULE_NAME hypervec_example_external_module)
 swig_add_library(hypervec_example_external_module
@@ -160,61 +91,17 @@ if(AIX)
 elseif(NOT WIN32)
   # NOTE: Python does not recognize the dylib extension.
   set_target_properties(swighypervec PROPERTIES SUFFIX .so)
-  set_target_properties(swighypervec_avx2 PROPERTIES SUFFIX .so)
-  set_target_properties(swighypervec_avx512 PROPERTIES SUFFIX .so)
-  set_target_properties(swighypervec_avx512_spr PROPERTIES SUFFIX .so)
-  set_target_properties(swighypervec_sve PROPERTIES SUFFIX .so)
   set_target_properties(hypervec_example_external_module PROPERTIES SUFFIX .so)
 elseif(MSVC)
   # we need bigobj for the swig wrapper
   target_compile_options(swighypervec PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx2 PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx512 PRIVATE /bigobj)
-  target_compile_options(swighypervec_avx512_spr PRIVATE /bigobj)
-  target_compile_options(swighypervec_sve PRIVATE /bigobj)
   target_compile_options(hypervec_example_external_module PRIVATE /bigobj)
-endif()
-
-
-
-# Enable DD support in Python bindings when building with Dynamic Dispatch
-if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
-  # Add compile definition for the generated C++ wrapper
-  target_compile_definitions(swighypervec PRIVATE HYPERVEC_ENABLE_DD)
 endif()
 
 find_package(OpenMP REQUIRED)
 
 target_link_libraries(swighypervec PRIVATE
   hypervec
-  Python::Module
-  Python::NumPy
-  OpenMP::OpenMP_CXX
-)
-
-target_link_libraries(swighypervec_avx2 PRIVATE
-  hypervec_avx2
-  Python::Module
-  Python::NumPy
-  OpenMP::OpenMP_CXX
-)
-
-target_link_libraries(swighypervec_avx512 PRIVATE
-  hypervec_avx512
-  Python::Module
-  Python::NumPy
-  OpenMP::OpenMP_CXX
-)
-
-target_link_libraries(swighypervec_avx512_spr PRIVATE
-  hypervec_avx512_spr
-  Python::Module
-  Python::NumPy
-  OpenMP::OpenMP_CXX
-)
-
-target_link_libraries(swighypervec_sve PRIVATE
-  hypervec_sve
   Python::Module
   Python::NumPy
   OpenMP::OpenMP_CXX
@@ -230,25 +117,13 @@ target_link_libraries(hypervec_example_external_module PRIVATE
 
 if(MINGW)
   target_link_libraries(swighypervec PRIVATE gomp)
-  target_link_libraries(swighypervec_avx2 PRIVATE gomp)
-  target_link_libraries(swighypervec_avx512 PRIVATE gomp)
-  target_link_libraries(swighypervec_avx512_spr PRIVATE gomp)
-  target_link_libraries(swighypervec_sve PRIVATE gomp)
   target_link_libraries(hypervec_example_external_module PRIVATE gomp)
 endif()
 
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
 target_include_directories(swighypervec PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx2 PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx512 PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_avx512_spr PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(swighypervec_sve PRIVATE ${PROJECT_SOURCE_DIR}/..)
 target_include_directories(hypervec_example_external_module PRIVATE ${PROJECT_SOURCE_DIR}/..)
-
-find_package(Python REQUIRED
-  COMPONENTS Development.Module NumPy
-)
 
 add_library(hypervec_python_callbacks EXCLUDE_FROM_ALL
   python_callbacks.cpp
@@ -268,10 +143,6 @@ target_include_directories(hypervec_python_callbacks PRIVATE ${hypervec_SOURCE_D
 target_include_directories(hypervec_python_callbacks PRIVATE ${Python_INCLUDE_DIRS})
 
 target_link_libraries(swighypervec PRIVATE hypervec_python_callbacks)
-target_link_libraries(swighypervec_avx2 PRIVATE hypervec_python_callbacks)
-target_link_libraries(swighypervec_avx512 PRIVATE hypervec_python_callbacks)
-target_link_libraries(swighypervec_avx512_spr PRIVATE hypervec_python_callbacks)
-target_link_libraries(swighypervec_sve PRIVATE hypervec_python_callbacks)
 target_link_libraries(hypervec_example_external_module PRIVATE hypervec_python_callbacks)
 
 # Python source modules — single source of truth is the src/python directory

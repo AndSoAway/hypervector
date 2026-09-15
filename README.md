@@ -16,7 +16,55 @@ Some of the methods, like those based on binary vectors and compact quantization
 
 ## Installing
 
-HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-cpu](https://anaconda.org/pytorch/hypervec-cpu). The library is mostly implemented in C++, the only dependency is a [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms) implementation. The Python interface is also optional. It compiles with cmake. See [INSTALL.md](INSTALL.md) for details.
+HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-cpu](https://anaconda.org/pytorch/hypervec-cpu). The library is mostly implemented in C++. A source build requires a C++20 compiler, CMake 3.16 or newer, OpenMP, BLAS, and LAPACK. SWIG, Python development files, and NumPy are additionally required for the optional Python extension.
+
+### Building from source
+
+The current CMake build supports the portable `generic` CPU configuration. Legacy values such as `dd`, `avx2`, `avx512`, `avx512_spr`, and `sve` are rejected during configuration because their library targets have not been implemented in this build yet. `HYPERVEC_ENABLE_MKL` and `HYPERVEC_ENABLE_C_API` are also reserved but not implemented; enabling either option fails during configuration instead of being silently ignored.
+
+The default configuration builds only the core library and does not access the network:
+
+```bash
+cmake -S . -B build/release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_OPT_LEVEL=generic \
+  -DBUILD_TESTING=OFF
+cmake --build build/release -j
+```
+
+To build the C++ unit tests with a locally installed GoogleTest package:
+
+```bash
+cmake -S . -B build/test \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DHYPERVEC_OPT_LEVEL=generic \
+  -DBUILD_TESTING=ON \
+  -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+  -DHYPERVEC_FETCH_DEPS=OFF
+cmake --build build/test -j
+ctest --test-dir build/test --output-on-failure
+```
+
+If GoogleTest is unavailable locally, configuration stops with an actionable error. Set `HYPERVEC_FETCH_DEPS=ON` only when CMake is explicitly allowed to download the pinned dependency.
+
+The examples and Python binding are independent opt-in configurations:
+
+```bash
+# Core library and C++ examples
+cmake -S . -B build/examples \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_ENABLE_EXTRAS=ON \
+  -DBUILD_TESTING=OFF
+cmake --build build/examples -j
+
+# Core library and generic Python extension
+cmake -S . -B build/python \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_ENABLE_PYTHON=ON \
+  -DBUILD_TESTING=OFF \
+  -DPython_EXECUTABLE="$(command -v python3)"
+cmake --build build/python --target swighypervec -j
+```
 
 ## How HyperVec works
 

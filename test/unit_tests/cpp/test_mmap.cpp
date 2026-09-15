@@ -65,8 +65,8 @@ TEST(TestMmap, MmapFlatcodes) {
     // TODO(persistence): remove this skip once ReadIndex honors
     // IO_FLAG_MMAP_IFC by constructing a MappedFileIOReader.
     GTEST_SKIP()
-            << "IO_FLAG_MMAP_IFC is declared but the current ReadIndex entry "
-               "point does not create a memory-mapped reader yet.";
+        << "IO_FLAG_MMAP_IFC is declared but the current ReadIndex entry "
+           "point does not create a memory-mapped reader yet.";
 
     // generate data
     const size_t nt = 1000;
@@ -170,5 +170,6 @@ TEST(TestMmap, MmapFlatcodes) {
 
 // IndexBinaryFlat is not included in the current CMake build.
 TEST(TestMmap, MmapBinaryFlatcodes) {
-    GTEST_SKIP() << "IndexBinaryFlat is not available in the current CMake build.";
+  GTEST_SKIP()
+      << "IndexBinaryFlat is not available in the current CMake build.";
 }

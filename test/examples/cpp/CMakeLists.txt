@@ -17,5 +17,7 @@ set(HYPERVEC_EXAMPLE_SRC
 foreach(example_source IN LISTS HYPERVEC_EXAMPLE_SRC)
   get_filename_component(example_target ${example_source} NAME_WE)
   add_executable(${example_target} ${example_source})
+  # Examples use only HyperVec APIs. OpenMP and the BLAS/LAPACK requirements
+  # needed by the static library are propagated by the hypervec target.
   target_link_libraries(${example_target} PRIVATE hypervec)
 endforeach()

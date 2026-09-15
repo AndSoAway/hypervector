@@ -20,7 +20,7 @@ HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-
 
 ### Building from source
 
-The current CMake build supports the portable `generic` CPU configuration. Legacy values such as `dd`, `avx2`, `avx512`, `avx512_spr`, and `sve` are rejected during configuration because their library targets have not been implemented in this build yet.
+The current CMake build supports the portable `generic` CPU configuration. Legacy values such as `dd`, `avx2`, `avx512`, `avx512_spr`, and `sve` are rejected during configuration because their library targets have not been implemented in this build yet. `HYPERVEC_ENABLE_MKL` and `HYPERVEC_ENABLE_C_API` are also reserved but not implemented; enabling either option fails during configuration instead of being silently ignored.
 
 The default configuration builds only the core library and does not access the network:
 

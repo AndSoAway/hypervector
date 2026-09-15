@@ -62,6 +62,8 @@ TEST(TestMmap, MmapFlatcodes) {
 #ifdef _AIX
     GTEST_SKIP() << "Skipping test on AIX.";
 #endif
+    // TODO(persistence): remove this skip once ReadIndex honors
+    // IO_FLAG_MMAP_IFC by constructing a MappedFileIOReader.
     GTEST_SKIP()
             << "IO_FLAG_MMAP_IFC is declared but the current ReadIndex entry "
                "point does not create a memory-mapped reader yet.";

@@ -47,7 +47,8 @@ struct IndexIVFPQ : IndexIVF {
   int use_precomputed_table = 0;
 
   /// Cache of size nlist * M * ksub floats. Populated by PrecomputeTable().
-  /// Layout: precomputed_table[(i * M + m) * ksub + k] = ||p_{m,k}||² + 2*<c_i, p_{m,k}>
+  /// Layout: precomputed_table[(i * M + m) * ksub + k] = ||p_{m,k}||² + 2*<c_i,
+  /// p_{m,k}>
   std::vector<float> precomputed_table;
 
   /// Default constructor — for deserialization only.
@@ -83,6 +84,10 @@ struct IndexIVFPQ : IndexIVF {
                          const idx_t* list_ids, const float* centroid_dis,
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
+
+  void RangeSearch(idx_t n, const float* x, float radius,
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   /** Reconstruct an indexed vector by id: decode the PQ code and add the
    *  coarse centroid back if by_residual. O(n_total) — scans all lists. */

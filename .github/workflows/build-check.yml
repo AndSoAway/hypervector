@@ -65,3 +65,33 @@ jobs:
             echo "avx2 configuration unexpectedly succeeded" >&2
             exit 1
           fi
+
+  sanitizers:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libopenblas-dev liblapack-dev libgtest-dev
+
+      - name: Configure ASan and UBSan build
+        run: |
+          cmake -S . -B build/sanitize -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+            -DHYPERVEC_FETCH_DEPS=OFF \
+            -DHYPERVEC_OPT_LEVEL=generic \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build/sanitize
+
+      - name: Run ASan and UBSan tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build/sanitize --output-on-failure

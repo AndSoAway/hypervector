@@ -8,13 +8,12 @@
 
 // HNSW-only index implementation
 
-#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
-#include <omp.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
+#include <utils/log/assert.h>
 #include <utils/structures/random.h>
 #include <utils/structures/sorting.h>
 
@@ -27,6 +26,8 @@
 #include <memory>
 #include <queue>
 #include <random>
+
+#include "hnsw_build_utils.h"
 
 namespace hypervec {
 
@@ -57,11 +58,12 @@ DistanceComputer* storage_distance_computer(const Index* storage) {
  **************************************************************/
 
 IndexHNSW::IndexHNSW(int d, int M, MetricType metric)
-  : Index(d, metric), hnsw(M), storage(nullptr) {}
+    : Index(d, metric), hnsw(M), storage(nullptr) {}
 
 IndexHNSW::IndexHNSW(Index* storage, int M)
-  : Index(storage->d, storage->metric_type), hnsw(M), storage(storage) {
+    : Index(storage->d, storage->metric_type), hnsw(M), storage(storage) {
   metric_arg = storage->metric_arg;
+  is_trained = storage->is_trained;
 }
 
 IndexHNSW::~IndexHNSW() {
@@ -71,13 +73,37 @@ IndexHNSW::~IndexHNSW() {
 }
 
 void IndexHNSW::Train(idx_t n, const float* x) {
-  storage->Train(n, x);
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Train: storage is null");
+  try {
+    storage->Train(n, x);
+  } catch (...) {
+    is_trained = storage->is_trained;
+    throw;
+  }
+  is_trained = storage->is_trained;
 }
 
 void IndexHNSW::Add(idx_t n, const float* x) {
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Add: storage is null");
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexHNSW::Add: call Train before Add");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSW::Add: n must be non-negative");
+  if (n == 0) {
+    return;
+  }
+
+  const idx_t n0 = n_total;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage->n_total == n0,
+      "IndexHNSW::Add: storage and graph counts are inconsistent");
+
   // Add vectors to storage
   storage->Add(n, x);
-  idx_t n0 = n_total;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage->n_total == n0 + n,
+      "IndexHNSW::Add: storage did not add the requested number of vectors");
   n_total = storage->n_total;
 
   // Build HNSW graph structure
@@ -86,19 +112,17 @@ void IndexHNSW::Add(idx_t n, const float* x) {
     hnsw.ef_construction = 40;
   }
 
-  // Prepare level assignment for all vectors (including existing ones)
-  hnsw.PrepareLevelTab(n_total, false);
+  // Prepare level assignments only for this batch. PrepareLevelTab appends n
+  // entries to the graph metadata; passing n_total corrupts repeated Add.
+  hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
 
   // Create distance computer for building.
   // Must go through storage_distance_computer() so similarity metrics (IP,
   // Jaccard) are negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
 
   // For single-threaded building, Add vectors one by one
-  std::vector<omp_lock_t> locks(n_total + 1);
-  for (int i = 0; i <= n_total; i++) {
-    omp_init_lock(&locks[i]);
-  }
+  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
 
   VisitedTable vt(n_total);
 
@@ -106,15 +130,8 @@ void IndexHNSW::Add(idx_t n, const float* x) {
   for (idx_t i = n0; i < n_total; i++) {
     int pt_level = hnsw.levels[i] - 1;  // levels store level+1 (1-based)
     dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, i, locks, vt, false);
+    hnsw.AddWithLocks(*dis, pt_level, i, lock_array.Get(), vt, false);
   }
-
-  // Cleanup locks
-  for (int i = 0; i <= n_total; i++) {
-    omp_destroy_lock(&locks[i]);
-  }
-
-  delete dis;
 }
 
 void IndexHNSW::Reset() {
@@ -129,7 +146,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   // Get distance computer from storage.
   // Must go through storage_distance_computer() so similarity metrics are
   // negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
 
   // Do not mutate the process-global OpenMP thread count here. Concurrent
   // Python callers may run Search() after the SWIG layer releases the GIL, so
@@ -151,24 +168,22 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
     hnsw.Search(*dis, this, res, vt, params);
     res.end();
   }
-
-  // Cleanup
-  delete dis;
 }
 
 void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
-                             RangeSearchResult* result,
-                             const SearchParameters* params) const {
+                            RangeSearchResult* result,
+                            const SearchParameters* params) const {
   storage->RangeSearch(n, x, radius, result, params);
 }
 
-void IndexHNSW::Search1(const float* x, ResultHandler& handler,
-                        SearchParameters* params) const {
-  storage->Search1(x, handler, params);
+void IndexHNSW::Search1(const float* /*x*/, ResultHandler& /*handler*/,
+                        SearchParameters* /*params*/) const {
+  HYPERVEC_THROW_MSG(
+      "IndexHNSW::Search1 is unsupported until it uses graph search");
 }
 
-void IndexHNSW::PermuteEntries(const idx_t* perm) {
-  // Not implemented in minimal HNSW build
+void IndexHNSW::PermuteEntries(const idx_t* /*perm*/) {
+  HYPERVEC_THROW_MSG("IndexHNSW::PermuteEntries is not implemented");
 }
 
 void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
@@ -183,9 +198,7 @@ DistanceComputer* IndexHNSW::GetDistanceComputer() const {
  * IndexHNSWFlat implementation
  **************************************************************/
 
-IndexHNSWFlat::IndexHNSWFlat() {
-  is_trained = true;
-}
+IndexHNSWFlat::IndexHNSWFlat() { is_trained = true; }
 
 static Index* make_hnsw_flat_storage(int d, MetricType metric) {
   if (metric == kMetricL2) {
@@ -198,7 +211,7 @@ static Index* make_hnsw_flat_storage(int d, MetricType metric) {
 }
 
 IndexHNSWFlat::IndexHNSWFlat(int d, int M, MetricType metric)
-  : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
+    : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
   own_fields = true;
   is_trained = true;
 }

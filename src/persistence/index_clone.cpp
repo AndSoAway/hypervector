@@ -8,16 +8,19 @@
  * HNSW-only index clone implementation
  */
 
-#include <utils/log/assert.h>
-#include <persistence/index_clone.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <persistence/index_clone.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_pq.h>
+#include <utils/log/assert.h>
+
+#include <memory>
+#include <utility>
 
 namespace hypervec {
 
@@ -25,8 +28,8 @@ IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {
   if (auto* hnswpq = dynamic_cast<const IndexHNSWPQ*>(ihnsw)) {
     auto* pq_storage = dynamic_cast<const IndexPQ*>(hnswpq->storage);
     HYPERVEC_THROW_IF_NOT_MSG(
-      pq_storage != nullptr,
-      "clone_IndexHNSW(IndexHNSWPQ): inner storage is not an IndexPQ");
+        pq_storage != nullptr,
+        "clone_IndexHNSW(IndexHNSWPQ): inner storage is not an IndexPQ");
     return new IndexHNSWPQ(hnswpq->d, static_cast<int>(pq_storage->pq.M),
                            pq_storage->pq.nbits, 32, hnswpq->metric_type);
   }
@@ -34,12 +37,11 @@ IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {
   if (auto* hnswlvq = dynamic_cast<const IndexHNSWLVQ*>(ihnsw)) {
     auto* lvq_storage = dynamic_cast<const IndexLVQ*>(hnswlvq->storage);
     HYPERVEC_THROW_IF_NOT_MSG(
-      lvq_storage != nullptr,
-      "clone_IndexHNSW(IndexHNSWLVQ): inner storage is not an IndexLVQ");
+        lvq_storage != nullptr,
+        "clone_IndexHNSW(IndexHNSWLVQ): inner storage is not an IndexLVQ");
     return new IndexHNSWLVQ(hnswlvq->d,
                             static_cast<int>(lvq_storage->lvq.nlocal),
-                            lvq_storage->lvq.nbits, 32,
-                            hnswlvq->metric_type);
+                            lvq_storage->lvq.nbits, 32, hnswlvq->metric_type);
   }
 
   if (dynamic_cast<const IndexHNSWFlat*>(ihnsw)) {
@@ -73,8 +75,9 @@ Index* clone_index(const Index* index) {
 
   const IndexIDMap* idxmap = dynamic_cast<const IndexIDMap*>(index);
   if (idxmap) {
-    Index* underlying = clone_index(idxmap->index);
-    auto* res = new IndexIDMap(underlying);
+    std::unique_ptr<Index> underlying(clone_index(idxmap->index));
+    auto* res = new IndexIDMap(std::move(underlying));
+    res->maintain_rev_map = idxmap->maintain_rev_map;
     return res;
   }
 
@@ -84,9 +87,8 @@ Index* clone_index(const Index* index) {
   }
 
   if (auto* ivflvq = dynamic_cast<const IndexIVFLVQ*>(index)) {
-    auto* res = new IndexIVFLVQ(ivflvq->d, ivflvq->nlist,
-                                ivflvq->lvq.nlocal, ivflvq->lvq.nbits,
-                                ivflvq->metric_type);
+    auto* res = new IndexIVFLVQ(ivflvq->d, ivflvq->nlist, ivflvq->lvq.nlocal,
+                                ivflvq->lvq.nbits, ivflvq->metric_type);
     res->by_residual = ivflvq->by_residual;
     res->nprobe = ivflvq->nprobe;
     return res;

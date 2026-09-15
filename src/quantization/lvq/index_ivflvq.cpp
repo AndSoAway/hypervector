@@ -6,14 +6,14 @@
  * source tree.
  */
 
-#include <quantization/lvq/index_ivflvq.h>
-
 #include <invlists/inverted_lists.h>
+#include <quantization/lvq/index_ivflvq.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
 #include <utils/structures/heap.h>
 
 #include <cinttypes>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -22,40 +22,48 @@ IndexIVFLVQ::IndexIVFLVQ() : IndexIVF(0, 0, 0, kMetricL2) {}
 
 IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
                          MetricType metric)
-  : IndexIVF(d, nlist, 0, metric)
-  , lvq(d, nlocal, nbits) {
+    : IndexIVF(d, nlist, 0, metric), lvq(d, nlocal, nbits) {
   HYPERVEC_THROW_IF_NOT_FMT(
-    metric == kMetricL2, "IndexIVFLVQ: supports kMetricL2 only, got metric=%d",
-    static_cast<int>(metric));
+      metric == kMetricL2,
+      "IndexIVFLVQ: supports kMetricL2 only, got metric=%d",
+      static_cast<int>(metric));
   delete invlists;
   invlists = new ArrayInvertedLists(static_cast<size_t>(nlist), lvq.code_size);
   own_invlists = true;
 }
 
 void IndexIVFLVQ::Train(idx_t n, const float* x) {
-  IndexIVF::Train(n, x);
+  is_trained = false;
+  lvq.is_trained = false;
+
+  std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
+  LocalVectorQuantizer trained_lvq(lvq.d, lvq.nlocal, lvq.nbits);
   if (by_residual) {
     std::vector<float> coarse_dis(static_cast<size_t>(n));
     std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
-    FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
+    FindNearestCentroidsIn(trained_centroids, n, x, 1, coarse_dis.data(),
+                           centroid_ids.data());
 
     std::vector<float> residuals(static_cast<size_t>(n) * d);
     for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() + centroid_ids[i] * d;
+      const float* c = trained_centroids.data() + centroid_ids[i] * d;
       const float* xi = x + i * d;
       float* ri = residuals.data() + i * d;
       for (idx_t j = 0; j < d; j++) {
         ri[j] = xi[j] - c[j];
       }
     }
-    lvq.Train(n, residuals.data());
+    trained_lvq.Train(n, residuals.data());
   } else {
-    lvq.Train(n, x);
+    trained_lvq.Train(n, x);
   }
+
+  centroids = std::move(trained_centroids);
+  lvq = std::move(trained_lvq);
+  is_trained = true;
 }
 
-void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
-                                uint8_t* codes) const {
+void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
   if (!by_residual) {
     lvq.ComputeCodes(n, x, codes);
     return;
@@ -78,7 +86,10 @@ void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
 }
 
 void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
-  HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexIVFLVQ::AddWithIds: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVFLVQ::AddWithIds: n must be non-negative");
   if (n == 0) {
     return;
   }
@@ -103,12 +114,15 @@ void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
     lvq.ComputeCodes(n, x, codes.data());
   }
 
-  for (idx_t i = 0; i < n; i++) {
-    const idx_t id = (xids != nullptr) ? xids[i] : n_total + i;
-    invlists->add_entry(static_cast<size_t>(centroid_ids[i]), id,
-                        codes.data() + static_cast<size_t>(i) * lvq.code_size);
-  }
-  n_total += n;
+  AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
+}
+
+void IndexIVFLVQ::RangeSearch(idx_t /*n*/, const float* /*x*/, float /*radius*/,
+                              RangeSearchResult* /*result*/,
+                              const SearchParameters* /*params*/) const {
+  HYPERVEC_THROW_MSG(
+      "IndexIVFLVQ::RangeSearch is unsupported until an LVQ-aware scanner is "
+      "implemented");
 }
 
 void IndexIVFLVQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
@@ -142,7 +156,7 @@ void IndexIVFLVQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
           continue;
         }
         const size_t list_sz =
-          invlists->list_size(static_cast<size_t>(list_no));
+            invlists->list_size(static_cast<size_t>(list_no));
         if (list_sz == 0) {
           continue;
         }
@@ -167,8 +181,8 @@ void IndexIVFLVQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
           if (sel && !sel->IsMember(ids_p[j])) {
             continue;
           }
-          const float dis = lvq.ApplyDistanceTable(
-            dis_table.data(), codes_p + j * lvq.code_size);
+          const float dis = lvq.ApplyDistanceTable(dis_table.data(),
+                                                   codes_p + j * lvq.code_size);
           if (CMax<float, idx_t>::cmp(threshold, dis)) {
             heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis,
                                                  ids_p[j]);
@@ -194,8 +208,7 @@ void IndexIVFLVQ::Reconstruct(idx_t key, float* recons) const {
         InvertedLists::ScopedCodes codes(invlists, list_no);
         lvq.Decode(codes.get() + j * lvq.code_size, recons);
         if (by_residual) {
-          const float* c = centroids.data() +
-                           static_cast<idx_t>(list_no) * d;
+          const float* c = centroids.data() + static_cast<idx_t>(list_no) * d;
           for (idx_t l = 0; l < d; l++) {
             recons[l] += c[l];
           }

@@ -21,6 +21,25 @@ namespace hypervec {
 
 Index::~Index() = default;
 
+void Index::Build(const DenseDatasetView& data) {
+  HYPERVEC_THROW_IF_NOT_MSG(n_total == 0,
+                            "Index::Build requires an empty index");
+  HYPERVEC_THROW_IF_NOT_MSG(data.count >= 0,
+                            "Index::Build: count must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(data.dimension == d,
+                            "Index::Build: dataset dimension does not match "
+                            "index dimension");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      data.count == 0 || data.vectors != nullptr,
+      "Index::Build: vectors must not be null when count is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      data.ids == nullptr,
+      "Index::Build: external ids require an IndexIDMap wrapper");
+
+  Train(data.count, data.vectors);
+  Add(data.count, data.vectors);
+}
+
 void Index::Train(idx_t /*n*/, const float* /*x*/) {
   // does nothing by default
 }

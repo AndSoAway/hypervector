@@ -21,6 +21,15 @@ struct IndexIVFLVQ : IndexIVF {
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 
+  std::string_view TypeName() const noexcept override { return "ivf_lvq"; }
+
+  IndexCapabilities Capabilities() const noexcept override {
+    return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
+        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+        IndexCapability::Filter | IndexCapability::ConcurrentSearch |
+        IndexCapability::Serialize | IndexCapability::Clone;
+  }
+
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;

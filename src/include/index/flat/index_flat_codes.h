@@ -30,6 +30,15 @@ struct IndexFlatCodes : Index {
 
   IndexFlatCodes(size_t code_size, idx_t d, MetricType metric = kMetricL2);
 
+  std::string_view TypeName() const noexcept override {
+    return "flat_codes";
+  }
+
+  IndexCapabilities Capabilities() const noexcept override {
+    return IndexCapability::KnnSearch | IndexCapability::RangeSearch |
+        IndexCapability::Filter | IndexCapability::ConcurrentSearch;
+  }
+
   /// default Add uses SaEncode
   void Add(idx_t n, const float* x) override;
 

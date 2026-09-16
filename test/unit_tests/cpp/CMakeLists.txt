@@ -7,6 +7,7 @@ set(HYPERVEC_TEST_SRC
   test_heap.cpp
   test_hnsw.cpp
   test_index_hnsw.cpp
+  test_index_build.cpp
   test_callback.cpp
   test_utils.cpp
   test_mmap.cpp

@@ -23,6 +23,15 @@ struct IndexLVQ : Index {
   IndexLVQ();
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 
+  std::string_view TypeName() const noexcept override { return "lvq"; }
+
+  IndexCapabilities Capabilities() const noexcept override {
+    return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
+        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+        IndexCapability::ConcurrentSearch | IndexCapability::Serialize |
+        IndexCapability::Clone;
+  }
+
   void Train(idx_t n, const float* x) override;
   void Add(idx_t n, const float* x) override;
   void Search(idx_t n, const float* x, idx_t k, float* distances,

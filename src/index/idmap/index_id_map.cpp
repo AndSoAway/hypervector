@@ -97,6 +97,15 @@ IndexIDMap::IndexIDMap(std::unique_ptr<Index> index) : IndexIDMap(index.get()) {
 
 IndexIDMap::~IndexIDMap() = default;
 
+IndexCapabilities IndexIDMap::Capabilities() const noexcept {
+  IndexCapabilities capabilities =
+      ToCapabilities(IndexCapability::ExternalIds);
+  if (index != nullptr) {
+    capabilities |= index->Capabilities();
+  }
+  return capabilities;
+}
+
 idx_t IndexIDMap::to_internal(idx_t id) const {
   auto it = id_map.find(id);
   if (it == id_map.end()) {
@@ -130,6 +139,71 @@ void IndexIDMap::Train(idx_t n, const float* x) {
     throw;
   }
   is_trained = index->is_trained;
+}
+
+void IndexIDMap::Build(const DenseDatasetView& data) {
+  HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
+                            "IndexIDMap::Build: underlying index is null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_total == 0 && index->n_total == 0,
+      "IndexIDMap::Build requires an empty wrapper and underlying index");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      id_map.empty() && rev_map.empty(),
+      "IndexIDMap::Build requires empty external ID mappings");
+  HYPERVEC_THROW_IF_NOT_MSG(data.count >= 0,
+                            "IndexIDMap::Build: count must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      data.dimension == d,
+      "IndexIDMap::Build: dataset dimension does not match index dimension");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      data.count == 0 || data.vectors != nullptr,
+      "IndexIDMap::Build: vectors must not be null when count is positive");
+
+  std::unordered_map<idx_t, idx_t> pending_id_map;
+  pending_id_map.reserve(static_cast<size_t>(data.count));
+  std::vector<idx_t> pending_rev_map;
+  if (maintain_rev_map) {
+    pending_rev_map.reserve(static_cast<size_t>(data.count));
+  }
+  for (idx_t i = 0; i < data.count; ++i) {
+    const idx_t external_id = data.ids != nullptr ? data.ids[i] : i;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        external_id >= 0,
+        "IndexIDMap::Build: external IDs must be non-negative");
+    const bool inserted = pending_id_map.emplace(external_id, i).second;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        inserted, "IndexIDMap::Build: external IDs must be unique");
+    if (maintain_rev_map) {
+      pending_rev_map.push_back(external_id);
+    }
+  }
+
+  // Reserve all destination storage before the underlying index changes.
+  // Once Build succeeds, publishing integral-key nodes and swapping the
+  // reverse map do not allocate.
+  id_map.reserve(static_cast<size_t>(data.count));
+
+  DenseDatasetView underlying_data = data;
+  underlying_data.ids = nullptr;
+  try {
+    index->Build(underlying_data);
+  } catch (...) {
+    is_trained = index->is_trained;
+    throw;
+  }
+  is_trained = index->is_trained;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->n_total == data.count,
+      "IndexIDMap::Build: underlying index built an unexpected count");
+
+  id_map.merge(pending_id_map);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      pending_id_map.empty(),
+      "IndexIDMap::Build: failed to publish staged external IDs");
+  if (maintain_rev_map) {
+    rev_map.swap(pending_rev_map);
+  }
+  n_total = index->n_total;
 }
 
 void IndexIDMap::Add(idx_t n, const float* x) { AddWithIds(n, x, nullptr); }

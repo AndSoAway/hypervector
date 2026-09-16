@@ -56,6 +56,10 @@ struct IndexHNSW : Index {
 
   ~IndexHNSW() override;
 
+  std::string_view TypeName() const noexcept override { return "hnsw"; }
+
+  IndexCapabilities Capabilities() const noexcept override;
+
   void Add(idx_t n, const float* x) override;
 
   /// Trains the storage and mirrors its final is_trained state, including
@@ -116,6 +120,12 @@ struct IndexHNSW : Index {
 struct IndexHNSWFlat : IndexHNSW {
   IndexHNSWFlat();
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
+
+  std::string_view TypeName() const noexcept override { return "hnsw_flat"; }
+
+  IndexCapabilities Capabilities() const noexcept override {
+    return IndexHNSW::Capabilities() | IndexCapability::Serialize;
+  }
 };
 
 }  // namespace hypervec

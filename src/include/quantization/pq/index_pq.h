@@ -44,6 +44,14 @@ struct IndexPQ : Index {
    *  @param metric  distance metric; T1 requires kMetricL2 */
   IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric = kMetricL2);
 
+  std::string_view TypeName() const noexcept override { return "pq"; }
+
+  IndexCapabilities Capabilities() const noexcept override {
+    return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
+        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+        IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
+  }
+
   /** Train the underlying ProductQuantizer on the given vectors. */
   void Train(idx_t n, const float* x) override;
 

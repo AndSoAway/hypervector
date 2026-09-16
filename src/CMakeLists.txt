@@ -16,6 +16,11 @@ set(HYPERVEC_SRC
   factory/builtin_index_creators.cpp
   factory/engine.cpp
   index/index.cpp
+  index/graph/graph_storage.cpp
+  index/graph/graph_searcher.cpp
+  index/graph/graph_validation.cpp
+  index/graph/neighbor_pruner.cpp
+  index/graph/visited_table.cpp
   index/ivf/index_ivf.cpp
   index/ivf/inverted_list_scanner.cpp
   index/ivf/index_ivf_flat.cpp
@@ -25,7 +30,7 @@ set(HYPERVEC_SRC
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/hnsw.cpp
-  index/hnsw/visited_table.cpp
+  index/hnsw/hnsw_graph_adapter.cpp
   index/idmap/index_id_map.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
@@ -68,6 +73,11 @@ set(HYPERVEC_HEADERS
   include/factory/index_registry.h
   include/factory/engine.h
   include/index/index.h
+  include/index/graph/graph_storage.h
+  include/index/graph/graph_searcher.h
+  include/index/graph/graph_validation.h
+  include/index/graph/neighbor_pruner.h
+  include/index/graph/visited_table.h
   include/index/ivf/index_ivf.h
   include/index/ivf/inverted_list_scanner.h
   include/index/ivf/index_ivf_flat.h
@@ -83,6 +93,7 @@ set(HYPERVEC_HEADERS
   include/index/hnsw/index_hnsw_pq.h
   include/index/hnsw/index_hnsw_lvq.h
   include/index/hnsw/hnsw.h
+  include/index/hnsw/hnsw_graph_adapter.h
   include/index/hnsw/visited_table.h
   include/index/idmap/index_id_map.h
   include/persistence/index_clone.h

@@ -13,6 +13,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <utils/common/result_handler.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
 #include <cstdint>
@@ -48,10 +49,6 @@ void ExpectSearchLabelsValid(const hypervec::Index& index, const float* query) {
     EXPECT_LT(label, index.n_total);
   }
 }
-
-struct DummyResultHandler : hypervec::ResultHandler {
-  bool AddResult(float, hypervec::idx_t) override { return false; }
-};
 
 struct WrongCountFlat : hypervec::IndexFlatL2 {
   explicit WrongCountFlat(hypervec::idx_t d) : IndexFlatL2(d) {}
@@ -119,16 +116,65 @@ TEST(IndexHNSWCorrectness, RejectsStorageCountMismatch) {
   EXPECT_EQ(index.hnsw.offsets.size(), 1);
 }
 
-TEST(IndexHNSWCorrectness, UnsupportedEntryPointsFailExplicitly) {
+TEST(IndexHNSWCorrectness, Search1UsesGraphAndUnsupportedPermuteFails) {
   constexpr hypervec::idx_t d = 4;
   const auto data = RandomVectors(8, d, 1005);
   hypervec::IndexHNSWFlat index(d, 4);
   index.Add(8, data.data());
 
-  DummyResultHandler handler;
-  EXPECT_THROW(index.Search1(data.data(), handler),
-               hypervec::HypervecException);
+  constexpr hypervec::idx_t k = 3;
+  std::vector<float> expected_distances(k);
+  std::vector<hypervec::idx_t> expected_labels(k);
+  index.Search(1, data.data(), k, expected_distances.data(),
+               expected_labels.data());
+
+  std::vector<float> actual_distances(k);
+  std::vector<hypervec::idx_t> actual_labels(k);
+  using Handler = hypervec::HeapBlockResultHandler<hypervec::HNSW::C>;
+  Handler block(1, actual_distances.data(), actual_labels.data(), k);
+  Handler::SingleResultHandler handler(block);
+  handler.begin(0);
+  index.Search1(data.data(), handler);
+  handler.end();
+  EXPECT_EQ(actual_labels, expected_labels);
+  EXPECT_EQ(actual_distances, expected_distances);
+
+  hypervec::IDSelectorRange selector(1, index.n_total);
+  hypervec::SearchParametersHNSW params;
+  params.sel = &selector;
+  index.Search(1, data.data(), k, expected_distances.data(),
+               expected_labels.data(), &params);
+  handler.begin(0);
+  index.Search1(data.data(), handler, &params);
+  handler.end();
+  EXPECT_EQ(actual_labels, expected_labels);
+  EXPECT_EQ(actual_distances, expected_distances);
+  for (hypervec::idx_t label : actual_labels) {
+    EXPECT_GE(label, 1);
+  }
+
   std::vector<hypervec::idx_t> permutation(8);
   EXPECT_THROW(index.PermuteEntries(permutation.data()),
                hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, RejectsNonPositiveEfSearch) {
+  constexpr hypervec::idx_t d = 4;
+  const auto data = RandomVectors(8, d, 1006);
+  hypervec::IndexHNSWFlat index(d, 4);
+  index.Add(8, data.data());
+
+  constexpr hypervec::idx_t k = 3;
+  std::vector<float> distances(k);
+  std::vector<hypervec::idx_t> labels(k);
+  index.hnsw.ef_search = 0;
+  EXPECT_THROW(index.Search(1, data.data(), k, distances.data(), labels.data()),
+               hypervec::HypervecException);
+
+  index.hnsw.ef_search = 16;
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = -1;
+  EXPECT_THROW(
+      index.Search(1, data.data(), k, distances.data(), labels.data(), &params),
+      hypervec::HypervecException);
 }

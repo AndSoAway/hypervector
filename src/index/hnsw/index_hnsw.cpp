@@ -204,10 +204,19 @@ void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
   storage->RangeSearch(n, x, radius, result, params);
 }
 
-void IndexHNSW::Search1(const float* /*x*/, ResultHandler& /*handler*/,
-                        SearchParameters* /*params*/) const {
-  HYPERVEC_THROW_MSG(
-      "IndexHNSW::Search1 is unsupported until it uses graph search");
+void IndexHNSW::Search1(const float* x, ResultHandler& handler,
+                        SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Search1: storage is null");
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexHNSW::Search1: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "IndexHNSW::Search1: query must not be null");
+  std::unique_ptr<DistanceComputer> distance(
+      storage_distance_computer(storage));
+  distance->SetQuery(x);
+  VisitedTable visited(static_cast<size_t>(n_total));
+  hnsw.Search(*distance, this, handler, visited, params);
 }
 
 void IndexHNSW::PermuteEntries(const idx_t* /*perm*/) {

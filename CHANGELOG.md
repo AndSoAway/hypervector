@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added reusable graph storage, search, validation, and neighbor-pruning
+  components. Bounded HNSW level-0 traversal now uses the shared graph search
+  path without changing its result, filtering, or statistics semantics.
+- `IndexHNSW::Search1` now performs graph search instead of reporting that the
+  operation is unsupported. HNSW graph search rejects non-positive
+  `ef_search` values consistently with the registry-backed search API.
 - Added a typed C++ index configuration, strict JSON parser, thread-safe index
   registry, and `Engine` factory. The factory creates all current Flat, PQ,
   LVQ, IVF, and HNSW CPU variants, applies algorithm-specific defaults, rejects

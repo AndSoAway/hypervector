@@ -8,7 +8,8 @@
 
 #include <quantization/pq/index_pq.h>
 
-#include <quantization/pq/pq_distance_computer.h>
+#include <quantization/pq/pq_quantizer_adapter.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
 #include <cstring>
@@ -29,8 +30,9 @@ IndexPQ::IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric)
 }
 
 void IndexPQ::Train(idx_t n, const float* x) {
-  pq.Train(n, x);
-  is_trained = true;
+  ProductQuantizerAdapter quantizer(pq);
+  quantizer.Train({n, d, x, nullptr});
+  is_trained = quantizer.IsTrained();
 }
 
 void IndexPQ::Add(idx_t n, const float* x) {
@@ -41,7 +43,8 @@ void IndexPQ::Add(idx_t n, const float* x) {
   const size_t old_bytes = static_cast<size_t>(n_total) * pq.code_size;
   const size_t new_bytes = old_bytes + static_cast<size_t>(n) * pq.code_size;
   codes.resize(new_bytes);
-  pq.ComputeCodes(n, x, codes.data() + old_bytes);
+  ProductQuantizerAdapter quantizer(pq);
+  quantizer.Encode(n, x, codes.data() + old_bytes);
   n_total += n;
 }
 
@@ -68,12 +71,19 @@ void IndexPQ::Reconstruct(idx_t key, float* recons) const {
     key >= 0 && key < n_total,
     "IndexPQ::Reconstruct: key %lld out of range [0, %lld)",
     static_cast<long long>(key), static_cast<long long>(n_total));
-  pq.Decode(codes.data() + static_cast<size_t>(key) * pq.code_size, recons);
+  const ProductQuantizerAdapter quantizer(pq);
+  quantizer.Decode(1,
+                   codes.data() + static_cast<size_t>(key) * pq.code_size,
+                   recons);
 }
 
 DistanceComputer* IndexPQ::GetDistanceComputer() const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  return new PQDistanceComputer(pq, codes.data(), pq.code_size);
+  const ProductQuantizerAdapter quantizer(pq);
+  return quantizer
+    .CreateDistanceComputer(
+      EncodedVectorView(codes.data(), n_total, pq.code_size))
+    .release();
 }
 
 size_t IndexPQ::SaCodeSize() const {
@@ -82,12 +92,14 @@ size_t IndexPQ::SaCodeSize() const {
 
 void IndexPQ::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  pq.ComputeCodes(n, x, bytes);
+  const ProductQuantizerAdapter quantizer(pq);
+  quantizer.Encode(n, x, bytes);
 }
 
 void IndexPQ::SaDecode(idx_t n, const uint8_t* bytes, float* x) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  pq.DecodeBatch(n, bytes, x);
+  const ProductQuantizerAdapter quantizer(pq);
+  quantizer.Decode(n, bytes, x);
 }
 
 }  // namespace hypervec

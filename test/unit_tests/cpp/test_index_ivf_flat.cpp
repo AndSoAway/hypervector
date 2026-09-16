@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <index/flat/index_flat.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <persistence/index_io.h>
 #include <utils/structures/random.h>
@@ -79,4 +80,38 @@ TEST(IndexIVFFlat, PersistenceRoundtripPreservesSearch) {
 
   EXPECT_EQ(restored_distances, source_distances);
   EXPECT_EQ(restored_labels, source_labels);
+}
+
+TEST(IndexIVFFlat, ScannerMatchesFlatForL2AndInnerProduct) {
+  constexpr hypervec::idx_t kDimension = 8;
+  constexpr hypervec::idx_t kDatabaseSize = 128;
+  constexpr hypervec::idx_t kQueryCount = 5;
+  constexpr hypervec::idx_t kNeighbors = 12;
+  constexpr hypervec::idx_t kListCount = 8;
+  const auto base = RandomVectors(kDatabaseSize, kDimension, 201);
+  const auto queries = RandomVectors(kQueryCount, kDimension, 202);
+
+  for (const hypervec::MetricType metric : {hypervec::kMetricL2,
+                                             hypervec::kMetricInnerProduct}) {
+    hypervec::IndexFlat exact(kDimension, metric);
+    exact.Add(kDatabaseSize, base.data());
+    std::vector<float> exact_distances(
+      static_cast<size_t>(kQueryCount * kNeighbors));
+    std::vector<hypervec::idx_t> exact_labels(exact_distances.size());
+    exact.Search(kQueryCount, queries.data(), kNeighbors,
+                 exact_distances.data(), exact_labels.data());
+
+    hypervec::IndexIVFFlat ivf(kDimension, kListCount, metric);
+    ivf.Train(kDatabaseSize, base.data());
+    ivf.Add(kDatabaseSize, base.data());
+    hypervec::IVFSearchParameters parameters;
+    parameters.nprobe = kListCount;
+    std::vector<float> ivf_distances(exact_distances.size());
+    std::vector<hypervec::idx_t> ivf_labels(exact_labels.size());
+    ivf.Search(kQueryCount, queries.data(), kNeighbors, ivf_distances.data(),
+               ivf_labels.data(), &parameters);
+
+    EXPECT_EQ(ivf_labels, exact_labels);
+    EXPECT_EQ(ivf_distances, exact_distances);
+  }
 }

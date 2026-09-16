@@ -537,7 +537,7 @@ void RegisterBuiltinIndexes() {
                        CreateIVFSearchParameters});
     registry.Register({"ivf_pq",
                        {"ivfpq", "indexivfpq"},
-                       IVFCapabilities(false, false),
+                       IVFCapabilities(true, false),
                        l2,
                        cpu,
                        NormalizeIVFPQ,
@@ -546,7 +546,7 @@ void RegisterBuiltinIndexes() {
                        CreateIVFSearchParameters});
     registry.Register({"ivf_lvq",
                        {"ivflvq", "indexivflvq"},
-                       IVFCapabilities(false, true),
+                       IVFCapabilities(true, true),
                        l2,
                        cpu,
                        NormalizeIVFLVQ,

@@ -8,7 +8,8 @@
 
 #include <quantization/lvq/index_lvq.h>
 
-#include <quantization/lvq/lvq_distance_computer.h>
+#include <quantization/lvq/lvq_quantizer_adapter.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
 namespace hypervec {
@@ -26,8 +27,9 @@ IndexLVQ::IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric)
 }
 
 void IndexLVQ::Train(idx_t n, const float* x) {
-  lvq.Train(n, x);
-  is_trained = true;
+  LocalVectorQuantizerAdapter quantizer(lvq);
+  quantizer.Train({n, d, x, nullptr});
+  is_trained = quantizer.IsTrained();
 }
 
 void IndexLVQ::Add(idx_t n, const float* x) {
@@ -38,7 +40,8 @@ void IndexLVQ::Add(idx_t n, const float* x) {
   const size_t old_bytes = static_cast<size_t>(n_total) * lvq.code_size;
   const size_t new_bytes = old_bytes + static_cast<size_t>(n) * lvq.code_size;
   codes.resize(new_bytes);
-  lvq.ComputeCodes(n, x, codes.data() + old_bytes);
+  LocalVectorQuantizerAdapter quantizer(lvq);
+  quantizer.Encode(n, x, codes.data() + old_bytes);
   n_total += n;
 }
 
@@ -62,12 +65,19 @@ void IndexLVQ::Reconstruct(idx_t key, float* recons) const {
     key >= 0 && key < n_total,
     "IndexLVQ::Reconstruct: key %lld out of range [0, %lld)",
     static_cast<long long>(key), static_cast<long long>(n_total));
-  lvq.Decode(codes.data() + static_cast<size_t>(key) * lvq.code_size, recons);
+  const LocalVectorQuantizerAdapter quantizer(lvq);
+  quantizer.Decode(1,
+                   codes.data() + static_cast<size_t>(key) * lvq.code_size,
+                   recons);
 }
 
 DistanceComputer* IndexLVQ::GetDistanceComputer() const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  return new LVQDistanceComputer(lvq, codes.data(), lvq.code_size);
+  const LocalVectorQuantizerAdapter quantizer(lvq);
+  return quantizer
+    .CreateDistanceComputer(
+      EncodedVectorView(codes.data(), n_total, lvq.code_size))
+    .release();
 }
 
 size_t IndexLVQ::SaCodeSize() const {
@@ -76,12 +86,14 @@ size_t IndexLVQ::SaCodeSize() const {
 
 void IndexLVQ::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  lvq.ComputeCodes(n, x, bytes);
+  const LocalVectorQuantizerAdapter quantizer(lvq);
+  quantizer.Encode(n, x, bytes);
 }
 
 void IndexLVQ::SaDecode(idx_t n, const uint8_t* bytes, float* x) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  lvq.DecodeBatch(n, bytes, x);
+  const LocalVectorQuantizerAdapter quantizer(lvq);
+  quantizer.Decode(n, bytes, x);
 }
 
 }  // namespace hypervec

@@ -275,8 +275,13 @@ TEST(IndexCapabilities, MatchImplementedBehavior) {
 
   hypervec::IndexIVFPQ ivf_pq(4, 2, 2, 2);
   EXPECT_EQ(ivf_pq.TypeName(), std::string_view("ivf_pq"));
-  ExpectCapability(ivf_pq, hypervec::IndexCapability::RangeSearch, false);
+  ExpectCapability(ivf_pq, hypervec::IndexCapability::RangeSearch, true);
   ExpectCapability(ivf_pq, hypervec::IndexCapability::Filter, true);
+
+  hypervec::IndexIVFLVQ ivf_lvq(4, 2, 2, 2);
+  EXPECT_EQ(ivf_lvq.TypeName(), std::string_view("ivf_lvq"));
+  ExpectCapability(ivf_lvq, hypervec::IndexCapability::RangeSearch, true);
+  ExpectCapability(ivf_lvq, hypervec::IndexCapability::Filter, true);
 
   hypervec::IndexHNSWPQ hnsw_pq(4, 2, 2, 4);
   EXPECT_EQ(hnsw_pq.TypeName(), std::string_view("hnsw_pq"));

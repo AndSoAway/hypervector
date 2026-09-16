@@ -67,9 +67,12 @@ struct IndexIVFPQ : IndexIVF {
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
            IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-           IndexCapability::Filter | IndexCapability::ConcurrentSearch |
-           IndexCapability::Serialize;
+           IndexCapability::RangeSearch | IndexCapability::Filter |
+           IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
   }
+
+  /** KNN and range search share the base IVF traversal and a PQ-aware
+   *  per-thread scanner. Range distances use the same ADC estimate as KNN. */
 
   /** Train the coarse quantizer on x, then train the PQ on residuals
    *  (if by_residual) or on x directly. If use_precomputed_table is set,
@@ -86,18 +89,6 @@ struct IndexIVFPQ : IndexIVF {
    *  encoding without re-running FindNearestCentroids. */
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
 
-  /** Per-query, per-probe ADC scan; max-heap top-k. Selects between the
-   *  precomputed-table fast path and the per-probe table path based on
-   *  use_precomputed_table. */
-  void SearchPreassigned(idx_t n, const float* x, idx_t k,
-                         const idx_t* list_ids, const float* centroid_dis,
-                         float* distances, idx_t* labels, idx_t nprobe_actual,
-                         const IDSelector* sel) const override;
-
-  void RangeSearch(idx_t n, const float* x, float radius,
-                   RangeSearchResult* result,
-                   const SearchParameters* params = nullptr) const override;
-
   /** Reconstruct an indexed vector by id: decode the PQ code and add the
    *  coarse centroid back if by_residual. O(n_total) — scans all lists. */
   void Reconstruct(idx_t key, float* recons) const override;
@@ -106,6 +97,10 @@ struct IndexIVFPQ : IndexIVF {
    *  Called automatically by Train() when use_precomputed_table != 0; can
    *  also be called manually after toggling the flag on a trained index. */
   void PrecomputeTable();
+
+ protected:
+  std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
+    const override;
 };
 
 }  // namespace hypervec

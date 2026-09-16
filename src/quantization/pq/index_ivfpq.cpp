@@ -6,15 +6,16 @@
  * source tree.
  */
 
+#include <index/ivf/inverted_list_scanner.h>
 #include <invlists/inverted_lists.h>
 #include <quantization/pq/index_ivfpq.h>
+#include <quantization/pq/pq_quantizer_adapter.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
-#include <utils/selector/id_selector.h>
-#include <utils/structures/heap.h>
 
 #include <cinttypes>
 #include <cstring>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,104 @@ std::vector<float> BuildPrecomputedTable(
   }
   return table;
 }
+
+class PQInvertedListScanner final : public InvertedListScanner {
+ public:
+  explicit PQInvertedListScanner(const IndexIVFPQ& index)
+    : InvertedListScanner(index.metric_type, index.pq.code_size)
+    , index_(index)
+    , residual_query_(static_cast<size_t>(index.d))
+    , distance_table_(static_cast<size_t>(index.pq.M) * index.pq.ksub)
+    , query_inner_products_(index.use_precomputed_table != 0
+                              ? distance_table_.size()
+                              : 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+      index_.pq.is_trained, "PQInvertedListScanner: PQ is not trained");
+    if (UsesPrecomputedTable()) {
+      HYPERVEC_THROW_IF_NOT_MSG(
+        index_.by_residual,
+        "PQInvertedListScanner: precomputed tables require residual codes");
+      const size_t expected_size =
+        static_cast<size_t>(index_.nlist) * distance_table_.size();
+      HYPERVEC_THROW_IF_NOT_MSG(
+        index_.precomputed_table.size() == expected_size,
+        "PQInvertedListScanner: precomputed table has an invalid size");
+    }
+  }
+
+  void SetQuery(const float* query) override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+      query != nullptr, "PQInvertedListScanner: query must not be null");
+    query_ = query;
+    list_is_set_ = false;
+
+    if (UsesPrecomputedTable()) {
+      for (idx_t subquantizer = 0; subquantizer < index_.pq.M;
+           ++subquantizer) {
+        fvec_inner_products_ny(
+          query_inner_products_.data() + subquantizer * index_.pq.ksub,
+          query + subquantizer * index_.pq.dsub,
+          index_.pq.GetCentroids(subquantizer, 0),
+          static_cast<size_t>(index_.pq.dsub),
+          static_cast<size_t>(index_.pq.ksub));
+      }
+    } else if (!index_.by_residual) {
+      index_.pq.ComputeDistanceTable(query_, distance_table_.data());
+    }
+  }
+
+  void SetList(idx_t list_no, float coarse_distance) override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+      query_ != nullptr,
+      "PQInvertedListScanner: SetQuery must be called before SetList");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      list_no >= 0 && list_no < index_.nlist,
+      "PQInvertedListScanner: list id is outside [0, nlist)");
+
+    list_offset_ = 0.0f;
+    if (UsesPrecomputedTable()) {
+      const float* precomputed =
+        index_.precomputed_table.data() +
+        static_cast<size_t>(list_no) * distance_table_.size();
+      for (size_t i = 0; i < distance_table_.size(); ++i) {
+        distance_table_[i] =
+          precomputed[i] - 2.0f * query_inner_products_[i];
+      }
+      list_offset_ = coarse_distance;
+    } else if (index_.by_residual) {
+      const float* centroid = index_.centroids.data() + list_no * index_.d;
+      for (idx_t i = 0; i < index_.d; ++i) {
+        residual_query_[static_cast<size_t>(i)] = query_[i] - centroid[i];
+      }
+      index_.pq.ComputeDistanceTable(residual_query_.data(),
+                                     distance_table_.data());
+    }
+    list_is_set_ = true;
+  }
+
+  float DistanceToCode(const uint8_t* code) const override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+      list_is_set_,
+      "PQInvertedListScanner: SetList must be called before scanning");
+    HYPERVEC_THROW_IF_NOT_MSG(
+      code != nullptr, "PQInvertedListScanner: code must not be null");
+    return list_offset_ +
+           index_.pq.ApplyDistanceTable(distance_table_.data(), code);
+  }
+
+ private:
+  bool UsesPrecomputedTable() const noexcept {
+    return index_.use_precomputed_table != 0;
+  }
+
+  const IndexIVFPQ& index_;
+  std::vector<float> residual_query_;
+  std::vector<float> distance_table_;
+  std::vector<float> query_inner_products_;
+  const float* query_ = nullptr;
+  float list_offset_ = 0.0f;
+  bool list_is_set_ = false;
+};
 
 }  // namespace
 
@@ -104,9 +203,11 @@ void IndexIVFPQ::Train(idx_t n, const float* x) {
       }
     }
 
-    trained_pq.Train(n, residuals.data());
+    ProductQuantizerAdapter quantizer(trained_pq);
+    quantizer.Train({n, d, residuals.data(), nullptr});
   } else {
-    trained_pq.Train(n, x);
+    ProductQuantizerAdapter quantizer(trained_pq);
+    quantizer.Train({n, d, x, nullptr});
   }
 
   std::vector<float> trained_precomputed_table;
@@ -128,8 +229,9 @@ void IndexIVFPQ::Train(idx_t n, const float* x) {
 // ===========================================================================
 
 void IndexIVFPQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
+  const ProductQuantizerAdapter quantizer(pq);
   if (!by_residual) {
-    pq.ComputeCodes(n, x, codes);
+    quantizer.Encode(n, x, codes);
     return;
   }
 
@@ -150,7 +252,7 @@ void IndexIVFPQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
     }
   }
 
-  pq.ComputeCodes(n, residuals.data(), codes);
+  quantizer.Encode(n, residuals.data(), codes);
 }
 
 void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
@@ -167,6 +269,7 @@ void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
 
   std::vector<uint8_t> codes(static_cast<size_t>(n) * pq.code_size);
+  const ProductQuantizerAdapter quantizer(pq);
 
   if (by_residual) {
     // Encode residuals; reuse a single per-vector buffer to keep allocation
@@ -181,144 +284,19 @@ void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
       for (idx_t j = 0; j < d; j++) {
         residual[static_cast<size_t>(j)] = xi[j] - c[j];
       }
-      pq.ComputeCode(residual.data(),
-                     codes.data() + static_cast<size_t>(i) * pq.code_size);
+      quantizer.Encode(1, residual.data(),
+                       codes.data() + static_cast<size_t>(i) * pq.code_size);
     }
   } else {
-    pq.ComputeCodes(n, x, codes.data());
+    quantizer.Encode(n, x, codes.data());
   }
 
   AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
-// ===========================================================================
-// SearchPreassigned
-// ===========================================================================
-
-void IndexIVFPQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
-                                   const idx_t* list_ids,
-                                   const float* centroid_dis, float* distances,
-                                   idx_t* labels, idx_t nprobe_actual,
-                                   const IDSelector* sel) const {
-  HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT(k > 0);
-
-  const size_t d_sz = static_cast<size_t>(d);
-  const size_t table_sz = static_cast<size_t>(pq.M) * pq.ksub;
-  const bool precomputed = (use_precomputed_table != 0);
-  const idx_t pq_M = pq.M;
-  const idx_t pq_ksub = pq.ksub;
-
-#pragma omp parallel
-  {
-    std::vector<float> residual_query(d_sz);
-    std::vector<float> dis_table(table_sz);
-    // For the precomputed-table path, the per-query inner-product table
-    // <q, p_{m,k}>.
-    std::vector<float> qip_table(precomputed ? table_sz : 0);
-
-#pragma omp for
-    for (idx_t qi = 0; qi < n; qi++) {
-      const float* xq = x + qi * d;
-      float* heap_dis = distances + qi * k;
-      idx_t* heap_ids = labels + qi * k;
-      heap_heapify<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-
-      // T2 fast path: precompute <q, p_{m,k}> once per query, valid for all
-      // probed lists. For the basic path we leave qip_table unused.
-      if (precomputed) {
-        for (idx_t m = 0; m < pq_M; m++) {
-          fvec_inner_products_ny(qip_table.data() + m * pq_ksub,
-                                 xq + m * pq.dsub, pq.GetCentroids(m, 0),
-                                 static_cast<size_t>(pq.dsub),
-                                 static_cast<size_t>(pq_ksub));
-        }
-      }
-
-      // For the basic path, !by_residual reuses the same dis_table for every
-      // probe of this query; build it once outside the probe loop.
-      if (!precomputed && !by_residual) {
-        pq.ComputeDistanceTable(xq, dis_table.data());
-      }
-
-      for (idx_t pi = 0; pi < nprobe_actual; pi++) {
-        const idx_t list_no =
-            list_ids[static_cast<size_t>(qi) * nprobe_actual + pi];
-        if (list_no < 0) {
-          continue;
-        }
-        const size_t list_sz =
-            invlists->list_size(static_cast<size_t>(list_no));
-        if (list_sz == 0) {
-          continue;
-        }
-
-        // ---- build the (M*ksub) ADC table for this (query, list) pair ----
-        if (precomputed) {
-          // table_i[m, k] = precomputed[(i*M+m)*ksub+k] - 2 * qip_table[m, k]
-          const float* pre =
-              precomputed_table.data() + list_no * pq_M * pq_ksub;
-          for (size_t t = 0; t < table_sz; t++) {
-            dis_table[t] = pre[t] - 2.0f * qip_table[t];
-          }
-        } else if (by_residual) {
-          const float* c = centroids.data() + list_no * d;
-          for (idx_t j = 0; j < d; j++) {
-            residual_query[static_cast<size_t>(j)] = xq[j] - c[j];
-          }
-          pq.ComputeDistanceTable(residual_query.data(), dis_table.data());
-        }
-        // else: !by_residual && !precomputed — dis_table already built once
-        // per query above.
-
-        // The constant offset added to every code in this list. The
-        // precomputed-table identity gives:
-        //   ||q - (c_i + p)||² = coarse_dis_i
-        //                      + Σ_m (precomputed[i,m,k] - 2*qip[m,k])
-        //                      = coarse_dis_i + Σ_m table_i[m, code[m]]
-        // For the basic path the per-list dis_table already encodes the full
-        // L2² so list_offset is 0.
-        float list_offset = 0.0f;
-        if (precomputed) {
-          list_offset =
-              centroid_dis[static_cast<size_t>(qi) * nprobe_actual + pi];
-        }
-
-        // ---- scan the inverted list ----
-        InvertedLists::ScopedCodes scoped_codes(invlists,
-                                                static_cast<size_t>(list_no));
-        InvertedLists::ScopedIds scoped_ids(invlists,
-                                            static_cast<size_t>(list_no));
-        const uint8_t* codes_p = scoped_codes.get();
-        const idx_t* ids_p = scoped_ids.get();
-
-        float threshold = heap_dis[0];
-        for (size_t j = 0; j < list_sz; j++) {
-          if (sel && !sel->IsMember(ids_p[j])) {
-            continue;
-          }
-          const float dis =
-              list_offset + pq.ApplyDistanceTable(dis_table.data(),
-                                                  codes_p + j * pq.code_size);
-          if (CMax<float, idx_t>::cmp(threshold, dis)) {
-            heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis,
-                                                 ids_p[j]);
-            threshold = heap_dis[0];
-          }
-        }
-      }
-
-      heap_reorder<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-    }
-  }
-}
-
-void IndexIVFPQ::RangeSearch(idx_t /*n*/, const float* /*x*/, float /*radius*/,
-                             RangeSearchResult* /*result*/,
-                             const SearchParameters* /*params*/) const {
-  HYPERVEC_THROW_MSG(
-      "IndexIVFPQ::RangeSearch is unsupported until a PQ-aware scanner is "
-      "implemented");
+std::unique_ptr<InvertedListScanner>
+IndexIVFPQ::CreateInvertedListScanner() const {
+  return std::make_unique<PQInvertedListScanner>(*this);
 }
 
 // ===========================================================================

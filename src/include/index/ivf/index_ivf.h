@@ -88,7 +88,9 @@ struct IndexIVF : Index {
    *  @param k             results per query
    *  @param list_ids      list indices to probe, size n * nprobe_actual
    *                       (row i holds nprobe_actual list numbers for query i)
-   *  @param centroid_dis  distances to selected centroids, same layout
+   *  @param centroid_dis  distances to selected centroids, same layout;
+   *                       required when n > 0 because codec-specific scanners
+   *                       may use the coarse distance
    *  @param distances     output heap values, size n * k (modified in-place)
    *  @param labels        output heap IDs, size n * k (modified in-place)
    *  @param nprobe_actual number of lists per query in list_ids
@@ -126,8 +128,8 @@ struct IndexIVF : Index {
                          const idx_t* xids);
 
   /** Create independent per-thread state for interpreting stored codes. */
-  virtual std::unique_ptr<InvertedListScanner>
-  CreateInvertedListScanner() const = 0;
+  virtual std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
+      const = 0;
 };
 
 }  // namespace hypervec

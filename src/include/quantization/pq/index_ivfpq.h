@@ -11,6 +11,7 @@
 #include <index/ivf/index_ivf.h>
 #include <quantization/pq/pq.h>
 
+#include <memory>
 #include <vector>
 
 namespace hypervec {
@@ -72,7 +73,8 @@ struct IndexIVFPQ : IndexIVF {
   }
 
   /** KNN and range search share the base IVF traversal and a PQ-aware
-   *  per-thread scanner. Range distances use the same ADC estimate as KNN. */
+   *  per-thread scanner. Range distances and the radius comparison use the
+   *  same approximate ADC values as KNN, not exact vector-space distances. */
 
   /** Train the coarse quantizer on x, then train the PQ on residuals
    *  (if by_residual) or on x directly. If use_precomputed_table is set,
@@ -100,7 +102,7 @@ struct IndexIVFPQ : IndexIVF {
 
  protected:
   std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
-    const override;
+      const override;
 };
 
 }  // namespace hypervec

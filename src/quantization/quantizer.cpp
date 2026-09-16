@@ -7,10 +7,10 @@
  */
 
 #include <quantization/quantizer.h>
-
 #include <utils/distances/extra_distances.h>
 #include <utils/log/assert.h>
 
+#include <cinttypes>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -22,17 +22,17 @@ namespace {
 
 void ValidateCountAndPointer(idx_t count, const void* pointer,
                              const char* operation, const char* pointer_name) {
-  HYPERVEC_THROW_IF_NOT_FMT(count >= 0, "%s: count must be >= 0, got %lld",
-                            operation, static_cast<long long>(count));
-  HYPERVEC_THROW_IF_NOT_FMT(
-    count == 0 || pointer != nullptr, "%s: %s must not be null when count > 0",
-    operation, pointer_name);
+  HYPERVEC_THROW_IF_NOT_FMT(count >= 0, "%s: count must be >= 0, got %" PRId64,
+                            operation, static_cast<int64_t>(count));
+  HYPERVEC_THROW_IF_NOT_FMT(count == 0 || pointer != nullptr,
+                            "%s: %s must not be null when count > 0", operation,
+                            pointer_name);
 }
 
 size_t FlatCodeSize(idx_t dimension) {
   HYPERVEC_THROW_IF_NOT_FMT(
-    dimension > 0, "FlatQuantizer: dimension must be > 0, got %lld",
-    static_cast<long long>(dimension));
+      dimension > 0, "FlatQuantizer: dimension must be > 0, got %" PRId64,
+      static_cast<int64_t>(dimension));
   return mul_no_overflow(static_cast<size_t>(dimension), sizeof(float),
                          "FlatQuantizer code size");
 }
@@ -40,14 +40,14 @@ size_t FlatCodeSize(idx_t dimension) {
 class BoundedDistanceComputer final : public DistanceComputer {
  public:
   BoundedDistanceComputer(std::unique_ptr<DistanceComputer> inner, idx_t count)
-    : inner_(std::move(inner)), count_(count) {
+      : inner_(std::move(inner)), count_(count) {
     HYPERVEC_THROW_IF_NOT_MSG(inner_ != nullptr,
                               "quantizer returned a null DistanceComputer");
   }
 
   void SetQuery(const float* query) override {
-    HYPERVEC_THROW_IF_NOT_MSG(
-      query != nullptr, "DistanceComputer: query must not be null");
+    HYPERVEC_THROW_IF_NOT_MSG(query != nullptr,
+                              "DistanceComputer: query must not be null");
     inner_->SetQuery(query);
   }
 
@@ -65,9 +65,9 @@ class BoundedDistanceComputer final : public DistanceComputer {
  private:
   void CheckIndex(idx_t index) const {
     HYPERVEC_THROW_IF_NOT_FMT(
-      index >= 0 && index < count_,
-      "DistanceComputer: index %lld out of range [0, %lld)",
-      static_cast<long long>(index), static_cast<long long>(count_));
+        index >= 0 && index < count_,
+        "DistanceComputer: index %" PRId64 " out of range [0, %" PRId64 ")",
+        static_cast<int64_t>(index), static_cast<int64_t>(count_));
   }
 
   std::unique_ptr<DistanceComputer> inner_;
@@ -79,10 +79,10 @@ class FlatQuantizerDistanceComputer final : public DistanceComputer {
  public:
   FlatQuantizerDistanceComputer(EncodedVectorView store, idx_t dimension,
                                 VectorDistanceType distance)
-    : store_(store)
-    , distance_(std::move(distance))
-    , decode_buffer_a_(static_cast<size_t>(dimension))
-    , decode_buffer_b_(static_cast<size_t>(dimension)) {}
+      : store_(store),
+        distance_(std::move(distance)),
+        decode_buffer_a_(static_cast<size_t>(dimension)),
+        decode_buffer_b_(static_cast<size_t>(dimension)) {}
 
   void SetQuery(const float* query) override {
     HYPERVEC_THROW_IF_NOT_MSG(query != nullptr,
@@ -92,8 +92,8 @@ class FlatQuantizerDistanceComputer final : public DistanceComputer {
 
   float operator()(idx_t index) override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      query_ != nullptr,
-      "FlatQuantizer: SetQuery must be called before distance evaluation");
+        query_ != nullptr,
+        "FlatQuantizer: SetQuery must be called before distance evaluation");
     Decode(store_.Code(index), decode_buffer_a_.data());
     return distance_(query_, decode_buffer_a_.data());
   }
@@ -120,29 +120,28 @@ class FlatQuantizerDistanceComputer final : public DistanceComputer {
 
 EncodedVectorView::EncodedVectorView(const uint8_t* data, idx_t count,
                                      size_t code_size)
-  : data_(data), count_(count), code_size_(code_size) {
-  HYPERVEC_THROW_IF_NOT_FMT(count >= 0,
-                            "EncodedVectorView: count must be >= 0, got %lld",
-                            static_cast<long long>(count));
+    : data_(data), count_(count), code_size_(code_size) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      count >= 0, "EncodedVectorView: count must be >= 0, got %" PRId64,
+      static_cast<int64_t>(count));
   HYPERVEC_THROW_IF_NOT_MSG(code_size > 0,
                             "EncodedVectorView: code_size must be > 0");
   HYPERVEC_THROW_IF_NOT_MSG(
-    count == 0 || data != nullptr,
-    "EncodedVectorView: data must not be null when count > 0");
+      count == 0 || data != nullptr,
+      "EncodedVectorView: data must not be null when count > 0");
   mul_no_overflow(static_cast<size_t>(count), code_size,
                   "EncodedVectorView byte size");
 }
 
 const uint8_t* EncodedVectorView::Code(idx_t index) const {
   HYPERVEC_THROW_IF_NOT_FMT(
-    index >= 0 && index < count_,
-    "EncodedVectorView: index %lld out of range [0, %lld)",
-    static_cast<long long>(index), static_cast<long long>(count_));
+      index >= 0 && index < count_,
+      "EncodedVectorView: index %" PRId64 " out of range [0, %" PRId64 ")",
+      static_cast<int64_t>(index), static_cast<int64_t>(count_));
   return data_ + static_cast<size_t>(index) * code_size_;
 }
 
-InMemoryCodeStore::InMemoryCodeStore(size_t code_size)
-  : code_size_(code_size) {
+InMemoryCodeStore::InMemoryCodeStore(size_t code_size) : code_size_(code_size) {
   HYPERVEC_THROW_IF_NOT_MSG(code_size > 0,
                             "InMemoryCodeStore: code_size must be > 0");
 }
@@ -171,27 +170,26 @@ void InMemoryCodeStore::Append(idx_t count, const uint8_t* codes) {
   }
 
   const size_t additional_bytes =
-    mul_no_overflow(static_cast<size_t>(count), code_size_,
-                    "InMemoryCodeStore::Append byte size");
+      mul_no_overflow(static_cast<size_t>(count), code_size_,
+                      "InMemoryCodeStore::Append byte size");
   const size_t new_size = add_no_overflow(
-    bytes_.size(), additional_bytes, "InMemoryCodeStore::Append total size");
+      bytes_.size(), additional_bytes, "InMemoryCodeStore::Append total size");
   HYPERVEC_THROW_IF_NOT_MSG(
-    new_size / code_size_ <=
-      static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
-    "InMemoryCodeStore::Append exceeds the supported vector count");
+      new_size / code_size_ <=
+          static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+      "InMemoryCodeStore::Append exceeds the supported vector count");
 
   // Preserve append-to-self semantics across a possible vector reallocation.
   std::vector<uint8_t> source_copy;
   if (!bytes_.empty()) {
     const uintptr_t source_address = reinterpret_cast<uintptr_t>(codes);
-    const uintptr_t begin_address =
-      reinterpret_cast<uintptr_t>(bytes_.data());
+    const uintptr_t begin_address = reinterpret_cast<uintptr_t>(bytes_.data());
     const uintptr_t end_address = begin_address + bytes_.size();
     if (source_address >= begin_address && source_address < end_address) {
       const size_t source_offset = source_address - begin_address;
       HYPERVEC_THROW_IF_NOT_MSG(
-        additional_bytes <= bytes_.size() - source_offset,
-        "InMemoryCodeStore::Append source exceeds the existing code store");
+          additional_bytes <= bytes_.size() - source_offset,
+          "InMemoryCodeStore::Append source exceeds the existing code store");
       source_copy.assign(codes, codes + additional_bytes);
       codes = source_copy.data();
     }
@@ -204,16 +202,16 @@ void InMemoryCodeStore::Append(idx_t count, const uint8_t* codes) {
 
 void Quantizer::Train(const DenseDatasetView& data) {
   HYPERVEC_THROW_IF_NOT_FMT(
-    data.count >= 0, "Quantizer::Train: count must be >= 0, got %lld",
-    static_cast<long long>(data.count));
+      data.count >= 0, "Quantizer::Train: count must be >= 0, got %" PRId64,
+      static_cast<int64_t>(data.count));
   HYPERVEC_THROW_IF_NOT_FMT(
-    data.dimension == Dimension(),
-    "Quantizer::Train: dimension mismatch, expected %lld, got %lld",
-    static_cast<long long>(Dimension()),
-    static_cast<long long>(data.dimension));
+      data.dimension == Dimension(),
+      "Quantizer::Train: dimension mismatch, expected %" PRId64
+      ", got %" PRId64,
+      static_cast<int64_t>(Dimension()), static_cast<int64_t>(data.dimension));
   HYPERVEC_THROW_IF_NOT_MSG(
-    data.count == 0 || data.vectors != nullptr,
-    "Quantizer::Train: vectors must not be null when count > 0");
+      data.count == 0 || data.vectors != nullptr,
+      "Quantizer::Train: vectors must not be null when count > 0");
   TrainImpl(data);
 }
 
@@ -224,8 +222,8 @@ void Quantizer::Encode(idx_t count, const float* vectors,
   ValidateCountAndPointer(count, vectors, "Quantizer::Encode", "vectors");
   ValidateCountAndPointer(count, codes, "Quantizer::Encode", "codes");
   const size_t vector_size =
-    mul_no_overflow(static_cast<size_t>(Dimension()), sizeof(float),
-                    "Quantizer::Encode vector size");
+      mul_no_overflow(static_cast<size_t>(Dimension()), sizeof(float),
+                      "Quantizer::Encode vector size");
   mul_no_overflow(static_cast<size_t>(count), vector_size,
                   "Quantizer::Encode input size");
   mul_no_overflow(static_cast<size_t>(count), CodeSize(),
@@ -240,8 +238,8 @@ void Quantizer::Decode(idx_t count, const uint8_t* codes,
   ValidateCountAndPointer(count, codes, "Quantizer::Decode", "codes");
   ValidateCountAndPointer(count, vectors, "Quantizer::Decode", "vectors");
   const size_t vector_size =
-    mul_no_overflow(static_cast<size_t>(Dimension()), sizeof(float),
-                    "Quantizer::Decode vector size");
+      mul_no_overflow(static_cast<size_t>(Dimension()), sizeof(float),
+                      "Quantizer::Decode vector size");
   mul_no_overflow(static_cast<size_t>(count), vector_size,
                   "Quantizer::Decode output size");
   mul_no_overflow(static_cast<size_t>(count), CodeSize(),
@@ -250,25 +248,25 @@ void Quantizer::Decode(idx_t count, const uint8_t* codes,
 }
 
 std::unique_ptr<DistanceComputer> Quantizer::CreateDistanceComputer(
-  EncodedVectorView store) const {
+    EncodedVectorView store) const {
   HYPERVEC_THROW_IF_NOT_MSG(
-    IsTrained(),
-    "Quantizer::CreateDistanceComputer requires a trained quantizer");
+      IsTrained(),
+      "Quantizer::CreateDistanceComputer requires a trained quantizer");
   HYPERVEC_THROW_IF_NOT_FMT(
-    store.CodeSize() == CodeSize(),
-    "Quantizer::CreateDistanceComputer: code size mismatch, expected %zu, "
-    "got %zu",
-    CodeSize(), store.CodeSize());
+      store.CodeSize() == CodeSize(),
+      "Quantizer::CreateDistanceComputer: code size mismatch, expected %zu, "
+      "got %zu",
+      CodeSize(), store.CodeSize());
   return std::make_unique<BoundedDistanceComputer>(
-    CreateDistanceComputerImpl(store), store.Size());
+      CreateDistanceComputerImpl(store), store.Size());
 }
 
 FlatQuantizer::FlatQuantizer(idx_t dimension, MetricType metric,
                              float metric_arg)
-  : dimension_(dimension)
-  , metric_(metric)
-  , metric_arg_(metric_arg)
-  , code_size_(FlatCodeSize(dimension)) {
+    : dimension_(dimension),
+      metric_(metric),
+      metric_arg_(metric_arg),
+      code_size_(FlatCodeSize(dimension)) {
   with_metric_type(metric, []<MetricType>() {});
 }
 
@@ -292,16 +290,15 @@ void FlatQuantizer::DecodeImpl(idx_t count, const uint8_t* codes,
   }
 }
 
-std::unique_ptr<DistanceComputer>
-FlatQuantizer::CreateDistanceComputerImpl(EncodedVectorView store) const {
+std::unique_ptr<DistanceComputer> FlatQuantizer::CreateDistanceComputerImpl(
+    EncodedVectorView store) const {
   return with_VectorDistance(
-    static_cast<size_t>(dimension_), metric_, metric_arg_,
-    [store, this](auto distance) -> std::unique_ptr<DistanceComputer> {
-      using DistanceType = decltype(distance);
-      return std::make_unique<
-        FlatQuantizerDistanceComputer<DistanceType>>(store, dimension_,
-                                                     std::move(distance));
-    });
+      static_cast<size_t>(dimension_), metric_, metric_arg_,
+      [store, this](auto distance) -> std::unique_ptr<DistanceComputer> {
+        using DistanceType = decltype(distance);
+        return std::make_unique<FlatQuantizerDistanceComputer<DistanceType>>(
+            store, dimension_, std::move(distance));
+      });
 }
 
 }  // namespace hypervec

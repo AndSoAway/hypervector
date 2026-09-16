@@ -7,7 +7,6 @@
  */
 
 #include <index/ivf/index_ivf_flat.h>
-
 #include <index/ivf/inverted_list_scanner.h>
 #include <invlists/inverted_lists.h>
 #include <quantization/quantizer.h>
@@ -15,7 +14,6 @@
 #include <utils/log/assert.h>
 
 #include <cinttypes>
-#include <cstring>
 #include <memory>
 #include <utility>
 
@@ -27,12 +25,12 @@ class FlatInvertedListScanner final : public InvertedListScanner {
  public:
   FlatInvertedListScanner(MetricType metric, size_t code_size,
                           VectorDistanceType distance)
-    : InvertedListScanner(metric, code_size)
-    , distance_(std::move(distance)) {}
+      : InvertedListScanner(metric, code_size),
+        distance_(std::move(distance)) {}
 
   void SetQuery(const float* query) override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      query != nullptr, "FlatInvertedListScanner: query must not be null");
+        query != nullptr, "FlatInvertedListScanner: query must not be null");
     query_ = query;
   }
 
@@ -40,8 +38,8 @@ class FlatInvertedListScanner final : public InvertedListScanner {
 
   float DistanceToCode(const uint8_t* code) const override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      query_ != nullptr,
-      "FlatInvertedListScanner: SetQuery must be called before scanning");
+        query_ != nullptr,
+        "FlatInvertedListScanner: SetQuery must be called before scanning");
     return distance_(query_, reinterpret_cast<const float*>(code));
   }
 
@@ -53,7 +51,7 @@ class FlatInvertedListScanner final : public InvertedListScanner {
 }  // namespace
 
 IndexIVFFlat::IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric)
-  : IndexIVF(d, nlist, (size_t)d * sizeof(float), metric) {}
+    : IndexIVF(d, nlist, static_cast<size_t>(d) * sizeof(float), metric) {}
 
 void IndexIVFFlat::EncodeVectors(idx_t n, const float* x,
                                  uint8_t* codes) const {
@@ -61,20 +59,22 @@ void IndexIVFFlat::EncodeVectors(idx_t n, const float* x,
   quantizer.Encode(n, x, codes);
 }
 
-std::unique_ptr<InvertedListScanner>
-IndexIVFFlat::CreateInvertedListScanner() const {
+std::unique_ptr<InvertedListScanner> IndexIVFFlat::CreateInvertedListScanner()
+    const {  // NOLINT(whitespace/indent_namespace)
+  const size_t expected_code_size =
+      FlatQuantizer(d, metric_type, metric_arg).CodeSize();
   return with_VectorDistance(
-    static_cast<size_t>(d), metric_type, metric_arg,
-    [this](auto distance) -> std::unique_ptr<InvertedListScanner> {
-      using DistanceType = decltype(distance);
-      return std::make_unique<FlatInvertedListScanner<DistanceType>>(
-        metric_type, invlists->code_size, std::move(distance));
-    });
+      static_cast<size_t>(d), metric_type, metric_arg,
+      [this, expected_code_size](
+          auto distance) -> std::unique_ptr<InvertedListScanner> {
+        using DistanceType = decltype(distance);
+        return std::make_unique<FlatInvertedListScanner<DistanceType>>(
+            metric_type, expected_code_size, std::move(distance));
+      });
 }
 
 void IndexIVFFlat::Reconstruct(idx_t key, float* recons) const {
-  const size_t dim = (size_t)d;
-  for (size_t list_no = 0; list_no < (size_t)nlist; list_no++) {
+  for (size_t list_no = 0; list_no < static_cast<size_t>(nlist); list_no++) {
     size_t list_sz = invlists->list_size(list_no);
     if (list_sz == 0) {
       continue;
@@ -84,8 +84,11 @@ void IndexIVFFlat::Reconstruct(idx_t key, float* recons) const {
     for (size_t j = 0; j < list_sz; j++) {
       if (id_ptr[j] == key) {
         InvertedLists::ScopedCodes codes(invlists, list_no);
-        memcpy(recons, (const float*)codes.get() + j * dim,
-               dim * sizeof(float));
+        const FlatQuantizer quantizer(d, metric_type, metric_arg);
+        HYPERVEC_THROW_IF_NOT_MSG(
+            invlists->code_size == quantizer.CodeSize(),
+            "IndexIVFFlat::Reconstruct: inverted-list code size mismatch");
+        quantizer.Decode(1, codes.get() + j * quantizer.CodeSize(), recons);
         return;
       }
     }

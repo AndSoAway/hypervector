@@ -11,6 +11,8 @@
 #include <index/ivf/index_ivf.h>
 #include <quantization/lvq/lvq.h>
 
+#include <memory>
+
 namespace hypervec {
 
 struct IndexIVFLVQ : IndexIVF {
@@ -32,7 +34,8 @@ struct IndexIVFLVQ : IndexIVF {
   }
 
   /** KNN and range search share the base IVF traversal and an LVQ-aware
-   *  per-thread scanner. Range distances use the same ADC estimate as KNN. */
+   *  per-thread scanner. Range distances and the radius comparison use the
+   *  same approximate ADC values as KNN, not exact vector-space distances. */
 
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
@@ -41,7 +44,7 @@ struct IndexIVFLVQ : IndexIVF {
 
  protected:
   std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
-    const override;
+      const override;
 };
 
 }  // namespace hypervec

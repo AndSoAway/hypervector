@@ -7,25 +7,22 @@
  */
 
 #include <quantization/pq/index_pq.h>
-
 #include <quantization/pq/pq_quantizer_adapter.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
+#include <cinttypes>
 #include <cstring>
 
 namespace hypervec {
 
-IndexPQ::IndexPQ() : Index(0, kMetricL2) {
-  is_trained = false;
-}
+IndexPQ::IndexPQ() : Index(0, kMetricL2) { is_trained = false; }
 
 IndexPQ::IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric)
-  : Index(d, metric), pq(d, M, nbits) {
+    : Index(d, metric), pq(d, M, nbits) {
   HYPERVEC_THROW_IF_NOT_FMT(
-    metric == kMetricL2,
-    "IndexPQ: T1 supports kMetricL2 only, got metric=%d",
-    static_cast<int>(metric));
+      metric == kMetricL2, "IndexPQ: T1 supports kMetricL2 only, got metric=%d",
+      static_cast<int>(metric));
   is_trained = false;
 }
 
@@ -54,8 +51,8 @@ void IndexPQ::Search(idx_t n, const float* x, idx_t k, float* distances,
   // T1 does not honour an IDSelector. Reject explicitly so callers don't
   // get silently-incorrect results.
   HYPERVEC_THROW_IF_NOT_MSG(
-    params == nullptr || params->sel == nullptr,
-    "IndexPQ::Search does not support IDSelector yet (T1 limitation)");
+      params == nullptr || params->sel == nullptr,
+      "IndexPQ::Search does not support IDSelector yet (T1 limitation)");
 
   pq.SearchL2(n, x, n_total, codes.data(), k, distances, labels);
 }
@@ -68,12 +65,11 @@ void IndexPQ::Reset() {
 void IndexPQ::Reconstruct(idx_t key, float* recons) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   HYPERVEC_THROW_IF_NOT_FMT(
-    key >= 0 && key < n_total,
-    "IndexPQ::Reconstruct: key %lld out of range [0, %lld)",
-    static_cast<long long>(key), static_cast<long long>(n_total));
+      key >= 0 && key < n_total,
+      "IndexPQ::Reconstruct: key %" PRId64 " out of range [0, %" PRId64 ")",
+      static_cast<int64_t>(key), static_cast<int64_t>(n_total));
   const ProductQuantizerAdapter quantizer(pq);
-  quantizer.Decode(1,
-                   codes.data() + static_cast<size_t>(key) * pq.code_size,
+  quantizer.Decode(1, codes.data() + static_cast<size_t>(key) * pq.code_size,
                    recons);
 }
 
@@ -81,14 +77,12 @@ DistanceComputer* IndexPQ::GetDistanceComputer() const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   const ProductQuantizerAdapter quantizer(pq);
   return quantizer
-    .CreateDistanceComputer(
-      EncodedVectorView(codes.data(), n_total, pq.code_size))
-    .release();
+      .CreateDistanceComputer(
+          EncodedVectorView(codes.data(), n_total, pq.code_size))
+      .release();
 }
 
-size_t IndexPQ::SaCodeSize() const {
-  return pq.code_size;
-}
+size_t IndexPQ::SaCodeSize() const { return pq.code_size; }
 
 void IndexPQ::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
   HYPERVEC_THROW_IF_NOT(is_trained);

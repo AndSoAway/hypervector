@@ -6,9 +6,8 @@
  * source tree.
  */
 
-#include <quantization/lvq/lvq_quantizer_adapter.h>
-
 #include <quantization/lvq/lvq_distance_computer.h>
+#include <quantization/lvq/lvq_quantizer_adapter.h>
 #include <utils/log/assert.h>
 
 #include <memory>
@@ -17,35 +16,37 @@
 namespace hypervec {
 
 LocalVectorQuantizerAdapter::LocalVectorQuantizerAdapter(
-  LocalVectorQuantizer& lvq, LVQParameters parameters)
-  : lvq_(lvq), mutable_lvq_(&lvq), parameters_(std::move(parameters)) {}
+    LocalVectorQuantizer& lvq, LVQParameters parameters)
+    : lvq_(lvq), mutable_lvq_(&lvq), parameters_(std::move(parameters)) {}
 
 LocalVectorQuantizerAdapter::LocalVectorQuantizerAdapter(
-  const LocalVectorQuantizer& lvq)
-  : lvq_(lvq), mutable_lvq_(nullptr) {}
+    const LocalVectorQuantizer& lvq)
+    : lvq_(lvq), mutable_lvq_(nullptr) {}
 
 void LocalVectorQuantizerAdapter::TrainImpl(const DenseDatasetView& data) {
   HYPERVEC_THROW_IF_NOT_MSG(
-    mutable_lvq_ != nullptr,
-    "LocalVectorQuantizerAdapter: cannot train a read-only quantizer");
+      mutable_lvq_ != nullptr,
+      "LocalVectorQuantizerAdapter: cannot train a read-only quantizer");
   mutable_lvq_->Train(data.count, data.vectors, parameters_);
 }
 
-void LocalVectorQuantizerAdapter::EncodeImpl(idx_t count,
-                                             const float* vectors,
+void LocalVectorQuantizerAdapter::EncodeImpl(idx_t count, const float* vectors,
                                              uint8_t* codes) const {
-  lvq_.ComputeCodes(count, vectors, codes);
+  if (count == 1) {
+    lvq_.ComputeCode(vectors, codes);
+  } else {
+    lvq_.ComputeCodes(count, vectors, codes);
+  }
 }
 
-void LocalVectorQuantizerAdapter::DecodeImpl(idx_t count,
-                                             const uint8_t* codes,
+void LocalVectorQuantizerAdapter::DecodeImpl(idx_t count, const uint8_t* codes,
                                              float* vectors) const {
   lvq_.DecodeBatch(count, codes, vectors);
 }
 
 std::unique_ptr<DistanceComputer>
 LocalVectorQuantizerAdapter::CreateDistanceComputerImpl(
-  EncodedVectorView store) const {
+    EncodedVectorView store) const {
   return std::make_unique<LVQDistanceComputer>(lvq_, store.Data(),
                                                store.CodeSize());
 }

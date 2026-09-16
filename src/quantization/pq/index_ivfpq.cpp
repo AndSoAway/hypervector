@@ -58,42 +58,41 @@ std::vector<float> BuildPrecomputedTable(
 class PQInvertedListScanner final : public InvertedListScanner {
  public:
   explicit PQInvertedListScanner(const IndexIVFPQ& index)
-    : InvertedListScanner(index.metric_type, index.pq.code_size)
-    , index_(index)
-    , residual_query_(static_cast<size_t>(index.d))
-    , distance_table_(static_cast<size_t>(index.pq.M) * index.pq.ksub)
-    , query_inner_products_(index.use_precomputed_table != 0
-                              ? distance_table_.size()
-                              : 0) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-      index_.pq.is_trained, "PQInvertedListScanner: PQ is not trained");
+      : InvertedListScanner(index.metric_type, index.pq.code_size),
+        index_(index),
+        use_precomputed_table_(index.use_precomputed_table != 0),
+        residual_query_(static_cast<size_t>(index.d)),
+        distance_table_(static_cast<size_t>(index.pq.M) * index.pq.ksub),
+        query_inner_products_(use_precomputed_table_ ? distance_table_.size()
+                                                     : 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(index_.pq.is_trained,
+                              "PQInvertedListScanner: PQ is not trained");
     if (UsesPrecomputedTable()) {
       HYPERVEC_THROW_IF_NOT_MSG(
-        index_.by_residual,
-        "PQInvertedListScanner: precomputed tables require residual codes");
+          index_.by_residual,
+          "PQInvertedListScanner: precomputed tables require residual codes");
       const size_t expected_size =
-        static_cast<size_t>(index_.nlist) * distance_table_.size();
+          static_cast<size_t>(index_.nlist) * distance_table_.size();
       HYPERVEC_THROW_IF_NOT_MSG(
-        index_.precomputed_table.size() == expected_size,
-        "PQInvertedListScanner: precomputed table has an invalid size");
+          index_.precomputed_table.size() == expected_size,
+          "PQInvertedListScanner: precomputed table has an invalid size");
     }
   }
 
   void SetQuery(const float* query) override {
-    HYPERVEC_THROW_IF_NOT_MSG(
-      query != nullptr, "PQInvertedListScanner: query must not be null");
+    HYPERVEC_THROW_IF_NOT_MSG(query != nullptr,
+                              "PQInvertedListScanner: query must not be null");
     query_ = query;
     list_is_set_ = false;
 
     if (UsesPrecomputedTable()) {
-      for (idx_t subquantizer = 0; subquantizer < index_.pq.M;
-           ++subquantizer) {
+      for (idx_t subquantizer = 0; subquantizer < index_.pq.M; ++subquantizer) {
         fvec_inner_products_ny(
-          query_inner_products_.data() + subquantizer * index_.pq.ksub,
-          query + subquantizer * index_.pq.dsub,
-          index_.pq.GetCentroids(subquantizer, 0),
-          static_cast<size_t>(index_.pq.dsub),
-          static_cast<size_t>(index_.pq.ksub));
+            query_inner_products_.data() + subquantizer * index_.pq.ksub,
+            query + subquantizer * index_.pq.dsub,
+            index_.pq.GetCentroids(subquantizer, 0),
+            static_cast<size_t>(index_.pq.dsub),
+            static_cast<size_t>(index_.pq.ksub));
       }
     } else if (!index_.by_residual) {
       index_.pq.ComputeDistanceTable(query_, distance_table_.data());
@@ -102,20 +101,19 @@ class PQInvertedListScanner final : public InvertedListScanner {
 
   void SetList(idx_t list_no, float coarse_distance) override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      query_ != nullptr,
-      "PQInvertedListScanner: SetQuery must be called before SetList");
+        query_ != nullptr,
+        "PQInvertedListScanner: SetQuery must be called before SetList");
     HYPERVEC_THROW_IF_NOT_MSG(
-      list_no >= 0 && list_no < index_.nlist,
-      "PQInvertedListScanner: list id is outside [0, nlist)");
+        list_no >= 0 && list_no < index_.nlist,
+        "PQInvertedListScanner: list id is outside [0, nlist)");
 
     list_offset_ = 0.0f;
     if (UsesPrecomputedTable()) {
       const float* precomputed =
-        index_.precomputed_table.data() +
-        static_cast<size_t>(list_no) * distance_table_.size();
+          index_.precomputed_table.data() +
+          static_cast<size_t>(list_no) * distance_table_.size();
       for (size_t i = 0; i < distance_table_.size(); ++i) {
-        distance_table_[i] =
-          precomputed[i] - 2.0f * query_inner_products_[i];
+        distance_table_[i] = precomputed[i] - 2.0f * query_inner_products_[i];
       }
       list_offset_ = coarse_distance;
     } else if (index_.by_residual) {
@@ -131,20 +129,19 @@ class PQInvertedListScanner final : public InvertedListScanner {
 
   float DistanceToCode(const uint8_t* code) const override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      list_is_set_,
-      "PQInvertedListScanner: SetList must be called before scanning");
-    HYPERVEC_THROW_IF_NOT_MSG(
-      code != nullptr, "PQInvertedListScanner: code must not be null");
+        list_is_set_,
+        "PQInvertedListScanner: SetList must be called before scanning");
+    HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
+                              "PQInvertedListScanner: code must not be null");
     return list_offset_ +
            index_.pq.ApplyDistanceTable(distance_table_.data(), code);
   }
 
  private:
-  bool UsesPrecomputedTable() const noexcept {
-    return index_.use_precomputed_table != 0;
-  }
+  bool UsesPrecomputedTable() const noexcept { return use_precomputed_table_; }
 
   const IndexIVFPQ& index_;
+  const bool use_precomputed_table_;
   std::vector<float> residual_query_;
   std::vector<float> distance_table_;
   std::vector<float> query_inner_products_;
@@ -294,8 +291,8 @@ void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
-std::unique_ptr<InvertedListScanner>
-IndexIVFPQ::CreateInvertedListScanner() const {
+std::unique_ptr<InvertedListScanner> IndexIVFPQ::CreateInvertedListScanner()
+    const {
   return std::make_unique<PQInvertedListScanner>(*this);
 }
 

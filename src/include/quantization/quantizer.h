@@ -79,11 +79,13 @@ class Quantizer {
   virtual bool IsTrained() const noexcept = 0;
   virtual size_t CodeSize() const noexcept = 0;
 
+  /** Train codec state from dense vectors. Dataset ids are intentionally
+   *  ignored because encoded-vector identity belongs to the owning index. */
   void Train(const DenseDatasetView& data);
   void Encode(idx_t count, const float* vectors, uint8_t* codes) const;
   void Decode(idx_t count, const uint8_t* codes, float* vectors) const;
   std::unique_ptr<DistanceComputer> CreateDistanceComputer(
-    EncodedVectorView store) const;
+      EncodedVectorView store) const;
 
  protected:
   virtual void TrainImpl(const DenseDatasetView& data) = 0;
@@ -92,7 +94,7 @@ class Quantizer {
   virtual void DecodeImpl(idx_t count, const uint8_t* codes,
                           float* vectors) const = 0;
   virtual std::unique_ptr<DistanceComputer> CreateDistanceComputerImpl(
-    EncodedVectorView store) const = 0;
+      EncodedVectorView store) const = 0;
 };
 
 /** Lossless float32 codec implementing the Quantizer protocol. */
@@ -114,7 +116,7 @@ class FlatQuantizer final : public Quantizer {
   void DecodeImpl(idx_t count, const uint8_t* codes,
                   float* vectors) const override;
   std::unique_ptr<DistanceComputer> CreateDistanceComputerImpl(
-    EncodedVectorView store) const override;
+      EncodedVectorView store) const override;
 
  private:
   idx_t dimension_;

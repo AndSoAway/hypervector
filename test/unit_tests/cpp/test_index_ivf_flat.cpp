@@ -7,7 +7,6 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <persistence/index_io.h>
@@ -64,7 +63,7 @@ TEST(IndexIVFFlat, PersistenceRoundtripPreservesSearch) {
   TempFile file;
   hypervec::WriteIndex(&source, file.path.c_str());
   std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(file.path.c_str()));
+      hypervec::ReadIndex(file.path.c_str()));
   auto* restored = dynamic_cast<hypervec::IndexIVFFlat*>(loaded.get());
   ASSERT_NE(restored, nullptr);
   EXPECT_EQ(restored->d, source.d);
@@ -91,12 +90,12 @@ TEST(IndexIVFFlat, ScannerMatchesFlatForL2AndInnerProduct) {
   const auto base = RandomVectors(kDatabaseSize, kDimension, 201);
   const auto queries = RandomVectors(kQueryCount, kDimension, 202);
 
-  for (const hypervec::MetricType metric : {hypervec::kMetricL2,
-                                             hypervec::kMetricInnerProduct}) {
+  for (const hypervec::MetricType metric :
+       {hypervec::kMetricL2, hypervec::kMetricInnerProduct}) {
     hypervec::IndexFlat exact(kDimension, metric);
     exact.Add(kDatabaseSize, base.data());
     std::vector<float> exact_distances(
-      static_cast<size_t>(kQueryCount * kNeighbors));
+        static_cast<size_t>(kQueryCount * kNeighbors));
     std::vector<hypervec::idx_t> exact_labels(exact_distances.size());
     exact.Search(kQueryCount, queries.data(), kNeighbors,
                  exact_distances.data(), exact_labels.data());

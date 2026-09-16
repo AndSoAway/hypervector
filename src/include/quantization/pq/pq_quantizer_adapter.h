@@ -42,7 +42,7 @@ class ProductQuantizerAdapter final : public Quantizer {
   void DecodeImpl(idx_t count, const uint8_t* codes,
                   float* vectors) const override;
   std::unique_ptr<DistanceComputer> CreateDistanceComputerImpl(
-    EncodedVectorView store) const override;
+      EncodedVectorView store) const override;
 
  private:
   const ProductQuantizer& pq_;

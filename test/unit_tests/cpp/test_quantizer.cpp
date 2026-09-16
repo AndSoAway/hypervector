@@ -7,15 +7,16 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <quantization/lvq/lvq_quantizer_adapter.h>
 #include <quantization/pq/pq_quantizer_adapter.h>
 #include <quantization/quantizer.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -27,8 +28,8 @@ std::vector<float> TrainingVectors(hypervec::idx_t count,
   for (hypervec::idx_t i = 0; i < count; ++i) {
     for (hypervec::idx_t j = 0; j < dimension; ++j) {
       vectors[static_cast<size_t>(i * dimension + j)] =
-        0.25f * static_cast<float>(i) +
-        0.1f * static_cast<float>((i + 3 * j) % 7);
+          0.25f * static_cast<float>(i) +
+          0.1f * static_cast<float>((i + 3 * j) % 7);
     }
   }
   return vectors;
@@ -86,12 +87,17 @@ TEST(InMemoryCodeStore, RejectsInvalidInputs) {
                hypervec::HypervecException);
   EXPECT_THROW(hypervec::EncodedVectorView(nullptr, 0, 0),
                hypervec::HypervecException);
+
+  hypervec::InMemoryCodeStore overflow_store(3);
+  const uint8_t byte = 0;
+  EXPECT_THROW(overflow_store.Append(
+                   (std::numeric_limits<hypervec::idx_t>::max)(), &byte),
+               hypervec::HypervecException);
 }
 
 TEST(FlatQuantizer, CodecAndDistanceComputer) {
   constexpr hypervec::idx_t kDimension = 3;
-  const std::vector<float> vectors = {1.0f, 2.0f, 3.0f,
-                                      4.0f, 5.0f, 6.0f};
+  const std::vector<float> vectors = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
   const std::vector<float> query = {2.0f, 2.0f, 2.0f};
 
   hypervec::FlatQuantizer quantizer(kDimension, hypervec::kMetricL2);
@@ -110,7 +116,7 @@ TEST(FlatQuantizer, CodecAndDistanceComputer) {
   EXPECT_EQ(decoded, vectors);
 
   std::unique_ptr<hypervec::DistanceComputer> distance =
-    quantizer.CreateDistanceComputer(store.View());
+      quantizer.CreateDistanceComputer(store.View());
   distance->SetQuery(query.data());
   EXPECT_FLOAT_EQ((*distance)(0), 2.0f);
   EXPECT_FLOAT_EQ((*distance)(1), 29.0f);
@@ -126,13 +132,12 @@ TEST(QuantizerProtocol, ValidatesDimensionsPointersAndCodeWidth) {
 
   EXPECT_THROW(quantizer.Train({1, 3, vector, nullptr}),
                hypervec::HypervecException);
-  EXPECT_THROW(quantizer.Encode(1, nullptr, code),
-               hypervec::HypervecException);
+  EXPECT_THROW(quantizer.Encode(1, nullptr, code), hypervec::HypervecException);
   EXPECT_THROW(quantizer.Decode(1, nullptr, decoded),
                hypervec::HypervecException);
   EXPECT_THROW(
-    quantizer.CreateDistanceComputer(hypervec::EncodedVectorView(code, 1, 1)),
-    hypervec::HypervecException);
+      quantizer.CreateDistanceComputer(hypervec::EncodedVectorView(code, 1, 1)),
+      hypervec::HypervecException);
 }
 
 TEST(ProductQuantizerAdapter, MatchesExistingCodecAndAdc) {
@@ -150,12 +155,16 @@ TEST(ProductQuantizerAdapter, MatchesExistingCodecAndAdc) {
   EXPECT_TRUE(quantizer.IsTrained());
   EXPECT_EQ(quantizer.CodeSize(), model.code_size);
 
-  std::vector<uint8_t> adapter_codes(
-    static_cast<size_t>(kCount) * model.code_size);
+  std::vector<uint8_t> adapter_codes(static_cast<size_t>(kCount) *
+                                     model.code_size);
   std::vector<uint8_t> direct_codes(adapter_codes.size());
   quantizer.Encode(kCount, vectors.data(), adapter_codes.data());
   model.ComputeCodes(kCount, vectors.data(), direct_codes.data());
   EXPECT_EQ(adapter_codes, direct_codes);
+  std::vector<uint8_t> single_code(model.code_size);
+  quantizer.Encode(1, vectors.data() + 3 * kDimension, single_code.data());
+  EXPECT_TRUE(std::equal(single_code.begin(), single_code.end(),
+                         direct_codes.begin() + 3 * model.code_size));
 
   std::vector<float> adapter_decoded(static_cast<size_t>(kCount) * kDimension);
   std::vector<float> direct_decoded(adapter_decoded.size());
@@ -166,14 +175,14 @@ TEST(ProductQuantizerAdapter, MatchesExistingCodecAndAdc) {
   const hypervec::EncodedVectorView view(adapter_codes.data(), kCount,
                                          model.code_size);
   std::unique_ptr<hypervec::DistanceComputer> distance =
-    quantizer.CreateDistanceComputer(view);
+      quantizer.CreateDistanceComputer(view);
   distance->SetQuery(vectors.data() + 3 * kDimension);
 
   std::vector<float> table(static_cast<size_t>(model.M * model.ksub));
   model.ComputeDistanceTable(vectors.data() + 3 * kDimension, table.data());
   for (hypervec::idx_t i = 0; i < kCount; ++i) {
     const float expected = model.ApplyDistanceTable(
-      table.data(), direct_codes.data() + i * model.code_size);
+        table.data(), direct_codes.data() + i * model.code_size);
     EXPECT_FLOAT_EQ((*distance)(i), expected);
   }
 }
@@ -193,12 +202,16 @@ TEST(LocalVectorQuantizerAdapter, MatchesExistingCodecAndAdc) {
   EXPECT_TRUE(quantizer.IsTrained());
   EXPECT_EQ(quantizer.CodeSize(), model.code_size);
 
-  std::vector<uint8_t> adapter_codes(
-    static_cast<size_t>(kCount) * model.code_size);
+  std::vector<uint8_t> adapter_codes(static_cast<size_t>(kCount) *
+                                     model.code_size);
   std::vector<uint8_t> direct_codes(adapter_codes.size());
   quantizer.Encode(kCount, vectors.data(), adapter_codes.data());
   model.ComputeCodes(kCount, vectors.data(), direct_codes.data());
   EXPECT_EQ(adapter_codes, direct_codes);
+  std::vector<uint8_t> single_code(model.code_size);
+  quantizer.Encode(1, vectors.data() + 3 * kDimension, single_code.data());
+  EXPECT_TRUE(std::equal(single_code.begin(), single_code.end(),
+                         direct_codes.begin() + 3 * model.code_size));
 
   std::vector<float> adapter_decoded(static_cast<size_t>(kCount) * kDimension);
   std::vector<float> direct_decoded(adapter_decoded.size());
@@ -209,15 +222,14 @@ TEST(LocalVectorQuantizerAdapter, MatchesExistingCodecAndAdc) {
   const hypervec::EncodedVectorView view(adapter_codes.data(), kCount,
                                          model.code_size);
   std::unique_ptr<hypervec::DistanceComputer> distance =
-    quantizer.CreateDistanceComputer(view);
+      quantizer.CreateDistanceComputer(view);
   distance->SetQuery(vectors.data() + 3 * kDimension);
 
-  std::vector<float> table(
-    static_cast<size_t>(model.nlocal * model.ksub));
+  std::vector<float> table(static_cast<size_t>(model.nlocal * model.ksub));
   model.ComputeDistanceTable(vectors.data() + 3 * kDimension, table.data());
   for (hypervec::idx_t i = 0; i < kCount; ++i) {
     const float expected = model.ApplyDistanceTable(
-      table.data(), direct_codes.data() + i * model.code_size);
+        table.data(), direct_codes.data() + i * model.code_size);
     EXPECT_FLOAT_EQ((*distance)(i), expected);
   }
 
@@ -234,5 +246,19 @@ TEST(QuantizerAdapter, ReadOnlyModelCannotBeTrained) {
   hypervec::ProductQuantizerAdapter quantizer(model);
   const std::vector<float> vectors = TrainingVectors(4, 4);
   EXPECT_THROW(quantizer.Train({4, 4, vectors.data(), nullptr}),
+               hypervec::HypervecException);
+}
+
+TEST(QuantizerAdapter, UntrainedModelsRejectCodecOperations) {
+  const hypervec::ProductQuantizer model(4, 2, 2);
+  const hypervec::ProductQuantizerAdapter quantizer(model);
+  const float vector[4] = {};
+  uint8_t code[1] = {};
+  float decoded[4] = {};
+
+  EXPECT_THROW(quantizer.Encode(1, vector, code), hypervec::HypervecException);
+  EXPECT_THROW(quantizer.Decode(1, code, decoded), hypervec::HypervecException);
+  EXPECT_THROW(quantizer.CreateDistanceComputer(
+                   hypervec::EncodedVectorView(code, 1, sizeof(code))),
                hypervec::HypervecException);
 }

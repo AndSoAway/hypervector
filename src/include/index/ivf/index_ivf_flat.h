@@ -10,6 +10,8 @@
 
 #include <index/ivf/index_ivf.h>
 
+#include <memory>
+
 namespace hypervec {
 
 /** IVF index that stores raw float vectors (exact per-cell distance).
@@ -38,7 +40,7 @@ struct IndexIVFFlat : IndexIVF {
 
  protected:
   std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
-    const override;
+      const override;
 };
 
 }  // namespace hypervec

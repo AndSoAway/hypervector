@@ -23,18 +23,18 @@ namespace {
 class LVQInvertedListScanner final : public InvertedListScanner {
  public:
   explicit LVQInvertedListScanner(const IndexIVFLVQ& index)
-    : InvertedListScanner(index.metric_type, index.lvq.code_size)
-    , index_(index)
-    , residual_query_(static_cast<size_t>(index.d))
-    , distance_table_(static_cast<size_t>(index.lvq.nlocal) *
-                      index.lvq.ksub) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-      index_.lvq.is_trained, "LVQInvertedListScanner: LVQ is not trained");
+      : InvertedListScanner(index.metric_type, index.lvq.code_size),
+        index_(index),
+        residual_query_(static_cast<size_t>(index.d)),
+        distance_table_(static_cast<size_t>(index.lvq.nlocal) *
+                        index.lvq.ksub) {
+    HYPERVEC_THROW_IF_NOT_MSG(index_.lvq.is_trained,
+                              "LVQInvertedListScanner: LVQ is not trained");
   }
 
   void SetQuery(const float* query) override {
-    HYPERVEC_THROW_IF_NOT_MSG(
-      query != nullptr, "LVQInvertedListScanner: query must not be null");
+    HYPERVEC_THROW_IF_NOT_MSG(query != nullptr,
+                              "LVQInvertedListScanner: query must not be null");
     query_ = query;
     list_is_set_ = false;
     if (!index_.by_residual) {
@@ -44,11 +44,11 @@ class LVQInvertedListScanner final : public InvertedListScanner {
 
   void SetList(idx_t list_no, float /* coarse_distance */) override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      query_ != nullptr,
-      "LVQInvertedListScanner: SetQuery must be called before SetList");
+        query_ != nullptr,
+        "LVQInvertedListScanner: SetQuery must be called before SetList");
     HYPERVEC_THROW_IF_NOT_MSG(
-      list_no >= 0 && list_no < index_.nlist,
-      "LVQInvertedListScanner: list id is outside [0, nlist)");
+        list_no >= 0 && list_no < index_.nlist,
+        "LVQInvertedListScanner: list id is outside [0, nlist)");
     if (index_.by_residual) {
       const float* centroid = index_.centroids.data() + list_no * index_.d;
       for (idx_t i = 0; i < index_.d; ++i) {
@@ -62,10 +62,10 @@ class LVQInvertedListScanner final : public InvertedListScanner {
 
   float DistanceToCode(const uint8_t* code) const override {
     HYPERVEC_THROW_IF_NOT_MSG(
-      list_is_set_,
-      "LVQInvertedListScanner: SetList must be called before scanning");
-    HYPERVEC_THROW_IF_NOT_MSG(
-      code != nullptr, "LVQInvertedListScanner: code must not be null");
+        list_is_set_,
+        "LVQInvertedListScanner: SetList must be called before scanning");
+    HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
+                              "LVQInvertedListScanner: code must not be null");
     return index_.lvq.ApplyDistanceTable(distance_table_.data(), code);
   }
 
@@ -182,8 +182,8 @@ void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
-std::unique_ptr<InvertedListScanner>
-IndexIVFLVQ::CreateInvertedListScanner() const {
+std::unique_ptr<InvertedListScanner> IndexIVFLVQ::CreateInvertedListScanner()
+    const {
   return std::make_unique<LVQInvertedListScanner>(*this);
 }
 

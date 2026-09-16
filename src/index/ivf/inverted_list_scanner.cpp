@@ -7,17 +7,19 @@
  */
 
 #include <index/ivf/inverted_list_scanner.h>
-
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
 #include <utils/structures/heap.h>
 
+#include <vector>
+
 namespace hypervec {
 
 InvertedListScanner::InvertedListScanner(MetricType metric, size_t code_size)
-  : metric_(metric), code_size_(code_size) {
+    : metric_(metric), code_size_(code_size) {
   HYPERVEC_THROW_IF_NOT_MSG(
-    code_size > 0, "InvertedListScanner: code_size must be greater than zero");
+      code_size > 0,
+      "InvertedListScanner: code_size must be greater than zero");
 }
 
 size_t InvertedListScanner::ScanKnn(const uint8_t* codes, const idx_t* ids,
@@ -27,14 +29,14 @@ size_t InvertedListScanner::ScanKnn(const uint8_t* codes, const idx_t* ids,
   HYPERVEC_THROW_IF_NOT_MSG(k > 0,
                             "InvertedListScanner::ScanKnn: k must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(
-    count == 0 || codes != nullptr,
-    "InvertedListScanner::ScanKnn: codes must not be null");
+      count == 0 || codes != nullptr,
+      "InvertedListScanner::ScanKnn: codes must not be null");
   HYPERVEC_THROW_IF_NOT_MSG(
-    count == 0 || ids != nullptr,
-    "InvertedListScanner::ScanKnn: ids must not be null");
+      count == 0 || ids != nullptr,
+      "InvertedListScanner::ScanKnn: ids must not be null");
   HYPERVEC_THROW_IF_NOT_MSG(
-    heap_distances != nullptr && heap_ids != nullptr,
-    "InvertedListScanner::ScanKnn: result heap must not be null");
+      heap_distances != nullptr && heap_ids != nullptr,
+      "InvertedListScanner::ScanKnn: result heap must not be null");
 
   size_t distance_count = 0;
   float threshold = heap_distances[0];
@@ -69,18 +71,18 @@ size_t InvertedListScanner::ScanKnn(const uint8_t* codes, const idx_t* ids,
 }
 
 size_t InvertedListScanner::ScanRange(
-  const uint8_t* codes, const idx_t* ids, size_t count,
-  const IDSelector* selector, float radius,
-  std::vector<std::pair<float, idx_t>>* results) const {
+    const uint8_t* codes, const idx_t* ids, size_t count,
+    const IDSelector* selector, float radius,
+    std::vector<std::pair<float, idx_t>>* results) const {
   HYPERVEC_THROW_IF_NOT_MSG(
-    count == 0 || codes != nullptr,
-    "InvertedListScanner::ScanRange: codes must not be null");
+      count == 0 || codes != nullptr,
+      "InvertedListScanner::ScanRange: codes must not be null");
   HYPERVEC_THROW_IF_NOT_MSG(
-    count == 0 || ids != nullptr,
-    "InvertedListScanner::ScanRange: ids must not be null");
+      count == 0 || ids != nullptr,
+      "InvertedListScanner::ScanRange: ids must not be null");
   HYPERVEC_THROW_IF_NOT_MSG(
-    results != nullptr,
-    "InvertedListScanner::ScanRange: results must not be null");
+      results != nullptr,
+      "InvertedListScanner::ScanRange: results must not be null");
 
   size_t distance_count = 0;
   const bool similarity = IsSimilarityMetric(metric_);

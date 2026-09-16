@@ -6,9 +6,8 @@
  * source tree.
  */
 
-#include <quantization/pq/pq_quantizer_adapter.h>
-
 #include <quantization/pq/pq_distance_computer.h>
+#include <quantization/pq/pq_quantizer_adapter.h>
 #include <utils/log/assert.h>
 
 #include <memory>
@@ -18,21 +17,25 @@ namespace hypervec {
 
 ProductQuantizerAdapter::ProductQuantizerAdapter(ProductQuantizer& pq,
                                                  PQParameters parameters)
-  : pq_(pq), mutable_pq_(&pq), parameters_(std::move(parameters)) {}
+    : pq_(pq), mutable_pq_(&pq), parameters_(std::move(parameters)) {}
 
 ProductQuantizerAdapter::ProductQuantizerAdapter(const ProductQuantizer& pq)
-  : pq_(pq), mutable_pq_(nullptr) {}
+    : pq_(pq), mutable_pq_(nullptr) {}
 
 void ProductQuantizerAdapter::TrainImpl(const DenseDatasetView& data) {
   HYPERVEC_THROW_IF_NOT_MSG(
-    mutable_pq_ != nullptr,
-    "ProductQuantizerAdapter: cannot train a read-only quantizer");
+      mutable_pq_ != nullptr,
+      "ProductQuantizerAdapter: cannot train a read-only quantizer");
   mutable_pq_->Train(data.count, data.vectors, parameters_);
 }
 
 void ProductQuantizerAdapter::EncodeImpl(idx_t count, const float* vectors,
                                          uint8_t* codes) const {
-  pq_.ComputeCodes(count, vectors, codes);
+  if (count == 1) {
+    pq_.ComputeCode(vectors, codes);
+  } else {
+    pq_.ComputeCodes(count, vectors, codes);
+  }
 }
 
 void ProductQuantizerAdapter::DecodeImpl(idx_t count, const uint8_t* codes,
@@ -42,7 +45,7 @@ void ProductQuantizerAdapter::DecodeImpl(idx_t count, const uint8_t* codes,
 
 std::unique_ptr<DistanceComputer>
 ProductQuantizerAdapter::CreateDistanceComputerImpl(
-  EncodedVectorView store) const {
+    EncodedVectorView store) const {
   return std::make_unique<PQDistanceComputer>(pq_, store.Data(),
                                               store.CodeSize());
 }

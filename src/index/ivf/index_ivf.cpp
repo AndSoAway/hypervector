@@ -79,12 +79,11 @@ void IndexIVF::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
 void IndexIVF::Search(idx_t n, const float* x, idx_t k, float* distances,
                       idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
-                            "IndexIVF::Search: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexIVF::Search: n must be non-negative");
   HYPERVEC_THROW_IF_NOT(k > 0);
   HYPERVEC_THROW_IF_NOT_MSG(
-    n == 0 || (x != nullptr && distances != nullptr && labels != nullptr),
-    "IndexIVF::Search: input and output pointers must not be null");
+      n == 0 || (x != nullptr && distances != nullptr && labels != nullptr),
+      "IndexIVF::Search: input and output pointers must not be null");
   if (n == 0) {
     return;
   }
@@ -97,10 +96,9 @@ void IndexIVF::Search(idx_t n, const float* x, idx_t k, float* distances,
                             "IndexIVF::Search: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
-  const size_t assignment_count =
-    mul_no_overflow(static_cast<size_t>(n),
-                    static_cast<size_t>(nprobe_actual),
-                    "IndexIVF::Search assignment count");
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::Search assignment count");
   std::vector<float> centroid_dis(assignment_count);
   std::vector<idx_t> centroid_ids(assignment_count);
   FindNearestCentroids(n, x, nprobe_actual, centroid_dis.data(),
@@ -116,31 +114,41 @@ void IndexIVF::SearchPreassigned(idx_t n, const float* x, idx_t k,
                                  idx_t* labels, idx_t nprobe_actual,
                                  const IDSelector* sel) const {
   HYPERVEC_THROW_IF_NOT_MSG(
-    is_trained, "IndexIVF::SearchPreassigned: index is not trained");
+      is_trained, "IndexIVF::SearchPreassigned: index is not trained");
   HYPERVEC_THROW_IF_NOT_MSG(
-    n >= 0, "IndexIVF::SearchPreassigned: n must be non-negative");
+      n >= 0, "IndexIVF::SearchPreassigned: n must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(k > 0,
                             "IndexIVF::SearchPreassigned: k must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(
-    nprobe_actual > 0,
-    "IndexIVF::SearchPreassigned: nprobe must be positive");
+      nprobe_actual > 0,
+      "IndexIVF::SearchPreassigned: nprobe must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(
-    n == 0 || (x != nullptr && list_ids != nullptr && distances != nullptr &&
-               labels != nullptr),
-    "IndexIVF::SearchPreassigned: input and output pointers must not be null");
+      n == 0 || (x != nullptr && list_ids != nullptr && distances != nullptr &&
+                 labels != nullptr),
+      "IndexIVF::SearchPreassigned: input and output pointers must not be "
+      "null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || centroid_dis != nullptr,
+      "IndexIVF::SearchPreassigned: centroid distances must not be null");
 
-  const size_t assignment_count =
-    mul_no_overflow(static_cast<size_t>(n),
-                    static_cast<size_t>(nprobe_actual),
-                    "IndexIVF::SearchPreassigned assignment count");
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::SearchPreassigned assignment count");
   for (size_t i = 0; i < assignment_count; ++i) {
     HYPERVEC_THROW_IF_NOT_MSG(
-      list_ids[i] < 0 || list_ids[i] < nlist,
-      "IndexIVF::SearchPreassigned: list id is outside [0, nlist)");
+        list_ids[i] < 0 || list_ids[i] < nlist,
+        "IndexIVF::SearchPreassigned: list id is outside [0, nlist)");
   }
   if (n == 0) {
     return;
   }
+
+  HYPERVEC_THROW_IF_NOT_MSG(
+      invlists != nullptr,
+      "IndexIVF::SearchPreassigned: inverted lists must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      invlists->nlist == static_cast<size_t>(nlist),
+      "IndexIVF::SearchPreassigned: inverted-list count mismatch");
 
   size_t scanner_count = 1;
 #ifdef _OPENMP
@@ -150,10 +158,22 @@ void IndexIVF::SearchPreassigned(idx_t n, const float* x, idx_t k,
   std::vector<std::unique_ptr<InvertedListScanner>> scanners;
   scanners.reserve(scanner_count);
   for (size_t i = 0; i < scanner_count; ++i) {
-    scanners.push_back(CreateInvertedListScanner());
+    auto scanner = CreateInvertedListScanner();
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner != nullptr,
+        "IndexIVF::SearchPreassigned: scanner factory returned null");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner->CodeSize() == invlists->code_size,
+        "IndexIVF::SearchPreassigned: scanner and inverted-list code sizes "
+        "differ");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner->Metric() == metric_type,
+        "IndexIVF::SearchPreassigned: scanner and index metrics differ");
+    scanners.push_back(std::move(scanner));
   }
 
   const bool similarity = IsSimilarityMetric(metric_type);
+  std::vector<std::exception_ptr> worker_exceptions(scanner_count);
 #pragma omp parallel num_threads(scanner_count) if (n > 1)
   {
     size_t scanner_no = 0;
@@ -163,43 +183,55 @@ void IndexIVF::SearchPreassigned(idx_t n, const float* x, idx_t k,
     InvertedListScanner* scanner = scanners[scanner_no].get();
 #pragma omp for schedule(dynamic, 1)
     for (idx_t query_no = 0; query_no < n; ++query_no) {
-      scanner->SetQuery(x + query_no * d);
-      float* heap_distances = distances + query_no * k;
-      idx_t* heap_ids = labels + query_no * k;
-      if (similarity) {
-        heap_heapify<CMin<float, idx_t>>(k, heap_distances, heap_ids);
-      } else {
-        heap_heapify<CMax<float, idx_t>>(k, heap_distances, heap_ids);
+      if (worker_exceptions[scanner_no]) {
+        continue;
       }
-
-      for (idx_t probe = 0; probe < nprobe_actual; ++probe) {
-        const size_t probe_offset =
-          static_cast<size_t>(query_no) * nprobe_actual + probe;
-        const idx_t list_no = list_ids[probe_offset];
-        if (list_no < 0) {
-          continue;
-        }
-        const size_t list_size =
-          invlists->list_size(static_cast<size_t>(list_no));
-        if (list_size == 0) {
-          continue;
+      try {
+        scanner->SetQuery(x + query_no * d);
+        float* heap_distances = distances + query_no * k;
+        idx_t* heap_ids = labels + query_no * k;
+        if (similarity) {
+          heap_heapify<CMin<float, idx_t>>(k, heap_distances, heap_ids);
+        } else {
+          heap_heapify<CMax<float, idx_t>>(k, heap_distances, heap_ids);
         }
 
-        const float coarse_distance =
-          centroid_dis == nullptr ? 0.0f : centroid_dis[probe_offset];
-        scanner->SetList(list_no, coarse_distance);
-        InvertedLists::ScopedCodes codes(invlists,
-                                         static_cast<size_t>(list_no));
-        InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
-        scanner->ScanKnn(codes.get(), ids.get(), list_size, sel, k,
-                         heap_distances, heap_ids);
-      }
+        for (idx_t probe = 0; probe < nprobe_actual; ++probe) {
+          const size_t probe_offset =
+              static_cast<size_t>(query_no) * nprobe_actual + probe;
+          const idx_t list_no = list_ids[probe_offset];
+          if (list_no < 0) {
+            continue;
+          }
+          const size_t list_size =
+              invlists->list_size(static_cast<size_t>(list_no));
+          if (list_size == 0) {
+            continue;
+          }
 
-      if (similarity) {
-        heap_reorder<CMin<float, idx_t>>(k, heap_distances, heap_ids);
-      } else {
-        heap_reorder<CMax<float, idx_t>>(k, heap_distances, heap_ids);
+          scanner->SetList(list_no, centroid_dis[probe_offset]);
+          InvertedLists::ScopedCodes codes(invlists,
+                                           static_cast<size_t>(list_no));
+          InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
+          scanner->ScanKnn(codes.get(), ids.get(), list_size, sel, k,
+                           heap_distances, heap_ids);
+        }
+
+        if (similarity) {
+          heap_reorder<CMin<float, idx_t>>(k, heap_distances, heap_ids);
+        } else {
+          heap_reorder<CMax<float, idx_t>>(k, heap_distances, heap_ids);
+        }
+      } catch (...) {
+        // OpenMP structured blocks must not be exited by an exception. Keep
+        // one exception per worker and rethrow after the implicit barrier.
+        worker_exceptions[scanner_no] = std::current_exception();
       }
+    }
+  }
+  for (const auto& exception : worker_exceptions) {
+    if (exception) {
+      std::rethrow_exception(exception);
     }
   }
 }
@@ -211,18 +243,25 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
   HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
                             "IndexIVF::RangeSearch: n must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(
-    n == 0 || x != nullptr,
-    "IndexIVF::RangeSearch: query pointer must not be null when n > 0");
+      n == 0 || x != nullptr,
+      "IndexIVF::RangeSearch: query pointer must not be null when n > 0");
   HYPERVEC_THROW_IF_NOT_MSG(result != nullptr,
                             "IndexIVF::RangeSearch: result must not be null");
   HYPERVEC_THROW_IF_NOT_MSG(
-    result->nq == static_cast<size_t>(n),
-    "IndexIVF::RangeSearch: result query count does not match n");
+      result->nq == static_cast<size_t>(n),
+      "IndexIVF::RangeSearch: result query count does not match n");
   if (n == 0) {
     result->lims[0] = 0;
     result->DoAllocation();
     return;
   }
+
+  HYPERVEC_THROW_IF_NOT_MSG(
+      invlists != nullptr,
+      "IndexIVF::RangeSearch: inverted lists must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      invlists->nlist == static_cast<size_t>(nlist),
+      "IndexIVF::RangeSearch: inverted-list count mismatch");
 
   const IVFSearchParameters* ivf_params =
       dynamic_cast<const IVFSearchParameters*>(params);
@@ -232,10 +271,9 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
                             "IndexIVF::RangeSearch: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
-  const size_t assignment_count =
-    mul_no_overflow(static_cast<size_t>(n),
-                    static_cast<size_t>(nprobe_actual),
-                    "IndexIVF::RangeSearch assignment count");
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::RangeSearch assignment count");
   std::vector<float> centroid_dis(assignment_count);
   std::vector<idx_t> centroid_ids(assignment_count);
   FindNearestCentroids(n, x, nprobe_actual, centroid_dis.data(),
@@ -253,8 +291,19 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
   std::vector<std::unique_ptr<InvertedListScanner>> scanners;
   scanners.reserve(scanner_count);
   for (size_t i = 0; i < scanner_count; ++i) {
-    scanners.push_back(CreateInvertedListScanner());
+    auto scanner = CreateInvertedListScanner();
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner != nullptr,
+        "IndexIVF::RangeSearch: scanner factory returned null");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner->CodeSize() == invlists->code_size,
+        "IndexIVF::RangeSearch: scanner and inverted-list code sizes differ");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner->Metric() == metric_type,
+        "IndexIVF::RangeSearch: scanner and index metrics differ");
+    scanners.push_back(std::move(scanner));
   }
+  std::vector<std::exception_ptr> worker_exceptions(scanner_count);
 #pragma omp parallel num_threads(scanner_count) if (n > 1)
   {
     size_t scanner_no = 0;
@@ -264,34 +313,45 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
     InvertedListScanner* scanner = scanners[scanner_no].get();
 #pragma omp for schedule(dynamic, 1)
     for (idx_t query_no = 0; query_no < n; ++query_no) {
-      scanner->SetQuery(x + query_no * d);
-      for (idx_t probe = 0; probe < nprobe_actual; ++probe) {
-        const size_t probe_offset =
-          static_cast<size_t>(query_no) * nprobe_actual + probe;
-        const idx_t list_no = centroid_ids[probe_offset];
-        if (list_no < 0) {
-          continue;
-        }
-        const size_t list_size =
-          invlists->list_size(static_cast<size_t>(list_no));
-        if (list_size == 0) {
-          continue;
-        }
-
-        scanner->SetList(list_no, centroid_dis[probe_offset]);
-        InvertedLists::ScopedCodes codes(invlists,
-                                         static_cast<size_t>(list_no));
-        InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
-        scanner->ScanRange(codes.get(), ids.get(), list_size, sel, radius,
-                           &per_query[static_cast<size_t>(query_no)]);
+      if (worker_exceptions[scanner_no]) {
+        continue;
       }
+      try {
+        scanner->SetQuery(x + query_no * d);
+        for (idx_t probe = 0; probe < nprobe_actual; ++probe) {
+          const size_t probe_offset =
+              static_cast<size_t>(query_no) * nprobe_actual + probe;
+          const idx_t list_no = centroid_ids[probe_offset];
+          if (list_no < 0) {
+            continue;
+          }
+          const size_t list_size =
+              invlists->list_size(static_cast<size_t>(list_no));
+          if (list_size == 0) {
+            continue;
+          }
+
+          scanner->SetList(list_no, centroid_dis[probe_offset]);
+          InvertedLists::ScopedCodes codes(invlists,
+                                           static_cast<size_t>(list_no));
+          InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
+          scanner->ScanRange(codes.get(), ids.get(), list_size, sel, radius,
+                             &per_query[static_cast<size_t>(query_no)]);
+        }
+      } catch (...) {
+        worker_exceptions[scanner_no] = std::current_exception();
+      }
+    }
+  }
+  for (const auto& exception : worker_exceptions) {
+    if (exception) {
+      std::rethrow_exception(exception);
     }
   }
 
   // Pass 1: set per-query counts in lims[0..nq-1]
   for (idx_t query_no = 0; query_no < n; query_no++) {
-    result->lims[query_no] =
-      per_query[static_cast<size_t>(query_no)].size();
+    result->lims[query_no] = per_query[static_cast<size_t>(query_no)].size();
   }
   // DoAllocation converts lims to cumulative offsets and allocates arrays
   result->DoAllocation();

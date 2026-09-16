@@ -17,6 +17,7 @@ set(HYPERVEC_SRC
   factory/engine.cpp
   index/index.cpp
   index/ivf/index_ivf.cpp
+  index/ivf/inverted_list_scanner.cpp
   index/ivf/index_ivf_flat.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
@@ -41,12 +42,15 @@ set(HYPERVEC_SRC
   utils/structures/sorting.cpp
   utils/structures/partitioning.cpp
   utils/algo/kmeans/kmeans.cpp
+  quantization/quantizer.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
+  quantization/pq/pq_quantizer_adapter.cpp
   quantization/pq/index_pq.cpp
   quantization/pq/index_ivfpq.cpp
   quantization/lvq/lvq.cpp
   quantization/lvq/lvq_distance_computer.cpp
+  quantization/lvq/lvq_quantizer_adapter.cpp
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   utils/utils.cpp
@@ -65,6 +69,7 @@ set(HYPERVEC_HEADERS
   include/factory/engine.h
   include/index/index.h
   include/index/ivf/index_ivf.h
+  include/index/ivf/inverted_list_scanner.h
   include/index/ivf/index_ivf_flat.h
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
@@ -92,12 +97,15 @@ set(HYPERVEC_HEADERS
   include/utils/structures/random.h
   include/utils/structures/sorting.h
   include/utils/algo/kmeans/kmeans.h
+  include/quantization/quantizer.h
   include/quantization/pq/pq.h
   include/quantization/pq/pq_distance_computer.h
+  include/quantization/pq/pq_quantizer_adapter.h
   include/quantization/pq/index_pq.h
   include/quantization/pq/index_ivfpq.h
   include/quantization/lvq/lvq.h
   include/quantization/lvq/lvq_distance_computer.h
+  include/quantization/lvq/lvq_quantizer_adapter.h
   include/quantization/lvq/index_lvq.h
   include/quantization/lvq/index_ivflvq.h
   include/utils/distances/distances.h

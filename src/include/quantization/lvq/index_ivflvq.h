@@ -11,6 +11,8 @@
 #include <index/ivf/index_ivf.h>
 #include <quantization/lvq/lvq.h>
 
+#include <memory>
+
 namespace hypervec {
 
 struct IndexIVFLVQ : IndexIVF {
@@ -26,21 +28,23 @@ struct IndexIVFLVQ : IndexIVF {
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
            IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-           IndexCapability::Filter | IndexCapability::ConcurrentSearch |
-           IndexCapability::Serialize | IndexCapability::Clone;
+           IndexCapability::RangeSearch | IndexCapability::Filter |
+           IndexCapability::ConcurrentSearch | IndexCapability::Serialize |
+           IndexCapability::Clone;
   }
+
+  /** KNN and range search share the base IVF traversal and an LVQ-aware
+   *  per-thread scanner. Range distances and the radius comparison use the
+   *  same approximate ADC values as KNN, not exact vector-space distances. */
 
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
-  void SearchPreassigned(idx_t n, const float* x, idx_t k,
-                         const idx_t* list_ids, const float* centroid_dis,
-                         float* distances, idx_t* labels, idx_t nprobe_actual,
-                         const IDSelector* sel) const override;
-  void RangeSearch(idx_t n, const float* x, float radius,
-                   RangeSearchResult* result,
-                   const SearchParameters* params = nullptr) const override;
   void Reconstruct(idx_t key, float* recons) const override;
+
+ protected:
+  std::unique_ptr<InvertedListScanner> CreateInvertedListScanner()
+      const override;
 };
 
 }  // namespace hypervec

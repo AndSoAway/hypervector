@@ -105,15 +105,16 @@ idx_t IndexIDMap::to_internal(idx_t id) const {
 }
 
 idx_t IndexIDMap::from_internal(idx_t id) const {
-  if (id >= 0 && id < static_cast<idx_t>(rev_map.size())) {
-    return rev_map[static_cast<size_t>(id)];
+  if (id < 0 || id >= n_total) {
+    return -1;
   }
-  for (const auto& entry : id_map) {
-    if (entry.second == id) {
-      return entry.first;
-    }
-  }
-  return -1;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      maintain_rev_map,
+      "IndexIDMap::from_internal requires maintain_rev_map=true");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      rev_map.size() == static_cast<size_t>(n_total),
+      "IndexIDMap::from_internal: reverse map is inconsistent");
+  return rev_map[static_cast<size_t>(id)];
 }
 
 void IndexIDMap::Train(idx_t n, const float* x) {
@@ -122,6 +123,8 @@ void IndexIDMap::Train(idx_t n, const float* x) {
   try {
     index->Train(n, x);
   } catch (...) {
+    // The underlying index owns its Train failure contract. Mirror its final
+    // state so the wrapper never disagrees with the wrapped index.
     is_trained = index->is_trained;
     throw;
   }
@@ -142,37 +145,53 @@ void IndexIDMap::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
     return;
   }
 
-  auto next_id_map = id_map;
-  auto next_rev_map = rev_map;
   const idx_t internal_begin = index->n_total;
   if (maintain_rev_map) {
     HYPERVEC_THROW_IF_NOT_MSG(
-        next_rev_map.size() == static_cast<size_t>(internal_begin),
+        rev_map.size() == static_cast<size_t>(internal_begin),
         "IndexIDMap::AddWithIds: reverse map is inconsistent");
-    next_rev_map.reserve(static_cast<size_t>(internal_begin + n));
   }
 
+  // Stage only this batch. Copying the complete maps here makes repeated
+  // small additions quadratic in the number of indexed vectors.
+  std::vector<idx_t> new_external_ids(static_cast<size_t>(n));
+  std::unordered_map<idx_t, idx_t> pending_id_map;
+  pending_id_map.reserve(static_cast<size_t>(n));
   for (idx_t i = 0; i < n; ++i) {
     const idx_t external_id = xids != nullptr ? xids[i] : n_total + i;
     HYPERVEC_THROW_IF_NOT_MSG(
         external_id >= 0,
         "IndexIDMap::AddWithIds: external IDs must be non-negative");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        id_map.find(external_id) == id_map.end(),
+        "IndexIDMap::AddWithIds: external IDs must be unique");
     const auto inserted =
-        next_id_map.emplace(external_id, internal_begin + i).second;
+        pending_id_map.emplace(external_id, internal_begin + i).second;
     HYPERVEC_THROW_IF_NOT_MSG(
         inserted, "IndexIDMap::AddWithIds: external IDs must be unique");
-    if (maintain_rev_map) {
-      next_rev_map.push_back(external_id);
-    }
+    new_external_ids[static_cast<size_t>(i)] = external_id;
   }
 
+  // Reserve every allocation needed to publish the staged mapping before the
+  // underlying index is changed. Node handles from pending_id_map can then be
+  // merged without copying the complete existing map.
+  id_map.reserve(id_map.size() + static_cast<size_t>(n));
+  if (maintain_rev_map) {
+    rev_map.reserve(static_cast<size_t>(internal_begin + n));
+  }
   index->Add(n, x);
   HYPERVEC_THROW_IF_NOT_MSG(
       index->n_total == internal_begin + n,
       "IndexIDMap::AddWithIds: underlying index added an unexpected count");
 
-  id_map.swap(next_id_map);
-  rev_map.swap(next_rev_map);
+  id_map.merge(pending_id_map);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      pending_id_map.empty(),
+      "IndexIDMap::AddWithIds: failed to publish staged IDs");
+  if (maintain_rev_map) {
+    rev_map.insert(rev_map.end(), new_external_ids.begin(),
+                   new_external_ids.end());
+  }
   n_total = index->n_total;
   is_trained = index->is_trained;
 }
@@ -235,16 +254,27 @@ void IndexIDMap::check_consistency() const {
       id_map.size() != static_cast<size_t>(n_total)) {
     HYPERVEC_THROW_MSG("inconsistency between index and ID map");
   }
-  if (maintain_rev_map && id_map.size() != rev_map.size()) {
-    HYPERVEC_THROW_MSG("inconsistency between id_map and rev_map");
+  if (maintain_rev_map) {
+    if (id_map.size() != rev_map.size()) {
+      HYPERVEC_THROW_MSG("inconsistency between id_map and rev_map");
+    }
+    for (const auto& entry : id_map) {
+      if (entry.first < 0 || entry.second < 0 || entry.second >= n_total ||
+          rev_map[static_cast<size_t>(entry.second)] != entry.first) {
+        HYPERVEC_THROW_MSG("inconsistency in id_map / rev_map");
+      }
+    }
+    return;
   }
+
+  // Without a reverse map, detecting duplicate internal IDs requires an
+  // auxiliary set. vector<bool> is the most compact exact representation and
+  // is allocated only for this explicitly selected, non-default mode.
   std::vector<bool> seen_internal_ids(static_cast<size_t>(n_total), false);
   for (const auto& entry : id_map) {
     if (entry.first < 0 || entry.second < 0 || entry.second >= n_total ||
-        seen_internal_ids[static_cast<size_t>(entry.second)] ||
-        (maintain_rev_map &&
-         rev_map[static_cast<size_t>(entry.second)] != entry.first)) {
-      HYPERVEC_THROW_MSG("inconsistency in id_map / rev_map");
+        seen_internal_ids[static_cast<size_t>(entry.second)]) {
+      HYPERVEC_THROW_MSG("inconsistency in id_map");
     }
     seen_internal_ids[static_cast<size_t>(entry.second)] = true;
   }
@@ -255,16 +285,22 @@ void IndexIDMap::MergeFrom(Index& otherIndex, idx_t add_id) {
 }
 
 void IndexIDMap::construct_rev_map() {
-  rev_map.assign(static_cast<size_t>(n_total), -1);
+  std::vector<idx_t> constructed_rev_map(static_cast<size_t>(n_total), -1);
   for (const auto& entry : id_map) {
-    HYPERVEC_THROW_IF_NOT_MSG(entry.second >= 0 && entry.second < n_total,
-                              "invalid internal ID in id_map");
-    rev_map[static_cast<size_t>(entry.second)] = entry.first;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        entry.first >= 0 && entry.second >= 0 && entry.second < n_total,
+        "invalid external or internal ID in id_map");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        constructed_rev_map[static_cast<size_t>(entry.second)] == -1,
+        "duplicate internal ID in id_map");
+    constructed_rev_map[static_cast<size_t>(entry.second)] = entry.first;
   }
-  for (const idx_t external_id : rev_map) {
+  for (const idx_t external_id : constructed_rev_map) {
     HYPERVEC_THROW_IF_NOT_MSG(external_id >= 0,
                               "id_map does not cover every internal ID");
   }
+  rev_map.swap(constructed_rev_map);
+  maintain_rev_map = true;
 }
 
 size_t IndexIDMap::RemoveIds(const IDSelector& sel) {

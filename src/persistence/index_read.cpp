@@ -27,6 +27,7 @@
 #include <quantization/pq/pq.h>
 #include <utils/log/assert.h>
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -264,8 +265,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_pq(idx->pq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
         idx->pq.d == idx->d,
-        "IndexPQ deserialize: pq.d (%lld) != index.d (%lld)",
-        static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+        "IndexPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -276,8 +277,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_lvq(idx->lvq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
         idx->lvq.d == idx->d,
-        "IndexLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
-        static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
+        "IndexLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -297,8 +298,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_pq(idx->pq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
         idx->pq.d == idx->d,
-        "IndexIVFPQ deserialize: pq.d (%lld) != index.d (%lld)",
-        static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+        "IndexIVFPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->precomputed_table);
 
     delete idx->invlists;
@@ -336,8 +337,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_lvq(idx->lvq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
         idx->lvq.d == idx->d,
-        "IndexIVFLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
-        static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
+        "IndexIVFLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
 
     delete idx->invlists;
     idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),

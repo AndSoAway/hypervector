@@ -13,11 +13,13 @@
 #include <index/ivf/index_ivf_flat.h>
 #include <persistence/index_clone.h>
 #include <persistence/index_io.h>
+#include <unistd.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -27,9 +29,13 @@ namespace {
 
 struct TempFile {
   TempFile() {
-    char buffer[L_tmpnam];
-    std::tmpnam(buffer);
-    path = buffer;
+    char path_template[] = "/tmp/hypervec_idmap_XXXXXX";
+    const int fd = mkstemp(path_template);
+    if (fd == -1) {
+      throw std::runtime_error("mkstemp failed");
+    }
+    close(fd);
+    path = path_template;
   }
   ~TempFile() { std::remove(path.c_str()); }
 
@@ -50,6 +56,22 @@ class ThrowingResetIndex : public hypervec::IndexFlatL2 {
   explicit ThrowingResetIndex(hypervec::idx_t d) : IndexFlatL2(d) {}
 
   void Reset() override { throw std::runtime_error("injected reset failure"); }
+};
+
+class ThrowingTrainIndex : public hypervec::IndexFlatL2 {
+ public:
+  ThrowingTrainIndex(hypervec::idx_t d, bool initial_state, bool failure_state)
+      : IndexFlatL2(d), failure_state_(failure_state) {
+    is_trained = initial_state;
+  }
+
+  void Train(hypervec::idx_t, const float*) override {
+    is_trained = failure_state_;
+    throw std::runtime_error("injected train failure");
+  }
+
+ private:
+  bool failure_state_;
 };
 
 class CountingIndex : public hypervec::IndexFlatL2 {
@@ -142,6 +164,39 @@ TEST(IndexIDMapCorrectness, FailedAddAndResetDoNotPublishMapChanges) {
   EXPECT_THROW(reset_index.Reset(), std::runtime_error);
   EXPECT_EQ(reset_index.n_total, 1);
   EXPECT_EQ(reset_index.to_internal(id), 0);
+}
+
+TEST(IndexIDMapCorrectness, ReverseTranslationRequiresMaintainedMap) {
+  hypervec::IndexFlatL2 storage(2);
+  hypervec::IndexIDMap index(&storage);
+  index.maintain_rev_map = false;
+  const std::vector<float> vector = {0.0f, 0.0f};
+  const hypervec::idx_t id = 42;
+
+  index.AddWithIds(1, vector.data(), &id);
+  EXPECT_EQ(index.to_internal(id), 0);
+  EXPECT_THROW(index.from_internal(0), hypervec::HypervecException);
+
+  index.construct_rev_map();
+  EXPECT_TRUE(index.maintain_rev_map);
+  EXPECT_EQ(index.from_internal(0), id);
+  index.check_consistency();
+}
+
+TEST(IndexIDMapCorrectness, TrainFailureMirrorsUnderlyingFinalState) {
+  const std::vector<float> vector = {0.0f, 0.0f};
+
+  ThrowingTrainIndex hnsw_storage(2, /*initial_state=*/true,
+                                  /*failure_state=*/false);
+  hypervec::IndexHNSW hnsw(&hnsw_storage, 4);
+  EXPECT_THROW(hnsw.Train(1, vector.data()), std::runtime_error);
+  EXPECT_FALSE(hnsw.is_trained);
+
+  ThrowingTrainIndex id_map_storage(2, /*initial_state=*/false,
+                                    /*failure_state=*/true);
+  hypervec::IndexIDMap id_map(&id_map_storage);
+  EXPECT_THROW(id_map.Train(1, vector.data()), std::runtime_error);
+  EXPECT_TRUE(id_map.is_trained);
 }
 
 TEST(IndexIDMapCorrectness, DuplicateIdsAreRejectedBeforeUnderlyingAdd) {

@@ -7,14 +7,13 @@
  */
 
 #include <index/flat/index_flat.h>
+#include <index/hnsw/hnsw_build_utils.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
 #include <memory>
-
-#include "hnsw_build_utils.h"
 
 namespace hypervec {
 

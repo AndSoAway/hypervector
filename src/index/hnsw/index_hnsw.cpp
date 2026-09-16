@@ -9,6 +9,7 @@
 // HNSW-only index implementation
 
 #include <index/flat/index_flat.h>
+#include <index/hnsw/hnsw_build_utils.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/common/range_search_result.h>
@@ -26,8 +27,6 @@
 #include <memory>
 #include <queue>
 #include <random>
-
-#include "hnsw_build_utils.h"
 
 namespace hypervec {
 
@@ -78,6 +77,8 @@ void IndexHNSW::Train(idx_t n, const float* x) {
   try {
     storage->Train(n, x);
   } catch (...) {
+    // The storage index owns its Train failure contract. Mirror its final
+    // state so the graph wrapper never disagrees with its storage.
     is_trained = storage->is_trained;
     throw;
   }

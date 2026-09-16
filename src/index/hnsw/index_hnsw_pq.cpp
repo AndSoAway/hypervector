@@ -7,6 +7,7 @@
  */
 
 #include <index/flat/index_flat.h>
+#include <index/hnsw/hnsw_build_utils.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/hnsw/visited_table.h>
 #include <quantization/pq/index_pq.h>
@@ -14,8 +15,6 @@
 #include <utils/log/assert.h>
 
 #include <memory>
-
-#include "hnsw_build_utils.h"
 
 namespace hypervec {
 
@@ -68,8 +67,7 @@ void IndexHNSWPQ::Train(idx_t n, const float* x) {
 }
 
 void IndexHNSWPQ::Add(idx_t n, const float* x) {
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
-                            "IndexHNSWPQ::Add: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSWPQ::Add: n must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(
       raw_storage != nullptr,
       "IndexHNSWPQ::Add: index is frozen (raw scaffold has been released or "

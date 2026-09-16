@@ -783,6 +783,8 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
       ef_search = hnsw_params->ef_search;
     }
   }
+  HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                            "HNSW::Search: ef_search must be positive");
 
   //  greedy Search on upper levels
   storage_idx_t nearest = entry_point;

@@ -209,6 +209,21 @@ TEST(GraphStorage, RejectsMalformedLayoutsAndReportsForeignImplementations) {
   empty_edges.Prefetch(1);
 }
 
+TEST(GraphStorage, ReportsWeakComponentsAndDirectedReachability) {
+  hypervec::MutableBoundedGraph graph(4, 1);
+  graph.SetNeighbors(0, {});
+  graph.SetNeighbors(1, std::array<hypervec::GraphId, 1>{0});
+  graph.SetNeighbors(2, std::array<hypervec::GraphId, 1>{3});
+  graph.SetNeighbors(3, {});
+
+  const hypervec::GraphValidationReport report =
+      hypervec::ValidateGraph(graph, 0);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.weakly_connected_components, 2U);
+  EXPECT_EQ(report.reachable_nodes, 1U);
+  EXPECT_DOUBLE_EQ(report.ReachableRatio(), 0.25);
+}
+
 TEST(GraphSearcher, CandidateQueueRejectsInvalidCapacity) {
   EXPECT_THROW(hypervec::GraphCandidateQueue(0), hypervec::HypervecException);
   EXPECT_THROW(hypervec::GraphCandidateQueue(-1), hypervec::HypervecException);
@@ -232,6 +247,44 @@ TEST(GraphSearcher, FilteredNodesRemainNavigationIntermediates) {
             mutable_stats.distance_computations);
   EXPECT_EQ(static_stats.visited_nodes, mutable_stats.visited_nodes);
   EXPECT_EQ(static_stats.expanded_nodes, mutable_stats.expanded_nodes);
+}
+
+TEST(GraphSearcher, PreservesLegacyStoppingAndInitialResultCount) {
+  const hypervec::MutableBoundedGraph graph(3, 1);
+  ScalarDistanceComputer distance({0.0f, 1.0f, 2.0f});
+  const float query = 0.0f;
+  distance.SetQuery(&query);
+
+  const auto run_search = [&](bool check_relative_distance) {
+    std::array<float, 3> distances;
+    std::array<hypervec::idx_t, 3> labels;
+    using Comparator = hypervec::CMax<float, hypervec::idx_t>;
+    using Handler = hypervec::HeapBlockResultHandler<Comparator>;
+    Handler block(1, distances.data(), labels.data(), labels.size());
+    Handler::SingleResultHandler results(block);
+    results.begin(0);
+
+    hypervec::GraphCandidateQueue candidates(3);
+    candidates.push(0, distance(0));
+    candidates.push(1, distance(1));
+    candidates.push(2, distance(2));
+    hypervec::VisitedTable visited(graph.NodeCount(), false);
+    hypervec::GraphSearchStats stats;
+    const hypervec::GraphSearcher searcher(graph);
+    const int result_count = searcher.Search(
+        distance, results, candidates, visited,
+        hypervec::GraphSearchOptions{1, check_relative_distance, nullptr},
+        &stats, 7);
+    results.end();
+    return std::pair(stats, result_count);
+  };
+
+  const auto [relative_stats, relative_count] = run_search(true);
+  const auto [step_stats, step_count] = run_search(false);
+  EXPECT_EQ(relative_count, 7);
+  EXPECT_EQ(step_count, 7);
+  EXPECT_EQ(relative_stats.expanded_nodes, 1U);
+  EXPECT_EQ(step_stats.expanded_nodes, 2U);
 }
 
 TEST(NeighborPruner, HnswHeuristicPreservesDiversityAndOptionalFill) {

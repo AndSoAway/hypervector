@@ -23,8 +23,7 @@ struct ResourceContext {};
 using IndexCreator = std::function<std::unique_ptr<Index>(
     const IndexConfig&, const ResourceContext&)>;
 using IndexConfigNormalizer = std::function<void(IndexConfig&)>;
-using SearchConfigNormalizer =
-    std::function<void(const IndexConfig&, SearchConfig&)>;
+using SearchNormalizer = std::function<void(const IndexConfig&, SearchConfig&)>;
 using SearchParametersCreator = std::function<std::unique_ptr<SearchParameters>(
     const IndexConfig&, const SearchConfig&)>;
 
@@ -46,7 +45,7 @@ struct IndexDescriptor {
   std::vector<std::string> backends;
   IndexConfigNormalizer normalize;
   IndexCreator creator;
-  SearchConfigNormalizer normalize_search;
+  SearchNormalizer normalize_search;
   SearchParametersCreator create_search_parameters;
 };
 

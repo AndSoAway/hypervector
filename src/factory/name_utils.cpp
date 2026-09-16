@@ -6,7 +6,7 @@
  * source tree.
  */
 
-#include "name_utils.h"
+#include "factory/name_utils.h"
 
 #include <utils/log/exception.h>
 

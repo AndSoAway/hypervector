@@ -18,7 +18,7 @@
 #include <string_view>
 #include <utility>
 
-#include "name_utils.h"
+#include "factory/name_utils.h"
 
 namespace hypervec {
 

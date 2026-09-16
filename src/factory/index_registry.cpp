@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "name_utils.h"
+#include "factory/name_utils.h"
 
 namespace hypervec {
 

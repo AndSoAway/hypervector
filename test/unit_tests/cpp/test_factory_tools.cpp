@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -55,6 +57,13 @@ TEST(TestFactoryTools, ParsesStrictTypedConfig) {
   EXPECT_EQ(config.id_mode, IdMode::External);
 }
 
+TEST(TestFactoryTools, AcceptsUtf8Bom) {
+  const IndexConfig config =
+      ParseIndexConfig("\xEF\xBB\xBF{\"type\":\"flat\",\"dimension\":4}");
+  EXPECT_EQ(config.type, "flat");
+  EXPECT_EQ(config.dimension, 4);
+}
+
 TEST(TestFactoryTools, RejectsMalformedAndAmbiguousJson) {
   EXPECT_THROW(ParseIndexConfig(""), HypervecException);
   EXPECT_THROW(ParseIndexConfig("[]"), HypervecException);
@@ -71,19 +80,23 @@ TEST(TestFactoryTools, RejectsMalformedAndAmbiguousJson) {
   EXPECT_THROW(
       ParseIndexConfig(R"({"type":"flat","dimension":4,"metric":"cosine"})"),
       HypervecException);
+  EXPECT_THROW(
+      ParseIndexConfig(
+          R"({"type":"flat","dimension":4,"metric":"lp","metric_arg":1e999})"),
+      HypervecException);
 }
 
 TEST(TestFactoryTools, RegistersBuiltinsAndResolvesAliases) {
   Engine engine;
-  const std::vector<IndexDescriptor> descriptors =
+  const std::vector<IndexDescriptorPtr> descriptors =
       IndexRegistry::Global().List();
   const std::array<std::string, 9> expected = {
       "flat",    "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
       "ivf_lvq", "ivf_pq",    "lvq",      "pq"};
   for (const std::string& name : expected) {
     EXPECT_NE(std::find_if(descriptors.begin(), descriptors.end(),
-                           [&name](const IndexDescriptor& descriptor) {
-                             return descriptor.canonical_name == name;
+                           [&name](const IndexDescriptorPtr& descriptor) {
+                             return descriptor->canonical_name == name;
                            }),
               descriptors.end());
   }
@@ -110,8 +123,12 @@ TEST(TestFactoryTools, RegistryRejectsDuplicateNamesTransactionally) {
       }};
   registry.Register(descriptor);
   EXPECT_THROW(registry.Register(descriptor), HypervecException);
-  ASSERT_TRUE(registry.Find("CUSTOM-ALIAS").has_value());
-  EXPECT_EQ(registry.Find("custom_alias")->canonical_name, "custom");
+  const IndexDescriptorPtr by_alias = registry.Find("CUSTOM-ALIAS");
+  const IndexDescriptorPtr by_canonical = registry.Find("custom");
+  ASSERT_NE(by_alias, nullptr);
+  ASSERT_NE(by_canonical, nullptr);
+  EXPECT_EQ(by_alias->canonical_name, "custom");
+  EXPECT_EQ(by_alias.get(), by_canonical.get());
   EXPECT_EQ(registry.List().size(), 1);
 }
 
@@ -253,10 +270,39 @@ TEST(TestFactoryTools, RejectsUnsupportedOrMisplacedParameters) {
   EXPECT_THROW(
       engine.CreateIndex(R"({"type":"flat","dimension":8,"metric":"lp"})"),
       HypervecException);
+  EXPECT_THROW(engine.CreateIndex(R"({"type":"flat!","dimension":8})"),
+               HypervecException);
+  EXPECT_THROW(
+      engine.CreateIndex(R"({"type":"flat","dimension":8,"backend":"c pu"})"),
+      HypervecException);
+}
+
+TEST(TestFactoryTools, ValidatesTypedNumericBoundaries) {
+  Engine engine;
+  IndexConfig config;
+  config.type = "flat";
+  config.dimension = static_cast<idx_t>(INT_MAX);
+  EXPECT_EQ(engine.NormalizeConfig(config).dimension,
+            static_cast<idx_t>(INT_MAX));
+
+  config.dimension = static_cast<idx_t>(INT_MAX) + 1;
+  EXPECT_THROW(engine.NormalizeConfig(config), HypervecException);
+
+  config.dimension = 8;
+  config.metric = kMetricLp;
+  config.metric_arg = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(engine.NormalizeConfig(config), HypervecException);
+  config.metric_arg = std::numeric_limits<float>::infinity();
+  EXPECT_THROW(engine.NormalizeConfig(config), HypervecException);
 }
 
 TEST(TestFactoryTools, CreatesLpMetricAndExternalIdWrapper) {
   Engine engine;
+  std::unique_ptr<Index> sequential =
+      engine.CreateIndex(R"({"type":"flat","dimension":8})");
+  EXPECT_EQ(sequential->TypeName(), "flat");
+  EXPECT_EQ(dynamic_cast<IndexIDMap*>(sequential.get()), nullptr);
+
   std::unique_ptr<Index> lp = engine.CreateIndex(
       R"({"type":"flat","dimension":8,"metric":"lp","metric_arg":3})");
   EXPECT_EQ(lp->metric_type, kMetricLp);
@@ -264,6 +310,7 @@ TEST(TestFactoryTools, CreatesLpMetricAndExternalIdWrapper) {
 
   std::unique_ptr<Index> external = engine.CreateIndex(
       R"({"type":"hnsw","dimension":8,"id_mode":"external"})");
+  EXPECT_EQ(external->TypeName(), "idmap");
   auto* id_map = dynamic_cast<IndexIDMap*>(external.get());
   ASSERT_NE(id_map, nullptr);
   EXPECT_TRUE(id_map->OwnsIndex());
@@ -274,31 +321,31 @@ TEST(TestFactoryTools, CreatesLpMetricAndExternalIdWrapper) {
 
 TEST(TestFactoryTools, RegistryCapabilitiesAreGuaranteedByInstances) {
   Engine engine;
-  for (const IndexDescriptor& descriptor : IndexRegistry::Global().List()) {
-    SCOPED_TRACE(descriptor.canonical_name);
+  for (const IndexDescriptorPtr& descriptor : IndexRegistry::Global().List()) {
+    SCOPED_TRACE(descriptor->canonical_name);
     IndexConfig config;
-    config.type = descriptor.canonical_name;
+    config.type = descriptor->canonical_name;
     config.dimension = 8;
     config.storage.nbits = 2;
-    if (descriptor.canonical_name.find("pq") != std::string::npos ||
-        descriptor.canonical_name == "pq") {
+    if (descriptor->canonical_name.find("pq") != std::string::npos ||
+        descriptor->canonical_name == "pq") {
       config.storage.pq_m = 2;
-    } else if (descriptor.canonical_name.find("lvq") != std::string::npos ||
-               descriptor.canonical_name == "lvq") {
+    } else if (descriptor->canonical_name.find("lvq") != std::string::npos ||
+               descriptor->canonical_name == "lvq") {
       config.storage.nlocal = 2;
     } else {
       config.storage.nbits.reset();
     }
-    if (descriptor.canonical_name.starts_with("ivf_")) {
+    if (descriptor->canonical_name.starts_with("ivf_")) {
       config.build.nlist = 4;
       config.defaults.nprobe = 2;
     }
-    if (descriptor.canonical_name.starts_with("hnsw_")) {
+    if (descriptor->canonical_name.starts_with("hnsw_")) {
       config.build.graph_degree = 4;
     }
 
     const std::unique_ptr<Index> index = engine.CreateIndex(config);
-    EXPECT_EQ(descriptor.guaranteed_capabilities & ~index->Capabilities(), 0);
+    EXPECT_EQ(descriptor->guaranteed_capabilities & ~index->Capabilities(), 0);
   }
 }
 

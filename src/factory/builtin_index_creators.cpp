@@ -169,8 +169,9 @@ const char* StorageName(StorageKind storage) {
       return "pq";
     case StorageKind::LVQ:
       return "lvq";
+    default:
+      HYPERVEC_THROW_MSG("unsupported built-in storage kind");
   }
-  return "";
 }
 
 void NormalizeBuiltin(IndexConfig* config, IndexFamily family,

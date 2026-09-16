@@ -9,11 +9,13 @@
 #include <factory/engine.h>
 
 #include <array>
+#include <exception>
 #include <iostream>
 #include <memory>
 
 int main() {
-  const char* config = R"({
+  try {
+    const char* config = R"({
     "type": "hnsw",
     "dimension": 4,
     "metric": "l2",
@@ -22,22 +24,26 @@ int main() {
     "defaults": {"ef_search": 16},
     "id_mode": "external"
   })";
-  std::unique_ptr<hypervec::Index> index = hypervec::CreateIndex(config);
+    std::unique_ptr<hypervec::Index> index = hypervec::CreateIndex(config);
 
-  const std::array<float, 16> vectors = {0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
-                                         0.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F,
-                                         3.0F, 3.0F, 3.0F, 3.0F};
-  const std::array<hypervec::idx_t, 4> ids = {101, 205, 309, 413};
-  index->Build({4, 4, vectors.data(), ids.data()});
+    const std::array<float, 16> vectors = {0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
+                                           0.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F,
+                                           3.0F, 3.0F, 3.0F, 3.0F};
+    const std::array<hypervec::idx_t, 4> ids = {101, 205, 309, 413};
+    index->Build({4, 4, vectors.data(), ids.data()});
 
-  const std::array<float, 4> query = {0.8F, 0.1F, 0.0F, 0.0F};
-  std::array<float, 2> distances{};
-  std::array<hypervec::idx_t, 2> labels{};
-  index->Search(1, query.data(), 2, distances.data(), labels.data());
+    const std::array<float, 4> query = {0.8F, 0.1F, 0.0F, 0.0F};
+    std::array<float, 2> distances{};
+    std::array<hypervec::idx_t, 2> labels{};
+    index->Search(1, query.data(), 2, distances.data(), labels.data());
 
-  std::cout << "created: " << index->TypeName() << '\n';
-  for (size_t i = 0; i < labels.size(); ++i) {
-    std::cout << labels[i] << " " << distances[i] << '\n';
+    std::cout << "created: " << index->TypeName() << '\n';
+    for (size_t i = 0; i < labels.size(); ++i) {
+      std::cout << labels[i] << " " << distances[i] << '\n';
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "factory example failed: " << error.what() << '\n';
+    return 1;
   }
-  return 0;
 }

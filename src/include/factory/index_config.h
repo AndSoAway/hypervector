@@ -56,6 +56,7 @@ struct IndexConfig {
   StorageConfig storage;
   BuildConfig build;
   SearchConfig defaults;
+  /** External mode returns an owning IndexIDMap whose TypeName is "idmap". */
   IdMode id_mode = IdMode::Sequential;
 };
 

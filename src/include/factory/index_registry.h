@@ -11,7 +11,6 @@
 #include <factory/index_descriptor.h>
 
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,13 +25,13 @@ class IndexRegistry {
 
   void Register(IndexDescriptor descriptor);
 
-  std::optional<IndexDescriptor> Find(std::string_view name) const;
+  IndexDescriptorPtr Find(std::string_view name) const;
 
-  std::vector<IndexDescriptor> List() const;
+  std::vector<IndexDescriptorPtr> List() const;
 
  private:
   mutable std::mutex mutex_;
-  std::unordered_map<std::string, IndexDescriptor> descriptors_;
+  std::unordered_map<std::string, IndexDescriptorPtr> descriptors_;
   std::unordered_map<std::string, std::string> aliases_;
 };
 

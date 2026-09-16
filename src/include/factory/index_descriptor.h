@@ -42,4 +42,6 @@ struct IndexDescriptor {
   IndexCreator creator;
 };
 
+using IndexDescriptorPtr = std::shared_ptr<const IndexDescriptor>;
+
 }  // namespace hypervec

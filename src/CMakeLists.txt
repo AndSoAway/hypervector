@@ -10,6 +10,7 @@ project(hypervec VERSION 1.0.0)
 # CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
+  factory/name_utils.cpp
   factory/index_config.cpp
   factory/index_registry.cpp
   factory/builtin_index_creators.cpp

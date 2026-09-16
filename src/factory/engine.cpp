@@ -11,32 +11,22 @@
 #include <utils/log/exception.h>
 
 #include <algorithm>
-#include <cctype>
 #include <climits>
 #include <cmath>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
+
+#include "name_utils.h"
 
 namespace hypervec {
 
 namespace {
 
-std::string NormalizeToken(std::string_view value) {
-  std::string normalized;
-  normalized.reserve(value.size());
-  for (const unsigned char ch : value) {
-    if (ch == '-') {
-      normalized.push_back('_');
-    } else {
-      normalized.push_back(static_cast<char>(std::tolower(ch)));
-    }
-  }
-  return normalized;
-}
-
 std::string NormalizeStorage(std::string_view storage) {
-  const std::string normalized = NormalizeToken(storage);
+  const std::string normalized =
+      factory_detail::NormalizeName(storage, "storage.type", true);
   if (normalized.empty()) {
     return normalized;
   }
@@ -64,24 +54,21 @@ bool SupportsBackend(const IndexDescriptor& descriptor,
                    backend) != descriptor.backends.end();
 }
 
-}  // namespace
+struct NormalizedRequest {
+  IndexConfig config;
+  IndexDescriptorPtr descriptor;
+};
 
-Engine::Engine(ResourceContext resources) : resources_(std::move(resources)) {
-  RegisterBuiltinIndexes();
-}
-
-IndexConfig Engine::NormalizeConfig(const IndexConfig& config) const {
+NormalizedRequest NormalizeRequest(const IndexConfig& config) {
   IndexConfig normalized = config;
   if (normalized.dimension <= 0 ||
       normalized.dimension > static_cast<idx_t>(INT_MAX)) {
     throw HypervecException("dimension must be in [1, INT_MAX]");
   }
 
-  normalized.backend = NormalizeToken(normalized.backend);
-  if (normalized.backend.empty()) {
-    throw HypervecException("backend must not be empty");
-  }
-  normalized.type = NormalizeToken(normalized.type);
+  normalized.backend =
+      factory_detail::NormalizeName(normalized.backend, "backend");
+  normalized.type = factory_detail::NormalizeName(normalized.type, "type");
   normalized.storage.type = NormalizeStorage(normalized.storage.type);
 
   // These two family spellings are convenience inputs. Registry entries are
@@ -99,9 +86,8 @@ IndexConfig Engine::NormalizeConfig(const IndexConfig& config) const {
     normalized.type = "ivf_" + normalized.storage.type;
   }
 
-  const std::optional<IndexDescriptor> descriptor =
-      IndexRegistry::Global().Find(normalized.type);
-  if (!descriptor.has_value()) {
+  IndexDescriptorPtr descriptor = IndexRegistry::Global().Find(normalized.type);
+  if (descriptor == nullptr) {
     throw HypervecException("unknown index type '" + config.type + "'");
   }
   normalized.type = descriptor->canonical_name;
@@ -139,26 +125,33 @@ IndexConfig Engine::NormalizeConfig(const IndexConfig& config) const {
     default:
       throw HypervecException("invalid id_mode enum value");
   }
-  return normalized;
+  return {std::move(normalized), std::move(descriptor)};
+}
+
+}  // namespace
+
+Engine::Engine(ResourceContext resources) : resources_(std::move(resources)) {
+  RegisterBuiltinIndexes();
+}
+
+IndexConfig Engine::NormalizeConfig(const IndexConfig& config) const {
+  return NormalizeRequest(config).config;
 }
 
 std::unique_ptr<Index> Engine::CreateIndex(const IndexConfig& config) const {
-  const IndexConfig normalized = NormalizeConfig(config);
-  const std::optional<IndexDescriptor> descriptor =
-      IndexRegistry::Global().Find(normalized.type);
-  if (!descriptor.has_value()) {
-    throw HypervecException("normalized index type is not registered");
-  }
+  NormalizedRequest request = NormalizeRequest(config);
+  const IndexConfig& normalized = request.config;
+  const IndexDescriptor& descriptor = *request.descriptor;
 
-  std::unique_ptr<Index> index = descriptor->creator(normalized, resources_);
+  std::unique_ptr<Index> index = descriptor.creator(normalized, resources_);
   if (index == nullptr) {
     throw HypervecException("index creator returned null for type '" +
                             normalized.type + "'");
   }
-  if (index->TypeName() != descriptor->canonical_name) {
+  if (index->TypeName() != descriptor.canonical_name) {
     throw HypervecException("index creator returned the wrong concrete type");
   }
-  if ((descriptor->guaranteed_capabilities & ~index->Capabilities()) != 0) {
+  if ((descriptor.guaranteed_capabilities & ~index->Capabilities()) != 0) {
     throw HypervecException(
         "index instance is missing registry-guaranteed capabilities");
   }

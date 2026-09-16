@@ -9,16 +9,16 @@
 #include <factory/index_config.h>
 #include <utils/log/exception.h>
 
-#include <cerrno>
 #include <charconv>
 #include <cmath>
-#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "name_utils.h"
 
 namespace hypervec {
 
@@ -48,6 +48,11 @@ class JsonParser {
   explicit JsonParser(std::string_view input) : input_(input) {}
 
   JsonValue Parse() {
+    if (input_.size() >= 3 && static_cast<unsigned char>(input_[0]) == 0xEF &&
+        static_cast<unsigned char>(input_[1]) == 0xBB &&
+        static_cast<unsigned char>(input_[2]) == 0xBF) {
+      position_ = 3;
+    }
     SkipWhitespace();
     if (position_ == input_.size()) {
       Error("input is empty");
@@ -448,11 +453,12 @@ float ReadFloat(const JsonValue& value, const char* context) {
   if (value.type != JsonValue::Type::Number) {
     throw HypervecException(std::string(context) + " must be a number");
   }
-  errno = 0;
-  char* end = nullptr;
-  const float output = std::strtof(value.text.c_str(), &end);
-  if (errno == ERANGE || end != value.text.c_str() + value.text.size() ||
-      !std::isfinite(output)) {
+  float output = 0.0F;
+  const char* begin = value.text.data();
+  const char* end = begin + value.text.size();
+  const auto result =
+      std::from_chars(begin, end, output, std::chars_format::general);
+  if (result.ec != std::errc() || result.ptr != end || !std::isfinite(output)) {
     throw HypervecException(std::string(context) +
                             " is outside the finite float range");
   }
@@ -466,25 +472,10 @@ bool ReadBoolean(const JsonValue& value, const char* context) {
   return value.boolean;
 }
 
-std::string NormalizeToken(std::string_view value) {
-  std::string normalized;
-  normalized.reserve(value.size());
-  for (const unsigned char ch : value) {
-    if (ch >= 'A' && ch <= 'Z') {
-      normalized.push_back(static_cast<char>(ch - 'A' + 'a'));
-    } else if (ch == '-') {
-      normalized.push_back('_');
-    } else {
-      normalized.push_back(static_cast<char>(ch));
-    }
-  }
-  return normalized;
-}
-
 }  // namespace
 
 MetricType ParseMetricType(std::string_view name) {
-  const std::string metric = NormalizeToken(name);
+  const std::string metric = factory_detail::NormalizeToken(name);
   if (metric == "l2" || metric == "euclidean") {
     return kMetricL2;
   }
@@ -578,7 +569,8 @@ IndexConfig ParseIndexConfig(std::string_view json) {
     config.backend = ReadString(*backend, "backend");
   }
   if (const JsonValue* id_mode = FindField(object, "id_mode")) {
-    const std::string mode = NormalizeToken(ReadString(*id_mode, "id_mode"));
+    const std::string mode =
+        factory_detail::NormalizeToken(ReadString(*id_mode, "id_mode"));
     if (mode == "sequential") {
       config.id_mode = IdMode::Sequential;
     } else if (mode == "external") {

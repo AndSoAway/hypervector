@@ -15,7 +15,12 @@
 
 namespace hypervec {
 
-/** Lightweight C++ creation entry point; this is not a network service. */
+/** Lightweight C++ creation entry point; this is not a network service.
+ *
+ * Construction idempotently ensures that built-in descriptors are present in
+ * the process-wide IndexRegistry. It does not allocate an index or start any
+ * background service.
+ */
 class Engine {
  public:
   explicit Engine(ResourceContext resources = {});

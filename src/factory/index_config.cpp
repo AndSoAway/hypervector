@@ -45,7 +45,8 @@ struct JsonValue {
 
 class JsonParser {
  public:
-  explicit JsonParser(std::string_view input) : input_(input) {}
+  JsonParser(std::string_view input, const char* context)
+      : input_(input), context_(context) {}
 
   JsonValue Parse() {
     if (input_.size() >= 3 && static_cast<unsigned char>(input_[0]) == 0xEF &&
@@ -67,7 +68,7 @@ class JsonParser {
 
  private:
   [[noreturn]] void Error(const char* message) const {
-    throw HypervecException("index config JSON error at byte " +
+    throw HypervecException(std::string(context_) + " JSON error at byte " +
                             std::to_string(position_) + ": " + message);
   }
 
@@ -372,6 +373,7 @@ class JsonParser {
   }
 
   std::string_view input_;
+  const char* context_;
   size_t position_ = 0;
 };
 
@@ -472,6 +474,98 @@ bool ReadBoolean(const JsonValue& value, const char* context) {
   return value.boolean;
 }
 
+void AppendJsonString(std::string_view value, std::string* output) {
+  constexpr char kHex[] = "0123456789abcdef";
+  output->push_back('"');
+  for (const unsigned char ch : value) {
+    switch (ch) {
+      case '"':
+        output->append("\\\"");
+        break;
+      case '\\':
+        output->append("\\\\");
+        break;
+      case '\b':
+        output->append("\\b");
+        break;
+      case '\f':
+        output->append("\\f");
+        break;
+      case '\n':
+        output->append("\\n");
+        break;
+      case '\r':
+        output->append("\\r");
+        break;
+      case '\t':
+        output->append("\\t");
+        break;
+      default:
+        if (ch < 0x20) {
+          output->append("\\u00");
+          output->push_back(kHex[ch >> 4]);
+          output->push_back(kHex[ch & 0x0F]);
+        } else {
+          output->push_back(static_cast<char>(ch));
+        }
+    }
+  }
+  output->push_back('"');
+}
+
+void AppendFieldName(std::string_view name, bool* first, std::string* output) {
+  if (!*first) {
+    output->push_back(',');
+  }
+  *first = false;
+  AppendJsonString(name, output);
+  output->push_back(':');
+}
+
+void AppendStringField(std::string_view name, std::string_view value,
+                       bool* first, std::string* output) {
+  AppendFieldName(name, first, output);
+  AppendJsonString(value, output);
+}
+
+template <typename Integer>
+void AppendIntegerField(std::string_view name, Integer value, bool* first,
+                        std::string* output) {
+  AppendFieldName(name, first, output);
+  output->append(std::to_string(value));
+}
+
+void AppendBooleanField(std::string_view name, bool value, bool* first,
+                        std::string* output) {
+  AppendFieldName(name, first, output);
+  output->append(value ? "true" : "false");
+}
+
+void AppendFloatField(std::string_view name, float value, bool* first,
+                      std::string* output) {
+  if (!std::isfinite(value)) {
+    throw HypervecException(std::string(name) + " must be finite");
+  }
+  char buffer[64];
+  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value,
+                                    std::chars_format::general,
+                                    std::numeric_limits<float>::max_digits10);
+  HYPERVEC_THROW_IF_NOT_MSG(result.ec == std::errc(),
+                            "failed to serialize a float value");
+  AppendFieldName(name, first, output);
+  output->append(buffer, result.ptr);
+}
+
+void AppendSearchConfigFields(const SearchConfig& config, bool* first,
+                              std::string* output) {
+  if (config.nprobe.has_value()) {
+    AppendIntegerField("nprobe", *config.nprobe, first, output);
+  }
+  if (config.ef_search.has_value()) {
+    AppendIntegerField("ef_search", *config.ef_search, first, output);
+  }
+}
+
 }  // namespace
 
 MetricType ParseMetricType(std::string_view name) {
@@ -548,7 +642,7 @@ std::string_view MetricTypeName(MetricType metric) {
 }
 
 IndexConfig ParseIndexConfig(std::string_view json) {
-  const JsonValue root = JsonParser(json).Parse();
+  const JsonValue root = JsonParser(json, "index config").Parse();
   const auto& object = RequireObject(root, "index config");
   RejectUnknownFields(object,
                       {"type", "dimension", "metric", "metric_arg", "backend",
@@ -633,6 +727,101 @@ IndexConfig ParseIndexConfig(std::string_view json) {
   }
 
   return config;
+}
+
+SearchConfig ParseSearchConfig(std::string_view json) {
+  const JsonValue root = JsonParser(json, "search config").Parse();
+  const auto& object = RequireObject(root, "search config");
+  RejectUnknownFields(object, {"nprobe", "ef_search"}, "search config");
+
+  SearchConfig config;
+  if (const JsonValue* nprobe = FindField(object, "nprobe")) {
+    config.nprobe = ReadInteger(*nprobe, "nprobe");
+  }
+  if (const JsonValue* ef_search = FindField(object, "ef_search")) {
+    config.ef_search = ReadInt(*ef_search, "ef_search");
+  }
+  return config;
+}
+
+std::string SerializeIndexConfig(const IndexConfig& config) {
+  std::string output = "{";
+  bool first = true;
+  AppendStringField("type", config.type, &first, &output);
+  AppendIntegerField("dimension", config.dimension, &first, &output);
+  AppendStringField("metric", MetricTypeName(config.metric), &first, &output);
+  if (config.metric_arg.has_value()) {
+    AppendFloatField("metric_arg", *config.metric_arg, &first, &output);
+  }
+  AppendStringField("backend", config.backend, &first, &output);
+
+  AppendFieldName("storage", &first, &output);
+  output.push_back('{');
+  bool storage_first = true;
+  AppendStringField("type", config.storage.type, &storage_first, &output);
+  if (config.storage.pq_m.has_value()) {
+    AppendIntegerField("pq_m", *config.storage.pq_m, &storage_first, &output);
+  }
+  if (config.storage.nlocal.has_value()) {
+    AppendIntegerField("nlocal", *config.storage.nlocal, &storage_first,
+                       &output);
+  }
+  if (config.storage.nbits.has_value()) {
+    AppendIntegerField("nbits", *config.storage.nbits, &storage_first, &output);
+  }
+  output.push_back('}');
+
+  AppendFieldName("build", &first, &output);
+  output.push_back('{');
+  bool build_first = true;
+  if (config.build.nlist.has_value()) {
+    AppendIntegerField("nlist", *config.build.nlist, &build_first, &output);
+  }
+  if (config.build.graph_degree.has_value()) {
+    AppendIntegerField("graph_degree", *config.build.graph_degree, &build_first,
+                       &output);
+  }
+  if (config.build.ef_construction.has_value()) {
+    AppendIntegerField("ef_construction", *config.build.ef_construction,
+                       &build_first, &output);
+  }
+  if (config.build.by_residual.has_value()) {
+    AppendBooleanField("by_residual", *config.build.by_residual, &build_first,
+                       &output);
+  }
+  if (config.build.use_precomputed_table.has_value()) {
+    AppendIntegerField("use_precomputed_table",
+                       *config.build.use_precomputed_table, &build_first,
+                       &output);
+  }
+  output.push_back('}');
+
+  AppendFieldName("defaults", &first, &output);
+  output.push_back('{');
+  bool defaults_first = true;
+  AppendSearchConfigFields(config.defaults, &defaults_first, &output);
+  output.push_back('}');
+
+  switch (config.id_mode) {
+    case IdMode::Sequential:
+      AppendStringField("id_mode", "sequential", &first, &output);
+      break;
+    case IdMode::External:
+      AppendStringField("id_mode", "external", &first, &output);
+      break;
+    default:
+      HYPERVEC_THROW_MSG("invalid id_mode enum value");
+  }
+  output.push_back('}');
+  return output;
+}
+
+std::string SerializeSearchConfig(const SearchConfig& config) {
+  std::string output = "{";
+  bool first = true;
+  AppendSearchConfigFields(config, &first, &output);
+  output.push_back('}');
+  return output;
 }
 
 }  // namespace hypervec

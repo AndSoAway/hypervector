@@ -10,6 +10,11 @@ project(hypervec VERSION 1.0.0)
 # CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
+  factory/name_utils.cpp
+  factory/index_config.cpp
+  factory/index_registry.cpp
+  factory/builtin_index_creators.cpp
+  factory/engine.cpp
   index/index.cpp
   index/ivf/index_ivf.cpp
   index/ivf/index_ivf_flat.cpp
@@ -54,6 +59,10 @@ set(HYPERVEC_SRC
 )
 
 set(HYPERVEC_HEADERS
+  include/factory/index_config.h
+  include/factory/index_descriptor.h
+  include/factory/index_registry.h
+  include/factory/engine.h
   include/index/index.h
   include/index/ivf/index_ivf.h
   include/index/ivf/index_ivf_flat.h
@@ -101,7 +110,9 @@ set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
 add_library(hypervec ${HYPERVEC_SRC})
 
 target_include_directories(hypervec PUBLIC
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+  PRIVATE
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>)
 
 set_target_properties(hypervec PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -139,7 +150,8 @@ install(TARGETS hypervec
 )
 
 foreach(header ${HYPERVEC_HEADERS})
-  get_filename_component(dir ${header} DIRECTORY )
+  string(REGEX REPLACE "^include/" "" install_header "${header}")
+  get_filename_component(dir "${install_header}" DIRECTORY)
   install(FILES ${header}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${dir}
   )

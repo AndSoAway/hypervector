@@ -74,6 +74,28 @@ class ThrowingTrainIndex : public hypervec::IndexFlatL2 {
   bool failure_state_;
 };
 
+class CountingSearchIndex : public hypervec::IndexFlatL2 {
+ public:
+  explicit CountingSearchIndex(hypervec::idx_t d) : IndexFlatL2(d) {}
+
+  void Search(hypervec::idx_t n, const float* x, hypervec::idx_t k,
+              float* distances, hypervec::idx_t* labels,
+              const hypervec::SearchParameters* params) const override {
+    ++search_calls;
+    IndexFlatL2::Search(n, x, k, distances, labels, params);
+  }
+
+  void RangeSearch(hypervec::idx_t n, const float* x, float radius,
+                   hypervec::RangeSearchResult* result,
+                   const hypervec::SearchParameters* params) const override {
+    ++range_search_calls;
+    IndexFlatL2::RangeSearch(n, x, radius, result, params);
+  }
+
+  mutable int search_calls = 0;
+  mutable int range_search_calls = 0;
+};
+
 class CountingIndex : public hypervec::IndexFlatL2 {
  public:
   CountingIndex(hypervec::idx_t d, int* destructions)
@@ -167,7 +189,7 @@ TEST(IndexIDMapCorrectness, FailedAddAndResetDoNotPublishMapChanges) {
 }
 
 TEST(IndexIDMapCorrectness, ReverseTranslationRequiresMaintainedMap) {
-  hypervec::IndexFlatL2 storage(2);
+  CountingSearchIndex storage(2);
   hypervec::IndexIDMap index(&storage);
   index.maintain_rev_map = false;
   const std::vector<float> vector = {0.0f, 0.0f};
@@ -175,12 +197,28 @@ TEST(IndexIDMapCorrectness, ReverseTranslationRequiresMaintainedMap) {
 
   index.AddWithIds(1, vector.data(), &id);
   EXPECT_EQ(index.to_internal(id), 0);
+  EXPECT_TRUE(index.rev_map.empty());
   EXPECT_THROW(index.from_internal(0), hypervec::HypervecException);
+
+  float distance;
+  hypervec::idx_t label;
+  EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_EQ(storage.search_calls, 0);
+
+  hypervec::RangeSearchResult result(1);
+  EXPECT_THROW(index.RangeSearch(1, vector.data(), 1.0f, &result),
+               hypervec::HypervecException);
+  EXPECT_EQ(storage.range_search_calls, 0);
 
   index.construct_rev_map();
   EXPECT_TRUE(index.maintain_rev_map);
   EXPECT_EQ(index.from_internal(0), id);
   index.check_consistency();
+  EXPECT_NO_THROW(
+      index.Search(1, vector.data(), 1, &distance, &label, nullptr));
+  EXPECT_EQ(storage.search_calls, 1);
+  EXPECT_EQ(label, id);
 }
 
 TEST(IndexIDMapCorrectness, TrainFailureMirrorsUnderlyingFinalState) {

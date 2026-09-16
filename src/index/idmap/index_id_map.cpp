@@ -155,7 +155,6 @@ void IndexIDMap::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
 
   // Stage only this batch. Copying the complete maps here makes repeated
   // small additions quadratic in the number of indexed vectors.
-  std::vector<idx_t> new_external_ids(static_cast<size_t>(n));
   std::unordered_map<idx_t, idx_t> pending_id_map;
   pending_id_map.reserve(static_cast<size_t>(n));
   for (idx_t i = 0; i < n; ++i) {
@@ -170,29 +169,53 @@ void IndexIDMap::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
         pending_id_map.emplace(external_id, internal_begin + i).second;
     HYPERVEC_THROW_IF_NOT_MSG(
         inserted, "IndexIDMap::AddWithIds: external IDs must be unique");
-    new_external_ids[static_cast<size_t>(i)] = external_id;
   }
 
-  // Reserve every allocation needed to publish the staged mapping before the
-  // underlying index is changed. Node handles from pending_id_map can then be
-  // merged without copying the complete existing map.
+  // Publish the staged mapping before changing the underlying index. All
+  // potentially allocating operations happen here; if any of them fails, the
+  // wrapper can roll back without having changed the underlying index.
   id_map.reserve(id_map.size() + static_cast<size_t>(n));
   if (maintain_rev_map) {
     rev_map.reserve(static_cast<size_t>(internal_begin + n));
   }
-  index->Add(n, x);
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index->n_total == internal_begin + n,
-      "IndexIDMap::AddWithIds: underlying index added an unexpected count");
 
-  id_map.merge(pending_id_map);
-  HYPERVEC_THROW_IF_NOT_MSG(
-      pending_id_map.empty(),
-      "IndexIDMap::AddWithIds: failed to publish staged IDs");
-  if (maintain_rev_map) {
-    rev_map.insert(rev_map.end(), new_external_ids.begin(),
-                   new_external_ids.end());
+  const auto rollback_mapping = [&]() {
+    for (idx_t i = 0; i < n; ++i) {
+      const idx_t external_id = xids != nullptr ? xids[i] : internal_begin + i;
+      id_map.erase(external_id);
+    }
+    if (maintain_rev_map) {
+      rev_map.resize(static_cast<size_t>(internal_begin));
+    }
+  };
+
+  try {
+    id_map.merge(pending_id_map);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pending_id_map.empty(),
+        "IndexIDMap::AddWithIds: failed to publish staged IDs");
+    if (maintain_rev_map) {
+      for (idx_t i = 0; i < n; ++i) {
+        rev_map.push_back(xids != nullptr ? xids[i] : internal_begin + i);
+      }
+    }
+  } catch (...) {
+    rollback_mapping();
+    throw;
   }
+
+  try {
+    index->Add(n, x);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index->n_total == internal_begin + n,
+        "IndexIDMap::AddWithIds: underlying index added an unexpected count");
+  } catch (...) {
+    rollback_mapping();
+    throw;
+  }
+
+  // No potentially allocating operation remains after the underlying Add
+  // succeeds, so the wrapper cannot be left unpublished by std::bad_alloc.
   n_total = index->n_total;
   is_trained = index->is_trained;
 }
@@ -201,6 +224,11 @@ void IndexIDMap::Search(idx_t n, const float* x, idx_t k, float* distances,
                         idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
                             "IndexIDMap::Search: underlying index is null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      maintain_rev_map,
+      "IndexIDMap::Search: call construct_rev_map before searching");
+  HYPERVEC_THROW_IF_NOT_MSG(rev_map.size() == static_cast<size_t>(n_total),
+                            "IndexIDMap::Search: reverse map is inconsistent");
   WithTranslatedParameters(
       *this, params, [&](const SearchParameters* translated_params) {
         index->Search(n, x, k, distances, labels, translated_params);
@@ -218,6 +246,12 @@ void IndexIDMap::RangeSearch(idx_t n, const float* x, float radius,
                              const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(
       index != nullptr, "IndexIDMap::RangeSearch: underlying index is null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      maintain_rev_map,
+      "IndexIDMap::RangeSearch: call construct_rev_map before searching");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      rev_map.size() == static_cast<size_t>(n_total),
+      "IndexIDMap::RangeSearch: reverse map is inconsistent");
   WithTranslatedParameters(
       *this, params, [&](const SearchParameters* translated_params) {
         index->RangeSearch(n, x, radius, result, translated_params);

@@ -8,17 +8,19 @@
 
 #pragma once
 
+#include <index/graph/graph_searcher.h>
+#include <index/index.h>
+#include <omp.h>
+#include <utils/common/platform_macros.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
-#include <index/index.h>
-#include <utils/structures/maybe_owned_vector.h>
-#include <utils/common/platform_macros.h>
-#include <omp.h>
 #include <utils/structures/heap.h>
+#include <utils/structures/maybe_owned_vector.h>
 #include <utils/structures/random.h>
 
 #include <optional>
 #include <queue>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -61,56 +63,28 @@ struct SearchParametersHNSW : SearchParameters {
 
 struct HNSW {
   /// internal storage of vectors (32 bits: this is expensive)
-  using storage_idx_t = int32_t;
+  using storage_idx_t = GraphId;
 
   // for now we do only these distances
   using C = CMax<float, int64_t>;
 
   typedef std::pair<float, storage_idx_t> Node;
 
-  /** Heap structure that allows fast access and updates.
-   */
-  struct MinimaxHeap {
-    int n;
-    int k;
-    int nvalid;
-
-    std::vector<storage_idx_t> ids;
-    std::vector<float> dis;
-    typedef hypervec::CMax<float, storage_idx_t> HC;
-
-    explicit MinimaxHeap(int n) : n(n), k(0), nvalid(0), ids(n), dis(n) {}
-
-    void push(storage_idx_t i, float v);
-
-    float max() const;
-
-    int size() const;
-
-    void clear();
-
-    int PopMin(float* vmin_out = nullptr);
-
-    int CountBelow(float thresh);
-  };
+  using MinimaxHeap = GraphCandidateQueue;
 
   /// to sort pairs of (id, distance) from nearest to farthest or the reverse
   struct NodeDistCloser {
     float d;
     int id;
     NodeDistCloser(float d, int id) : d(d), id(id) {}
-    bool operator<(const NodeDistCloser& obj1) const {
-      return d < obj1.d;
-    }
+    bool operator<(const NodeDistCloser& obj1) const { return d < obj1.d; }
   };
 
   struct NodeDistFarther {
     float d;
     int id;
     NodeDistFarther(float d, int id) : d(d), id(id) {}
-    bool operator<(const NodeDistFarther& obj1) const {
-      return d > obj1.d;
-    }
+    bool operator<(const NodeDistFarther& obj1) const { return d > obj1.d; }
   };
 
   /// assignment probability to each layer (sum=1)
@@ -188,15 +162,15 @@ struct HNSW {
   void FillWithRandomLinks(size_t n);
 
   void AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
-                               storage_idx_t nearest, float d_nearest,
-                               int level, omp_lock_t* locks, VisitedTable& vt,
-                               bool keep_max_size_level0 = false);
+                            storage_idx_t nearest, float d_nearest, int level,
+                            omp_lock_t* locks, VisitedTable& vt,
+                            bool keep_max_size_level0 = false);
 
   /** Add point pt_id on all levels <= pt_level and build the link
    * structure for them. */
   void AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
-                      std::vector<omp_lock_t>& locks, VisitedTable& vt,
-                      bool keep_max_size_level0 = false);
+                    std::vector<omp_lock_t>& locks, VisitedTable& vt,
+                    bool keep_max_size_level0 = false);
 
   /// Search interface for 1 point, single thread
   ///
@@ -209,10 +183,9 @@ struct HNSW {
 
   /// Search only in level 0 from a given vertex
   void SearchLevel0(DistanceComputer& qdis, ResultHandler& res, idx_t nprobe,
-                      const storage_idx_t* nearest_i, const float* nearest_d,
-                      int search_type, HNSWStats& search_stats,
-                      VisitedTable& vt,
-                      const SearchParameters* params = nullptr) const;
+                    const storage_idx_t* nearest_i, const float* nearest_d,
+                    int search_type, HNSWStats& search_stats, VisitedTable& vt,
+                    const SearchParameters* params = nullptr) const;
 
   void Reset();
 
@@ -222,10 +195,10 @@ struct HNSW {
   int PrepareLevelTab(size_t n, bool preset_levels = false);
 
   static void ShrinkNeighborList(DistanceComputer& qdis,
-                                   std::priority_queue<NodeDistFarther>& input,
-                                   std::vector<NodeDistFarther>& output,
-                                   int max_size,
-                                   bool keep_max_size_level0 = false);
+                                 std::priority_queue<NodeDistFarther>& input,
+                                 std::vector<NodeDistFarther>& output,
+                                 int max_size,
+                                 bool keep_max_size_level0 = false);
 
   void PermuteEntries(const idx_t* map);
 };
@@ -233,7 +206,7 @@ struct HNSW {
 struct HNSWStats {
   size_t n1 = 0;  /// number of vectors searched
   size_t n2 =
-    0;  /// number of queries for which the candidate list is exhausted
+      0;  /// number of queries for which the candidate list is exhausted
   size_t ndis = 0;   /// number of distances computed
   size_t nhops = 0;  /// number of hops aka number of edges traversed
 
@@ -255,24 +228,23 @@ struct HNSWStats {
 HYPERVEC_API extern HNSWStats hnsw_stats;
 
 int SearchFromCandidates(const HNSW& hnsw, DistanceComputer& qdis,
-                           ResultHandler& res, HNSW::MinimaxHeap& candidates,
-                           VisitedTable& vt, HNSWStats& stats, int level,
-                           int nres_in = 0,
-                           const SearchParameters* params = nullptr);
+                         ResultHandler& res, HNSW::MinimaxHeap& candidates,
+                         VisitedTable& vt, HNSWStats& stats, int level,
+                         int nres_in = 0,
+                         const SearchParameters* params = nullptr);
 
 HYPERVEC_API HNSWStats GreedyUpdateNearest(const HNSW& hnsw,
-                                        DistanceComputer& qdis, int level,
-                                        HNSW::storage_idx_t& nearest,
-                                        float& d_nearest);
+                                           DistanceComputer& qdis, int level,
+                                           HNSW::storage_idx_t& nearest,
+                                           float& d_nearest);
 
-        std::priority_queue<HNSW::Node> SearchFromCandidateUnbounded(
-          const HNSW& hnsw, const HNSW::Node& node, DistanceComputer& qdis,
-          int ef, VisitedTable* vt, HNSWStats& stats);
+std::priority_queue<HNSW::Node> SearchFromCandidateUnbounded(
+    const HNSW& hnsw, const HNSW::Node& node, DistanceComputer& qdis, int ef,
+    VisitedTable* vt, HNSWStats& stats);
 
-        void SearchNeighborsToAdd(
-          HNSW& hnsw, DistanceComputer& qdis,
-          std::priority_queue<HNSW::NodeDistCloser>& results, int entry_point,
-          float d_entry_point, int level, VisitedTable& vt,
-          bool reference_version = false);
+void SearchNeighborsToAdd(HNSW& hnsw, DistanceComputer& qdis,
+                          std::priority_queue<HNSW::NodeDistCloser>& results,
+                          int entry_point, float d_entry_point, int level,
+                          VisitedTable& vt, bool reference_version = false);
 
-        }  // namespace hypervec
+}  // namespace hypervec

@@ -5,6 +5,7 @@
 
 set(HYPERVEC_TEST_SRC
   test_heap.cpp
+  test_graph_components.cpp
   test_hnsw.cpp
   test_index_hnsw.cpp
   test_index_build.cpp

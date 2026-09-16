@@ -10,6 +10,10 @@ project(hypervec VERSION 1.0.0)
 # CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
+  factory/index_config.cpp
+  factory/index_registry.cpp
+  factory/builtin_index_creators.cpp
+  factory/engine.cpp
   index/index.cpp
   index/ivf/index_ivf.cpp
   index/ivf/index_ivf_flat.cpp
@@ -54,6 +58,10 @@ set(HYPERVEC_SRC
 )
 
 set(HYPERVEC_HEADERS
+  include/factory/index_config.h
+  include/factory/index_descriptor.h
+  include/factory/index_registry.h
+  include/factory/engine.h
   include/index/index.h
   include/index/ivf/index_ivf.h
   include/index/ivf/index_ivf_flat.h
@@ -139,7 +147,8 @@ install(TARGETS hypervec
 )
 
 foreach(header ${HYPERVEC_HEADERS})
-  get_filename_component(dir ${header} DIRECTORY )
+  string(REGEX REPLACE "^include/" "" install_header "${header}")
+  get_filename_component(dir "${install_header}" DIRECTORY)
   install(FILES ${header}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${dir}
   )

@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 set(HYPERVEC_EXAMPLE_SRC
+  demo_index_factory.cpp
   demo_hnsw_indexing.cpp
   demo_hnsw_graph_search.cpp
   demo_ivf_indexing.cpp

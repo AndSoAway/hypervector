@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added a typed C++ index configuration, strict JSON parser, thread-safe index
+  registry, and `Engine` factory. The factory creates all current Flat, PQ,
+  LVQ, IVF, and HNSW CPU variants, applies algorithm-specific defaults, rejects
+  misplaced parameters, and optionally wraps indexes for external IDs.
+- Corrected installed public-header paths from `include/include/...` to
+  `include/...`, including the new factory API.
 - Added a common dense-dataset `Index::Build` entry point, stable index type
   names, and runtime capability declarations across the current index
   families. `IndexIDMap::Build` now accepts external IDs while keeping mapping

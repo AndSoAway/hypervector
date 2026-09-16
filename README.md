@@ -66,6 +66,35 @@ cmake -S . -B build/python \
 cmake --build build/python --target swighypervec -j
 ```
 
+### Creating an index from C++ configuration
+
+The C++ factory accepts one strict JSON object and returns the common `Index`
+interface. Unknown fields, unsupported metric/backend combinations, and
+parameters belonging to another algorithm are rejected during creation.
+
+```cpp
+#include <factory/engine.h>
+
+#include <memory>
+
+std::unique_ptr<hypervec::Index> index = hypervec::CreateIndex(R"({
+  "type": "hnsw",
+  "dimension": 128,
+  "metric": "l2",
+  "storage": {"type": "pq", "pq_m": 16, "nbits": 8},
+  "build": {"graph_degree": 32, "ef_construction": 80},
+  "defaults": {"ef_search": 32},
+  "id_mode": "external"
+})");
+```
+
+Current canonical types are `flat`, `pq`, `lvq`, `ivf_flat`, `ivf_pq`,
+`ivf_lvq`, `hnsw_flat`, `hnsw_pq`, and `hnsw_lvq`. The family forms `ivf` and
+`hnsw` select a concrete type from `storage.type`; omitted storage defaults to
+`flat`. The only current backend is `cpu`. Set `id_mode` to `external` to wrap
+the concrete index in `IndexIDMap`; otherwise IDs are sequential. See
+`demo_index_factory` for a complete build and search example.
+
 ## How HyperVec works
 
 HyperVec is built around an index type that stores a set of vectors, and provides a function to search in them with L2 and/or dot product vector comparison. Some index types are simple baselines, such as exact search. Most of the available indexing structures correspond to various trade-offs with respect to

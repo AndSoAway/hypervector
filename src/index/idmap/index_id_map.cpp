@@ -13,6 +13,7 @@
 #include <utils/log/assert.h>
 
 #include <typeinfo>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 

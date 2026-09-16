@@ -30,7 +30,7 @@ struct IndexFlat : IndexFlatCodes {
         IndexCapability::KnnSearch | IndexCapability::RangeSearch |
         IndexCapability::Filter | IndexCapability::ConcurrentSearch;
     if (metric_type != kMetricL2 && metric_type != kMetricInnerProduct) {
-      capabilities &= ~ToCapabilities(IndexCapability::RangeSearch);
+      capabilities &= ~IndexCapability::RangeSearch;
     }
     // clone_index currently copies the metric kind but not metric_arg.
     if (metric_type != kMetricLp) {
@@ -124,8 +124,8 @@ struct IndexFlat1D : IndexFlatL2 {
 
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::BatchBuild | IndexCapability::IncrementalAdd |
-        IndexCapability::KnnSearch | IndexCapability::RangeSearch |
-        IndexCapability::Filter | IndexCapability::ConcurrentSearch;
+           IndexCapability::KnnSearch | IndexCapability::RangeSearch |
+           IndexCapability::Filter | IndexCapability::ConcurrentSearch;
   }
 
   /// if not continuous_update, call this between the last Add and

@@ -52,7 +52,8 @@ struct IndexIDMap : Index {
   /// including when the wrapped training call throws.
   void Train(idx_t n, const float* x) override;
 
-  /// Build the wrapped index and atomically publish the external ID mapping.
+  /// Build the wrapped index, then publish the external ID mapping. Mapping
+  /// publication is exception-safe but is not atomic across process failure.
   void Build(const DenseDatasetView& data) override;
 
   void Add(idx_t n, const float* x) override;

@@ -25,9 +25,9 @@ struct IndexIVFLVQ : IndexIVF {
 
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-        IndexCapability::Filter | IndexCapability::ConcurrentSearch |
-        IndexCapability::Serialize | IndexCapability::Clone;
+           IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+           IndexCapability::Filter | IndexCapability::ConcurrentSearch |
+           IndexCapability::Serialize | IndexCapability::Clone;
   }
 
   void Train(idx_t n, const float* x) override;

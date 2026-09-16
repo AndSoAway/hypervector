@@ -122,10 +122,6 @@ struct IndexHNSWFlat : IndexHNSW {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 
   std::string_view TypeName() const noexcept override { return "hnsw_flat"; }
-
-  IndexCapabilities Capabilities() const noexcept override {
-    return IndexHNSW::Capabilities() | IndexCapability::Serialize;
-  }
 };
 
 }  // namespace hypervec

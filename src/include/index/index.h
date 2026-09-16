@@ -11,11 +11,11 @@
 #ifndef HYPERVEC_INDEX_H
 #define HYPERVEC_INDEX_H
 
-#include <utils/log/assert.h>
 #include <utils/distances/metric_type.h>
+#include <utils/log/assert.h>
 
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <string_view>
 
 #define HYPERVEC_VERSION_MAJOR 1
@@ -97,7 +97,8 @@ enum class IndexCapability : std::uint64_t {
 
 using IndexCapabilities = std::uint64_t;
 
-constexpr IndexCapabilities ToCapabilities(IndexCapability capability) noexcept {
+constexpr IndexCapabilities ToCapabilities(
+    IndexCapability capability) noexcept {
   return static_cast<IndexCapabilities>(capability);
 }
 
@@ -116,15 +117,40 @@ constexpr IndexCapabilities operator|(IndexCapability lhs,
   return ToCapabilities(lhs) | rhs;
 }
 
+constexpr IndexCapabilities operator&(IndexCapability lhs,
+                                      IndexCapability rhs) noexcept {
+  return ToCapabilities(lhs) & ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator&(IndexCapabilities lhs,
+                                      IndexCapability rhs) noexcept {
+  return lhs & ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator&(IndexCapability lhs,
+                                      IndexCapabilities rhs) noexcept {
+  return ToCapabilities(lhs) & rhs;
+}
+
+constexpr IndexCapabilities operator~(IndexCapability capability) noexcept {
+  return ~ToCapabilities(capability);
+}
+
 constexpr IndexCapabilities& operator|=(IndexCapabilities& lhs,
                                         IndexCapability rhs) noexcept {
   lhs = lhs | rhs;
   return lhs;
 }
 
+constexpr IndexCapabilities& operator&=(IndexCapabilities& lhs,
+                                        IndexCapability rhs) noexcept {
+  lhs = lhs & rhs;
+  return lhs;
+}
+
 constexpr bool HasCapability(IndexCapabilities capabilities,
                              IndexCapability capability) noexcept {
-  return (capabilities & ToCapabilities(capability)) != 0;
+  return (capabilities & capability) != 0;
 }
 
 enum NumericType {
@@ -193,7 +219,11 @@ struct Index {
 
   virtual ~Index();
 
-  /** Stable implementation name used by diagnostics and the index registry. */
+  /** Stable algorithm-family name used by diagnostics and the index registry.
+   *
+   * The name does not encode orthogonal configuration such as metric type.
+   * For example, IndexFlatL2 and IndexFlatIP both belong to the "flat" family.
+   */
   virtual std::string_view TypeName() const noexcept = 0;
 
   /** Operations supported by this index instance. */
@@ -228,8 +258,14 @@ struct Index {
   /** Build an empty index from a complete dataset.
    *
    * The default implementation validates the view, then calls Train followed
-   * by Add. Build never resets an existing index. Algorithm cores reject
-   * external ids; use an IndexIDMap wrapper when ids is non-null.
+   * by Add. It rejects a previously populated index instead of replacing its
+   * contents. Algorithm cores reject external ids; use an IndexIDMap wrapper
+   * when ids is non-null.
+   *
+   * If Add throws, the default implementation makes a best-effort Reset and
+   * rethrows the original exception. A failing Train and a failing Reset retain
+   * the exception-safety guarantees of the concrete index implementation.
+   * Build is not atomic with respect to process termination.
    */
   virtual void Build(const DenseDatasetView& data);
 

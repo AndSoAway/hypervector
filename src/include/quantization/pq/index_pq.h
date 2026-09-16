@@ -48,8 +48,8 @@ struct IndexPQ : Index {
 
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-        IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
+           IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+           IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
   }
 
   /** Train the underlying ProductQuantizer on the given vectors. */

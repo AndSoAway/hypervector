@@ -7,7 +7,6 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
@@ -43,7 +42,7 @@ class ThrowingBuildIndex : public hypervec::IndexFlatL2 {
  public:
   explicit ThrowingBuildIndex(hypervec::idx_t d) : IndexFlatL2(d) {}
 
-  void Build(const hypervec::DenseDatasetView& /*data*/) override {
+  void Build(const hypervec::DenseDatasetView & /*data*/) override {
     throw std::runtime_error("injected Build failure");
   }
 };
@@ -52,16 +51,32 @@ class WrongCountBuildIndex : public hypervec::IndexFlatL2 {
  public:
   explicit WrongCountBuildIndex(hypervec::idx_t d) : IndexFlatL2(d) {}
 
-  void Build(const hypervec::DenseDatasetView& data) override {
+  void Build(const hypervec::DenseDatasetView &data) override {
     n_total = data.count - 1;
     is_trained = false;
   }
 };
 
-void ExpectCapability(const hypervec::Index& index,
+class PartiallyAddingIndex : public hypervec::IndexFlatL2 {
+ public:
+  explicit PartiallyAddingIndex(hypervec::idx_t d) : IndexFlatL2(d) {}
+
+  void Add(hypervec::idx_t n, const float *x) override {
+    if (fail_next_add_) {
+      fail_next_add_ = false;
+      IndexFlatL2::Add(1, x);
+      throw std::runtime_error("injected partial Add failure");
+    }
+    IndexFlatL2::Add(n, x);
+  }
+
+ private:
+  bool fail_next_add_ = true;
+};
+
+void ExpectCapability(const hypervec::Index &index,
                       hypervec::IndexCapability capability, bool expected) {
-  EXPECT_EQ(hypervec::HasCapability(index.Capabilities(), capability),
-            expected)
+  EXPECT_EQ(hypervec::HasCapability(index.Capabilities(), capability), expected)
       << "type=" << index.TypeName();
 }
 
@@ -96,6 +111,10 @@ TEST(IndexBuild, ValidatesDatasetViewBeforeMutation) {
 
   hypervec::IndexFlatL2 wrong_dimension(d);
   EXPECT_THROW(wrong_dimension.Build({2, d + 1, vectors.data(), nullptr}),
+               hypervec::HypervecException);
+
+  hypervec::IndexFlatL2 negative_dimension(d);
+  EXPECT_THROW(negative_dimension.Build({2, -1, vectors.data(), nullptr}),
                hypervec::HypervecException);
 
   hypervec::IndexFlatL2 null_vectors(d);
@@ -148,8 +167,22 @@ TEST(IndexBuild, IDMapRejectsInvalidIdsBeforeCallingUnderlyingBuild) {
   EXPECT_THROW(index.Build({2, d, vectors.data(), unique_ids}),
                std::runtime_error);
   EXPECT_EQ(index.n_total, 0);
+  EXPECT_EQ(storage.n_total, 0);
   EXPECT_TRUE(index.id_map.empty());
   EXPECT_TRUE(index.rev_map.empty());
+}
+
+TEST(IndexBuild, DefaultBuildRollsBackAPartialAdd) {
+  constexpr hypervec::idx_t d = 2;
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f};
+  PartiallyAddingIndex index(d);
+
+  EXPECT_THROW(index.Build({2, d, vectors.data(), nullptr}),
+               std::runtime_error);
+  EXPECT_EQ(index.n_total, 0);
+
+  EXPECT_NO_THROW(index.Build({2, d, vectors.data(), nullptr}));
+  EXPECT_EQ(index.n_total, 2);
 }
 
 TEST(IndexBuild, IDMapDoesNotPublishIdsForUnexpectedUnderlyingCount) {
@@ -163,6 +196,7 @@ TEST(IndexBuild, IDMapDoesNotPublishIdsForUnexpectedUnderlyingCount) {
                hypervec::HypervecException);
   EXPECT_FALSE(index.is_trained);
   EXPECT_EQ(index.n_total, 0);
+  EXPECT_EQ(storage.n_total, 0);
   EXPECT_TRUE(index.id_map.empty());
   EXPECT_TRUE(index.rev_map.empty());
 }
@@ -182,10 +216,9 @@ TEST(IndexBuild, DefaultBuildWorksForEveryCurrentIndexFamily) {
   indexes.emplace_back(std::make_unique<hypervec::IndexIVFLVQ>(d, 2, 2, 2));
   indexes.emplace_back(std::make_unique<hypervec::IndexHNSWFlat>(d, 4));
   indexes.emplace_back(std::make_unique<hypervec::IndexHNSWPQ>(d, 2, 2, 4));
-  indexes.emplace_back(
-      std::make_unique<hypervec::IndexHNSWLVQ>(d, 2, 2, 4));
+  indexes.emplace_back(std::make_unique<hypervec::IndexHNSWLVQ>(d, 2, 2, 4));
 
-  for (const auto& index : indexes) {
+  for (const auto &index : indexes) {
     ASSERT_TRUE(hypervec::HasCapability(index->Capabilities(),
                                         hypervec::IndexCapability::BatchBuild))
         << "type=" << index->TypeName();
@@ -206,6 +239,9 @@ TEST(IndexBuild, DefaultBuildWorksForEveryCurrentIndexFamily) {
 }
 
 TEST(IndexCapabilities, MatchImplementedBehavior) {
+  hypervec::IndexFlatCodes flat_codes(sizeof(float) * 4, 4);
+  EXPECT_EQ(flat_codes.Capabilities(), 0);
+
   hypervec::IndexFlatL2 flat(4);
   EXPECT_EQ(flat.TypeName(), std::string_view("flat"));
   ExpectCapability(flat, hypervec::IndexCapability::NeedsTrain, false);
@@ -225,6 +261,11 @@ TEST(IndexCapabilities, MatchImplementedBehavior) {
   hypervec::IndexHNSWFlat hnsw_l1(4, 4, hypervec::kMetricL1);
   ExpectCapability(hnsw_l1, hypervec::IndexCapability::KnnSearch, true);
   ExpectCapability(hnsw_l1, hypervec::IndexCapability::RangeSearch, false);
+  ExpectCapability(hnsw_l1, hypervec::IndexCapability::Serialize, false);
+
+  hypervec::IndexHNSW generic_hnsw(&flat, 4);
+  ExpectCapability(generic_hnsw, hypervec::IndexCapability::Serialize, true);
+  ExpectCapability(generic_hnsw, hypervec::IndexCapability::Clone, false);
 
   hypervec::IndexPQ pq(4, 2, 2);
   EXPECT_EQ(pq.TypeName(), std::string_view("pq"));

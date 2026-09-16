@@ -57,7 +57,7 @@ IndexCapabilities IndexHNSWLVQ::Capabilities() const noexcept {
       IndexCapability::Serialize;
   if (raw_storage != nullptr) {
     capabilities = capabilities | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd;
+                   IndexCapability::IncrementalAdd;
   }
   return capabilities;
 }

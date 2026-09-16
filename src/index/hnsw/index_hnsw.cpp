@@ -78,17 +78,23 @@ IndexCapabilities IndexHNSW::Capabilities() const noexcept {
 
   const IndexCapabilities storage_capabilities = storage->Capabilities();
   IndexCapabilities capabilities = IndexCapability::KnnSearch |
-      IndexCapability::Filter | IndexCapability::ConcurrentSearch;
+                                   IndexCapability::Filter |
+                                   IndexCapability::ConcurrentSearch;
   if (HasCapability(storage_capabilities, IndexCapability::NeedsTrain)) {
     capabilities = capabilities | IndexCapability::NeedsTrain;
   }
   if (HasCapability(storage_capabilities, IndexCapability::IncrementalAdd)) {
     capabilities = capabilities | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd;
+                   IndexCapability::IncrementalAdd;
   }
   if (HasCapability(storage_capabilities, IndexCapability::RangeSearch)) {
     capabilities = capabilities | IndexCapability::RangeSearch;
   }
+  if (HasCapability(storage_capabilities, IndexCapability::Serialize)) {
+    capabilities = capabilities | IndexCapability::Serialize;
+  }
+  // Clone is intentionally not forwarded: clone_IndexHNSW currently does not
+  // preserve graph construction parameters such as M.
   return capabilities;
 }
 

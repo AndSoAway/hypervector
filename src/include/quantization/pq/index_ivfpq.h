@@ -66,9 +66,9 @@ struct IndexIVFPQ : IndexIVF {
 
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-        IndexCapability::Filter | IndexCapability::ConcurrentSearch |
-        IndexCapability::Serialize;
+           IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+           IndexCapability::Filter | IndexCapability::ConcurrentSearch |
+           IndexCapability::Serialize;
   }
 
   /** Train the coarse quantizer on x, then train the PQ on residuals

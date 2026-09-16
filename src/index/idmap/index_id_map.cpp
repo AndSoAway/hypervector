@@ -98,8 +98,7 @@ IndexIDMap::IndexIDMap(std::unique_ptr<Index> index) : IndexIDMap(index.get()) {
 IndexIDMap::~IndexIDMap() = default;
 
 IndexCapabilities IndexIDMap::Capabilities() const noexcept {
-  IndexCapabilities capabilities =
-      ToCapabilities(IndexCapability::ExternalIds);
+  IndexCapabilities capabilities = ToCapabilities(IndexCapability::ExternalIds);
   if (index != nullptr) {
     capabilities |= index->Capabilities();
   }
@@ -153,6 +152,11 @@ void IndexIDMap::Build(const DenseDatasetView& data) {
   HYPERVEC_THROW_IF_NOT_MSG(data.count >= 0,
                             "IndexIDMap::Build: count must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(
+      data.dimension >= 0,
+      "IndexIDMap::Build: dataset dimension must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(d >= 0,
+                            "IndexIDMap::Build: index dimension is invalid");
+  HYPERVEC_THROW_IF_NOT_MSG(
       data.dimension == d,
       "IndexIDMap::Build: dataset dimension does not match index dimension");
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -171,8 +175,8 @@ void IndexIDMap::Build(const DenseDatasetView& data) {
         external_id >= 0,
         "IndexIDMap::Build: external IDs must be non-negative");
     const bool inserted = pending_id_map.emplace(external_id, i).second;
-    HYPERVEC_THROW_IF_NOT_MSG(
-        inserted, "IndexIDMap::Build: external IDs must be unique");
+    HYPERVEC_THROW_IF_NOT_MSG(inserted,
+                              "IndexIDMap::Build: external IDs must be unique");
     if (maintain_rev_map) {
       pending_rev_map.push_back(external_id);
     }
@@ -188,13 +192,27 @@ void IndexIDMap::Build(const DenseDatasetView& data) {
   try {
     index->Build(underlying_data);
   } catch (...) {
+    try {
+      index->Reset();
+    } catch (...) {
+      // Preserve the original Build failure. The wrapped Reset owns its
+      // failure guarantee; the external mappings remain unpublished.
+    }
     is_trained = index->is_trained;
     throw;
   }
   is_trained = index->is_trained;
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index->n_total == data.count,
-      "IndexIDMap::Build: underlying index built an unexpected count");
+  if (index->n_total != data.count) {
+    try {
+      index->Reset();
+    } catch (...) {
+      // Preserve the contract-violation diagnostic. The wrapped Reset owns its
+      // failure guarantee; the external mappings remain unpublished.
+    }
+    is_trained = index->is_trained;
+    HYPERVEC_THROW_MSG(
+        "IndexIDMap::Build: underlying index built an unexpected count");
+  }
 
   id_map.merge(pending_id_map);
   HYPERVEC_THROW_IF_NOT_MSG(

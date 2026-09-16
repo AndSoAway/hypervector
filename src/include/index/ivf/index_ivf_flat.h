@@ -25,9 +25,9 @@ struct IndexIVFFlat : IndexIVF {
 
   IndexCapabilities Capabilities() const noexcept override {
     return IndexCapability::NeedsTrain | IndexCapability::BatchBuild |
-        IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
-        IndexCapability::RangeSearch | IndexCapability::Filter |
-        IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
+           IndexCapability::IncrementalAdd | IndexCapability::KnnSearch |
+           IndexCapability::RangeSearch | IndexCapability::Filter |
+           IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
   }
 
   /** Encode: store raw floats as bytes (memcpy). */

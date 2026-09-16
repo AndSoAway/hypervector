@@ -21,6 +21,10 @@ struct IndexHNSWLVQ : IndexHNSW {
                MetricType metric = kMetricL2);
   ~IndexHNSWLVQ() override;
 
+  std::string_view TypeName() const noexcept override { return "hnsw_lvq"; }
+
+  IndexCapabilities Capabilities() const noexcept override;
+
   void Train(idx_t n, const float* x) override;
   void Add(idx_t n, const float* x) override;
   void Reset() override;

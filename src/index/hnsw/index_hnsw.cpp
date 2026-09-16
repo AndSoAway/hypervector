@@ -71,6 +71,33 @@ IndexHNSW::~IndexHNSW() {
   }
 }
 
+IndexCapabilities IndexHNSW::Capabilities() const noexcept {
+  if (storage == nullptr) {
+    return 0;
+  }
+
+  const IndexCapabilities storage_capabilities = storage->Capabilities();
+  IndexCapabilities capabilities = IndexCapability::KnnSearch |
+                                   IndexCapability::Filter |
+                                   IndexCapability::ConcurrentSearch;
+  if (HasCapability(storage_capabilities, IndexCapability::NeedsTrain)) {
+    capabilities = capabilities | IndexCapability::NeedsTrain;
+  }
+  if (HasCapability(storage_capabilities, IndexCapability::IncrementalAdd)) {
+    capabilities = capabilities | IndexCapability::BatchBuild |
+                   IndexCapability::IncrementalAdd;
+  }
+  if (HasCapability(storage_capabilities, IndexCapability::RangeSearch)) {
+    capabilities = capabilities | IndexCapability::RangeSearch;
+  }
+  if (HasCapability(storage_capabilities, IndexCapability::Serialize)) {
+    capabilities = capabilities | IndexCapability::Serialize;
+  }
+  // Clone is intentionally not forwarded: clone_IndexHNSW currently does not
+  // preserve graph construction parameters such as M.
+  return capabilities;
+}
+
 void IndexHNSW::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
                             "IndexHNSW::Train: storage is null");

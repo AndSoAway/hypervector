@@ -18,8 +18,12 @@ namespace hypervec {
 
 struct CodePacker;
 
-/** Index that encodes all vectors as fixed-size codes (size code_size). Storage
- * is in the codes vector */
+/** Codec extension base that stores fixed-size codes in the codes vector.
+ *
+ * The base SaEncode and SaDecode operations are unsupported, so this type is
+ * not a registry-creatable index by itself. Concrete codecs must override the
+ * relevant operations and capability metadata.
+ */
 struct IndexFlatCodes : Index {
   size_t code_size;
 
@@ -29,6 +33,10 @@ struct IndexFlatCodes : Index {
   IndexFlatCodes();
 
   IndexFlatCodes(size_t code_size, idx_t d, MetricType metric = kMetricL2);
+
+  std::string_view TypeName() const noexcept override { return "flat_codes"; }
+
+  IndexCapabilities Capabilities() const noexcept override { return 0; }
 
   /// default Add uses SaEncode
   void Add(idx_t n, const float* x) override;

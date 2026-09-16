@@ -39,6 +39,10 @@ struct IndexIDMap : Index {
 
   ~IndexIDMap() override;
 
+  std::string_view TypeName() const noexcept override { return "idmap"; }
+
+  IndexCapabilities Capabilities() const noexcept override;
+
   idx_t to_internal(idx_t id) const;
 
   /// Translate an internal ID. Fails explicitly when maintain_rev_map=false.
@@ -47,6 +51,10 @@ struct IndexIDMap : Index {
   /// Trains the wrapped index and mirrors its final is_trained state,
   /// including when the wrapped training call throws.
   void Train(idx_t n, const float* x) override;
+
+  /// Build the wrapped index, then publish the external ID mapping. Mapping
+  /// publication is exception-safe but is not atomic across process failure.
+  void Build(const DenseDatasetView& data) override;
 
   void Add(idx_t n, const float* x) override;
 

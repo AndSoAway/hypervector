@@ -11,10 +11,12 @@
 #ifndef HYPERVEC_INDEX_H
 #define HYPERVEC_INDEX_H
 
-#include <utils/log/assert.h>
 #include <utils/distances/metric_type.h>
+#include <utils/log/assert.h>
 
+#include <cstdint>
 #include <cstdio>
+#include <string_view>
 
 #define HYPERVEC_VERSION_MAJOR 1
 #define HYPERVEC_VERSION_MINOR 14
@@ -58,6 +60,98 @@ struct DistanceComputer;
 template <typename T, typename TI>
 struct ResultHandlerUnordered;
 using ResultHandler = ResultHandlerUnordered<float, idx_t>;
+
+/** Non-owning view of a dense float32 dataset used by Index::Build.
+ *
+ * The caller must keep vectors and ids alive until Build returns. A null
+ * vectors pointer is valid only when count is zero. External ids are accepted
+ * by wrappers that advertise IndexCapability::ExternalIds.
+ */
+struct DenseDatasetView {
+  idx_t count = 0;
+  idx_t dimension = 0;
+  const float* vectors = nullptr;
+  const idx_t* ids = nullptr;
+};
+
+/** Operations an index instance can provide through the public Index API.
+ *
+ * Capabilities describe the implementation and its current irreversible
+ * lifecycle mode. A compressed index, for example, stops advertising build
+ * and add after it is frozen. Ordinary call preconditions such as "Build
+ * requires an empty index" still apply. NeedsTrain describes the index
+ * lifecycle even after training has completed.
+ */
+enum class IndexCapability : std::uint64_t {
+  NeedsTrain = 1ULL << 0,
+  BatchBuild = 1ULL << 1,
+  IncrementalAdd = 1ULL << 2,
+  ExternalIds = 1ULL << 3,
+  KnnSearch = 1ULL << 4,
+  RangeSearch = 1ULL << 5,
+  Filter = 1ULL << 6,
+  ConcurrentSearch = 1ULL << 7,
+  Serialize = 1ULL << 8,
+  Clone = 1ULL << 9,
+};
+
+using IndexCapabilities = std::uint64_t;
+
+constexpr IndexCapabilities ToCapabilities(
+    IndexCapability capability) noexcept {
+  return static_cast<IndexCapabilities>(capability);
+}
+
+constexpr IndexCapabilities operator|(IndexCapability lhs,
+                                      IndexCapability rhs) noexcept {
+  return ToCapabilities(lhs) | ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator|(IndexCapabilities lhs,
+                                      IndexCapability rhs) noexcept {
+  return lhs | ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator|(IndexCapability lhs,
+                                      IndexCapabilities rhs) noexcept {
+  return ToCapabilities(lhs) | rhs;
+}
+
+constexpr IndexCapabilities operator&(IndexCapability lhs,
+                                      IndexCapability rhs) noexcept {
+  return ToCapabilities(lhs) & ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator&(IndexCapabilities lhs,
+                                      IndexCapability rhs) noexcept {
+  return lhs & ToCapabilities(rhs);
+}
+
+constexpr IndexCapabilities operator&(IndexCapability lhs,
+                                      IndexCapabilities rhs) noexcept {
+  return ToCapabilities(lhs) & rhs;
+}
+
+constexpr IndexCapabilities operator~(IndexCapability capability) noexcept {
+  return ~ToCapabilities(capability);
+}
+
+constexpr IndexCapabilities& operator|=(IndexCapabilities& lhs,
+                                        IndexCapability rhs) noexcept {
+  lhs = lhs | rhs;
+  return lhs;
+}
+
+constexpr IndexCapabilities& operator&=(IndexCapabilities& lhs,
+                                        IndexCapability rhs) noexcept {
+  lhs = lhs & rhs;
+  return lhs;
+}
+
+constexpr bool HasCapability(IndexCapabilities capabilities,
+                             IndexCapability capability) noexcept {
+  return (capabilities & capability) != 0;
+}
 
 enum NumericType {
   kFloat32,
@@ -125,6 +219,16 @@ struct Index {
 
   virtual ~Index();
 
+  /** Stable algorithm-family name used by diagnostics and the index registry.
+   *
+   * The name does not encode orthogonal configuration such as metric type.
+   * For example, IndexFlatL2 and IndexFlatIP both belong to the "flat" family.
+   */
+  virtual std::string_view TypeName() const noexcept = 0;
+
+  /** Operations supported by this index instance. */
+  virtual IndexCapabilities Capabilities() const noexcept = 0;
+
   /** Perform training on a representative set of vectors
    *
    * @param n      nb of training vectors
@@ -150,6 +254,20 @@ struct Index {
       HYPERVEC_THROW_MSG("Index::Train: unsupported numeric type");
     }
   }
+
+  /** Build an empty index from a complete dataset.
+   *
+   * The default implementation validates the view, then calls Train followed
+   * by Add. It rejects a previously populated index instead of replacing its
+   * contents. Algorithm cores reject external ids; use an IndexIDMap wrapper
+   * when ids is non-null.
+   *
+   * If Add throws, the default implementation makes a best-effort Reset and
+   * rethrows the original exception. A failing Train and a failing Reset retain
+   * the exception-safety guarantees of the concrete index implementation.
+   * Build is not atomic with respect to process termination.
+   */
+  virtual void Build(const DenseDatasetView& data);
 
   /** Add n vectors of dimension d to the index.
    *

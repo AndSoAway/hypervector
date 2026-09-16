@@ -50,6 +50,18 @@ IndexHNSWLVQ::~IndexHNSWLVQ() {
   }
 }
 
+IndexCapabilities IndexHNSWLVQ::Capabilities() const noexcept {
+  IndexCapabilities capabilities =
+      IndexCapability::NeedsTrain | IndexCapability::KnnSearch |
+      IndexCapability::Filter | IndexCapability::ConcurrentSearch |
+      IndexCapability::Serialize;
+  if (raw_storage != nullptr) {
+    capabilities = capabilities | IndexCapability::BatchBuild |
+                   IndexCapability::IncrementalAdd;
+  }
+  return capabilities;
+}
+
 void IndexHNSWLVQ::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT(storage != nullptr);
   storage->Train(n, x);

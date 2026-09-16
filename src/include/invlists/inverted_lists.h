@@ -116,6 +116,10 @@ struct InvertedLists {
   virtual void update_entries(size_t list_no, size_t offset, size_t n_entry,
                               const idx_t* ids, const uint8_t* code) = 0;
 
+  /** Resize one list. Mutable IVF implementations must support shrinking to a
+   * previously reported list_size; IndexIVF uses that operation to roll back
+   * a grouped insertion when a later list fails.
+   */
   virtual void resize(size_t list_no, size_t new_size) = 0;
 
   virtual void Reset();

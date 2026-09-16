@@ -58,7 +58,8 @@ struct IndexHNSW : Index {
 
   void Add(idx_t n, const float* x) override;
 
-  /// Trains the storage if needed
+  /// Trains the storage and mirrors its final is_trained state, including
+  /// when the storage training call throws.
   void Train(idx_t n, const float* x) override;
 
   /// entry point for Search

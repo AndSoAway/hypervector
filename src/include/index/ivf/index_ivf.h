@@ -33,9 +33,10 @@ struct IVFSearchParameters : SearchParameters {
  * Subclasses provide EncodeVectors() (how to store a vector as bytes in the
  * list) and SearchPreassigned() (how to compute distances within a list). */
 struct IndexIVF : Index {
-  idx_t nlist;                   ///< number of inverted lists (cluster cells)
-  idx_t nprobe;                  ///< default number of lists to probe per query
-  std::vector<float> centroids;  ///< cluster centroids, size nlist * d, row-major
+  idx_t nlist;   ///< number of inverted lists (cluster cells)
+  idx_t nprobe;  ///< default number of lists to probe per query
+  std::vector<float>
+      centroids;  ///< cluster centroids, size nlist * d, row-major
 
   InvertedLists* invlists;  ///< per-cell vector storage
   bool own_invlists;        ///< whether to delete invlists on destruction
@@ -58,8 +59,7 @@ struct IndexIVF : Index {
   /** Assign vectors to cells and add them with explicit IDs. */
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
 
-  void Search(idx_t n, const float* x, idx_t k, float* distances,
-              idx_t* labels,
+  void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
@@ -75,8 +75,7 @@ struct IndexIVF : Index {
    *  @param n      number of vectors
    *  @param x      input vectors, size n * d
    *  @param codes  output buffer, size n * invlists->code_size */
-  virtual void EncodeVectors(idx_t n, const float* x,
-                             uint8_t* codes) const = 0;
+  virtual void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const = 0;
 
   /** Search within pre-selected inverted lists and update heap-formatted
    *  output arrays.  Heaps must be initialised by the caller before the
@@ -109,6 +108,20 @@ struct IndexIVF : Index {
    *  @param labels    output centroid indices, size nq * k */
   void FindNearestCentroids(idx_t nq, const float* xq, idx_t k,
                             float* distances, idx_t* labels) const;
+
+ protected:
+  /** Train a replacement coarse-centroid table without changing this index.
+   *  Callers commit the returned table only after all training steps finish. */
+  std::vector<float> TrainCoarseCentroids(idx_t n, const float* x) const;
+
+  /** Find nearest centroids in an explicitly supplied table. */
+  void FindNearestCentroidsIn(const std::vector<float>& coarse_centroids,
+                              idx_t nq, const float* xq, idx_t k,
+                              float* distances, idx_t* labels) const;
+
+  /** Atomically append pre-encoded vectors grouped by their coarse lists. */
+  void AddEncodedVectors(idx_t n, const idx_t* list_ids, const uint8_t* codes,
+                         const idx_t* xids);
 };
 
 }  // namespace hypervec

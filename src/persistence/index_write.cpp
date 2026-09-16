@@ -8,11 +8,11 @@
  * HNSW-only index write implementation
  */
 
-#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -24,11 +24,13 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <utils/log/assert.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace hypervec {
 
@@ -68,7 +70,7 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITE1(hnsw.max_level);
   WRITE1(hnsw.entry_point);
   int nb_levels =
-    hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
+      hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
   WRITE1(nb_levels);
   WRITEVECTOR(hnsw.cum_nneighbor_per_level);
   WRITEVECTOR(hnsw.levels);
@@ -78,6 +80,27 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
 
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   (void)io_flags;
+
+  const IndexIDMap* id_map = dynamic_cast<const IndexIDMap*>(index);
+  if (id_map) {
+    HYPERVEC_THROW_IF_NOT_MSG(id_map->index != nullptr,
+                              "IndexIDMap serialize: underlying index is null");
+    id_map->check_consistency();
+
+    std::vector<idx_t> external_ids(static_cast<size_t>(id_map->n_total), -1);
+    for (const auto& entry : id_map->id_map) {
+      external_ids[static_cast<size_t>(entry.second)] = entry.first;
+    }
+
+    uint32_t h = fourcc("IDMp");
+    WRITE1(h);
+    write_index_header(*id_map, f);
+    const uint8_t maintain_rev_map = id_map->maintain_rev_map ? 1 : 0;
+    WRITE1(maintain_rev_map);
+    WRITEVECTOR(external_ids);
+    WriteIndex(id_map->index, f, 0);
+    return;
+  }
 
   const IndexHNSWFlat* hnswflat = dynamic_cast<const IndexHNSWFlat*>(index);
   if (hnswflat) {

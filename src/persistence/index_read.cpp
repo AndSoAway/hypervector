@@ -8,11 +8,11 @@
  * HNSW-only index read implementation
  */
 
-#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -25,12 +25,16 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <utils/log/assert.h>
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 namespace hypervec {
 
@@ -39,9 +43,7 @@ size_t deserialization_loop_limit_ = 0;
 size_t deserialization_vector_byte_limit_ = uint64_t{1} << 40;  // 1 TB
 }  // namespace
 
-size_t get_deserialization_loop_limit() {
-  return deserialization_loop_limit_;
-}
+size_t get_deserialization_loop_limit() { return deserialization_loop_limit_; }
 
 void set_deserialization_loop_limit(size_t value) {
   deserialization_loop_limit_ = value;
@@ -117,17 +119,63 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   uint32_t h;
   READ1(h);
 
+  if (h == fourcc("IDMp")) {
+    IndexIDMap metadata;
+    read_index_header(metadata, f);
+    uint8_t maintain_rev_map;
+    READ1(maintain_rev_map);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        maintain_rev_map <= 1,
+        "IndexIDMap deserialize: invalid maintain_rev_map value");
+    std::vector<idx_t> external_ids;
+    READVECTOR(external_ids);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        external_ids.size() == static_cast<size_t>(metadata.n_total),
+        "IndexIDMap deserialize: reverse-map size does not match n_total");
+
+    std::unique_ptr<Index> underlying(ReadIndex(f, 0));
+    HYPERVEC_THROW_IF_NOT_MSG(
+        underlying->d == metadata.d &&
+            underlying->n_total == metadata.n_total &&
+            underlying->metric_type == metadata.metric_type &&
+            underlying->metric_arg == metadata.metric_arg &&
+            underlying->is_trained == metadata.is_trained,
+        "IndexIDMap deserialize: wrapper and underlying metadata disagree");
+
+    auto idx = std::make_unique<IndexIDMap>(std::move(underlying));
+    idx->d = metadata.d;
+    idx->n_total = metadata.n_total;
+    idx->is_trained = metadata.is_trained;
+    idx->metric_type = metadata.metric_type;
+    idx->metric_arg = metadata.metric_arg;
+    idx->verbose = metadata.verbose;
+    idx->maintain_rev_map = maintain_rev_map != 0;
+    idx->id_map.clear();
+    idx->rev_map = std::move(external_ids);
+    for (idx_t internal_id = 0; internal_id < idx->n_total; ++internal_id) {
+      const idx_t external_id = idx->rev_map[static_cast<size_t>(internal_id)];
+      HYPERVEC_THROW_IF_NOT_MSG(
+          external_id >= 0,
+          "IndexIDMap deserialize: external IDs must be non-negative");
+      const bool inserted =
+          idx->id_map.emplace(external_id, internal_id).second;
+      HYPERVEC_THROW_IF_NOT_MSG(
+          inserted, "IndexIDMap deserialize: duplicate external ID");
+    }
+    return idx.release();
+  }
+
   if (h == fourcc("IHNf")) {
     auto idxhnsw = std::make_unique<IndexHNSWFlat>();
     read_index_header(*idxhnsw, f);
     read_HNSW(idxhnsw->hnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
     HYPERVEC_THROW_IF_NOT_MSG(
-      dynamic_cast<IndexFlat*>(idxhnsw->storage) != nullptr,
-      "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
+        dynamic_cast<IndexFlat*>(idxhnsw->storage) != nullptr,
+        "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
     HYPERVEC_THROW_IF_NOT_MSG(
-      idxhnsw->storage->is_trained,
-      "IndexHNSWFlat deserialize: inner IndexFlat is not trained");
+        idxhnsw->storage->is_trained,
+        "IndexHNSWFlat deserialize: inner IndexFlat is not trained");
     idxhnsw->own_fields = true;
     idxhnsw->is_trained = true;
     return idxhnsw.release();
@@ -139,11 +187,11 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_HNSW(idxhnsw->hnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
     HYPERVEC_THROW_IF_NOT_MSG(
-      dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
-      "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
+        dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
+        "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
     HYPERVEC_THROW_IF_NOT_MSG(
-      idxhnsw->storage->is_trained,
-      "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
+        idxhnsw->storage->is_trained,
+        "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
     idxhnsw->own_fields = true;
     return idxhnsw.release();
   }
@@ -154,11 +202,11 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_HNSW(idxhnsw->hnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
     HYPERVEC_THROW_IF_NOT_MSG(
-      dynamic_cast<IndexLVQ*>(idxhnsw->storage) != nullptr,
-      "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
+        dynamic_cast<IndexLVQ*>(idxhnsw->storage) != nullptr,
+        "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
     HYPERVEC_THROW_IF_NOT_MSG(
-      idxhnsw->storage->is_trained,
-      "IndexHNSWLVQ deserialize: inner IndexLVQ is not trained");
+        idxhnsw->storage->is_trained,
+        "IndexHNSWLVQ deserialize: inner IndexLVQ is not trained");
     idxhnsw->own_fields = true;
     return idxhnsw.release();
   }
@@ -188,8 +236,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
 
     const size_t code_size = static_cast<size_t>(idx->d) * sizeof(float);
     delete idx->invlists;
-    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
-                                           code_size);
+    idx->invlists =
+        new ArrayInvertedLists(static_cast<size_t>(idx->nlist), code_size);
     idx->own_invlists = true;
 
     for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
@@ -216,9 +264,9 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_index_header(*idx, f);
     read_pq(idx->pq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
-      idx->pq.d == idx->d,
-      "IndexPQ deserialize: pq.d (%lld) != index.d (%lld)",
-      static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+        idx->pq.d == idx->d,
+        "IndexPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -228,9 +276,9 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_index_header(*idx, f);
     read_lvq(idx->lvq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
-      idx->lvq.d == idx->d,
-      "IndexLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
-      static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
+        idx->lvq.d == idx->d,
+        "IndexLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->codes);
     return idx.release();
   }
@@ -249,9 +297,9 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     idx->use_precomputed_table = upt;
     read_pq(idx->pq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
-      idx->pq.d == idx->d,
-      "IndexIVFPQ deserialize: pq.d (%lld) != index.d (%lld)",
-      static_cast<long long>(idx->pq.d), static_cast<long long>(idx->d));
+        idx->pq.d == idx->d,
+        "IndexIVFPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
     READVECTOR(idx->precomputed_table);
 
     delete idx->invlists;
@@ -266,8 +314,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
       if (sz == 0) {
         continue;
       }
-      HYPERVEC_THROW_IF_NOT(sz < (get_deserialization_vector_byte_limit() /
-                                  sizeof(idx_t)));
+      HYPERVEC_THROW_IF_NOT(
+          sz < (get_deserialization_vector_byte_limit() / sizeof(idx_t)));
       std::vector<idx_t> ids(sz);
       std::vector<uint8_t> codes(sz * idx->pq.code_size);
       READANDCHECK(ids.data(), sz);
@@ -288,9 +336,9 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     idx->by_residual = (by_residual_raw != 0);
     read_lvq(idx->lvq, f);
     HYPERVEC_THROW_IF_NOT_FMT(
-      idx->lvq.d == idx->d,
-      "IndexIVFLVQ deserialize: lvq.d (%lld) != index.d (%lld)",
-      static_cast<long long>(idx->lvq.d), static_cast<long long>(idx->d));
+        idx->lvq.d == idx->d,
+        "IndexIVFLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
 
     delete idx->invlists;
     idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
@@ -304,8 +352,8 @@ Index* ReadIndex(IOReader* f, int io_flags) {
       if (sz == 0) {
         continue;
       }
-      HYPERVEC_THROW_IF_NOT(sz < (get_deserialization_vector_byte_limit() /
-                                  sizeof(idx_t)));
+      HYPERVEC_THROW_IF_NOT(
+          sz < (get_deserialization_vector_byte_limit() / sizeof(idx_t)));
       std::vector<idx_t> ids(sz);
       std::vector<uint8_t> codes(sz * idx->lvq.code_size);
       READANDCHECK(ids.data(), sz);
@@ -357,14 +405,14 @@ LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname) {
 }
 
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-  IOReader* f) {
+    IOReader* f) {
   return std::unique_ptr<LocalVectorQuantizer>(read_LocalVectorQuantizer(f));
 }
 
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-  const char* fname) {
+    const char* fname) {
   return std::unique_ptr<LocalVectorQuantizer>(
-    read_LocalVectorQuantizer(fname));
+      read_LocalVectorQuantizer(fname));
 }
 
 Index* ReadIndex(FILE* f, int io_flags) {

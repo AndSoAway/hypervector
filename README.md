@@ -113,6 +113,9 @@ index->Search(nq, queries, k, distances, labels, parameters.get());
 `SerializeIndexConfig(engine.NormalizeConfig(config))` and
 `SerializeSearchConfig(engine.NormalizeSearchConfig(config, search))` produce
 deterministic JSON suitable for evaluation reports.
+`SerializeIndexConfig` itself does not normalize or validate its input.
+Runtime factory validation is strict: for example, an IVF `nprobe` greater
+than `build.nlist` is rejected rather than silently clamped.
 
 ## How HyperVec works
 

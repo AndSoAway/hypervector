@@ -359,19 +359,52 @@ TEST(TestFactoryTools, RejectsInvalidRuntimeSearchParameters) {
 
 TEST(TestFactoryTools, SerializesCanonicalIndexAndSearchConfig) {
   Engine engine;
-  const IndexConfig normalized = engine.NormalizeConfig(ParseIndexConfig(R"({
+  const IndexConfig normalized_hnsw =
+      engine.NormalizeConfig(ParseIndexConfig(R"({
     "type":"hnsw", "dimension":8,
     "storage":{"type":"pq","pq_m":2,"nbits":3},
     "build":{"graph_degree":7,"ef_construction":91},
     "defaults":{"ef_search":37}
   })"));
-  const std::string json = SerializeIndexConfig(normalized);
+  const std::string hnsw_json = SerializeIndexConfig(normalized_hnsw);
   EXPECT_EQ(
-      json,
+      hnsw_json,
       R"({"type":"hnsw_pq","dimension":8,"metric":"l2","backend":"cpu","storage":{"type":"pq","pq_m":2,"nbits":3},"build":{"graph_degree":7,"ef_construction":91},"defaults":{"ef_search":37},"id_mode":"sequential"})");
   EXPECT_EQ(
-      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(json))),
-      json);
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(hnsw_json))),
+      hnsw_json);
+
+  const IndexConfig normalized_ivf =
+      engine.NormalizeConfig(ParseIndexConfig(R"({
+    "type":"ivf", "dimension":16, "id_mode":"external",
+    "storage":{"type":"pq","pq_m":4,"nbits":6},
+    "build":{"nlist":32,"by_residual":false,"use_precomputed_table":1},
+    "defaults":{"nprobe":7}
+  })"));
+  const std::string ivf_json = SerializeIndexConfig(normalized_ivf);
+  EXPECT_EQ(
+      ivf_json,
+      R"({"type":"ivf_pq","dimension":16,"metric":"l2","backend":"cpu","storage":{"type":"pq","pq_m":4,"nbits":6},"build":{"nlist":32,"by_residual":false,"use_precomputed_table":1},"defaults":{"nprobe":7},"id_mode":"external"})");
+  EXPECT_EQ(
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(ivf_json))),
+      ivf_json);
+
+  const IndexConfig normalized_flat = engine.NormalizeConfig(ParseIndexConfig(
+      R"({"type":"flat","dimension":3,"metric":"lp","metric_arg":1.25})"));
+  const std::string flat_json = SerializeIndexConfig(normalized_flat);
+  EXPECT_EQ(
+      flat_json,
+      R"({"type":"flat","dimension":3,"metric":"lp","metric_arg":1.25,"backend":"cpu","storage":{"type":"flat"},"build":{},"defaults":{},"id_mode":"sequential"})");
+  EXPECT_EQ(
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(flat_json))),
+      flat_json);
+
+  const IndexConfig unresolved =
+      ParseIndexConfig(R"({"type":"hnsw","dimension":3})");
+  std::unique_ptr<Index> roundtrip =
+      engine.CreateIndex(ParseIndexConfig(SerializeIndexConfig(unresolved)));
+  ASSERT_NE(roundtrip, nullptr);
+  EXPECT_EQ(roundtrip->TypeName(), "hnsw_flat");
 
   SearchConfig search;
   search.ef_search = 64;

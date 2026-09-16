@@ -27,7 +27,12 @@ class Engine {
 
   IndexConfig NormalizeConfig(const IndexConfig& config) const;
 
-  /** Apply index defaults and validate per-search overrides. */
+  /** Apply index defaults and validate per-search overrides.
+   *
+   * Factory validation is strict. Invalid overrides are rejected instead of
+   * relying on a lower-level index to clamp them; for example, IVF nprobe must
+   * be in [1, build.nlist].
+   */
   SearchConfig NormalizeSearchConfig(
       const IndexConfig& index_config,
       const SearchConfig& search_config = {}) const;

@@ -89,6 +89,19 @@ void ValidateNbits(int nbits, int maximum) {
   }
 }
 
+void ValidateNprobe(idx_t nprobe, idx_t nlist, const char* parameter) {
+  if (nprobe <= 0 || nprobe > nlist) {
+    throw HypervecException(std::string(parameter) +
+                            " must be in [1, build.nlist]");
+  }
+}
+
+void ValidateEfSearch(int ef_search, const char* parameter) {
+  if (ef_search <= 0) {
+    throw HypervecException(std::string(parameter) + " must be positive");
+  }
+}
+
 size_t ToSize(idx_t value, const char* parameter) {
   if (value < 0 ||
       static_cast<uint64_t>(value) >
@@ -138,10 +151,8 @@ void NormalizeIVF(IndexConfig* config) {
   }
   mul_no_overflow(ToSize(*config->build.nlist, "build.nlist"),
                   ToSize(config->dimension, "dimension"), "IVF centroid count");
-  if (*config->defaults.nprobe <= 0 ||
-      *config->defaults.nprobe > *config->build.nlist) {
-    throw HypervecException("defaults.nprobe must be in [1, build.nlist]");
-  }
+  ValidateNprobe(*config->defaults.nprobe, *config->build.nlist,
+                 "defaults.nprobe");
 }
 
 void NormalizeHNSW(IndexConfig* config) {
@@ -158,9 +169,7 @@ void NormalizeHNSW(IndexConfig* config) {
   if (*config->build.ef_construction <= 0) {
     throw HypervecException("build.ef_construction must be positive");
   }
-  if (*config->defaults.ef_search <= 0) {
-    throw HypervecException("defaults.ef_search must be positive");
-  }
+  ValidateEfSearch(*config->defaults.ef_search, "defaults.ef_search");
 }
 
 const char* StorageName(StorageKind storage) {
@@ -296,10 +305,7 @@ void NormalizeIVFSearch(const IndexConfig& index_config,
                             "normalized IVF config is missing search defaults");
   search_config.nprobe =
       search_config.nprobe.value_or(*index_config.defaults.nprobe);
-  if (*search_config.nprobe <= 0 ||
-      *search_config.nprobe > *index_config.build.nlist) {
-    throw HypervecException("nprobe must be in [1, build.nlist]");
-  }
+  ValidateNprobe(*search_config.nprobe, *index_config.build.nlist, "nprobe");
 }
 
 void NormalizeHNSWSearch(const IndexConfig& index_config,
@@ -311,9 +317,7 @@ void NormalizeHNSWSearch(const IndexConfig& index_config,
       "normalized HNSW config is missing search defaults");
   search_config.ef_search =
       search_config.ef_search.value_or(*index_config.defaults.ef_search);
-  if (*search_config.ef_search <= 0) {
-    throw HypervecException("ef_search must be positive");
-  }
+  ValidateEfSearch(*search_config.ef_search, "ef_search");
 }
 
 std::unique_ptr<SearchParameters> CreateScanSearchParameters(

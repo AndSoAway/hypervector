@@ -97,6 +97,26 @@ the concrete index in `IndexIDMap`; the returned wrapper reports `idmap` from
 Otherwise IDs are sequential. See `demo_index_factory` for a complete build
 and search example.
 
+Runtime search overrides use the same registry descriptor as index creation,
+so callers do not need to construct algorithm-specific parameter classes:
+
+```cpp
+hypervec::IndexConfig config = hypervec::ParseIndexConfig(index_json);
+hypervec::SearchConfig search = hypervec::ParseSearchConfig(search_json);
+hypervec::Engine engine;
+std::unique_ptr<hypervec::Index> index = engine.CreateIndex(config);
+std::unique_ptr<hypervec::SearchParameters> parameters =
+    engine.CreateSearchParameters(config, search);
+index->Search(nq, queries, k, distances, labels, parameters.get());
+```
+
+`SerializeIndexConfig(engine.NormalizeConfig(config))` and
+`SerializeSearchConfig(engine.NormalizeSearchConfig(config, search))` produce
+deterministic JSON suitable for evaluation reports.
+`SerializeIndexConfig` itself does not normalize or validate its input.
+Runtime factory validation is strict: for example, an IVF `nprobe` greater
+than `build.nlist` is rejected rather than silently clamped.
+
 ## How HyperVec works
 
 HyperVec is built around an index type that stores a set of vectors, and provides a function to search in them with L2 and/or dot product vector comparison. Some index types are simple baselines, such as exact search. Most of the available indexing structures correspond to various trade-offs with respect to

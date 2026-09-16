@@ -8,9 +8,11 @@
 
 #include <factory/index_registry.h>
 #include <index/flat/index_flat.h>
+#include <index/hnsw/hnsw.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -87,6 +89,19 @@ void ValidateNbits(int nbits, int maximum) {
   }
 }
 
+void ValidateNprobe(idx_t nprobe, idx_t nlist, const char* parameter) {
+  if (nprobe <= 0 || nprobe > nlist) {
+    throw HypervecException(std::string(parameter) +
+                            " must be in [1, build.nlist]");
+  }
+}
+
+void ValidateEfSearch(int ef_search, const char* parameter) {
+  if (ef_search <= 0) {
+    throw HypervecException(std::string(parameter) + " must be positive");
+  }
+}
+
 size_t ToSize(idx_t value, const char* parameter) {
   if (value < 0 ||
       static_cast<uint64_t>(value) >
@@ -136,10 +151,8 @@ void NormalizeIVF(IndexConfig* config) {
   }
   mul_no_overflow(ToSize(*config->build.nlist, "build.nlist"),
                   ToSize(config->dimension, "dimension"), "IVF centroid count");
-  if (*config->defaults.nprobe <= 0 ||
-      *config->defaults.nprobe > *config->build.nlist) {
-    throw HypervecException("defaults.nprobe must be in [1, build.nlist]");
-  }
+  ValidateNprobe(*config->defaults.nprobe, *config->build.nlist,
+                 "defaults.nprobe");
 }
 
 void NormalizeHNSW(IndexConfig* config) {
@@ -156,9 +169,7 @@ void NormalizeHNSW(IndexConfig* config) {
   if (*config->build.ef_construction <= 0) {
     throw HypervecException("build.ef_construction must be positive");
   }
-  if (*config->defaults.ef_search <= 0) {
-    throw HypervecException("defaults.ef_search must be positive");
-  }
+  ValidateEfSearch(*config->defaults.ef_search, "defaults.ef_search");
 }
 
 const char* StorageName(StorageKind storage) {
@@ -275,6 +286,57 @@ void NormalizeHNSWPQ(IndexConfig& config) {
 
 void NormalizeHNSWLVQ(IndexConfig& config) {
   NormalizeBuiltin(&config, IndexFamily::HNSW, StorageKind::LVQ);
+}
+
+void NormalizeScanSearch(const IndexConfig& index_config,
+                         SearchConfig& search_config) {
+  RejectParameter(search_config.nprobe.has_value(), "nprobe",
+                  index_config.type);
+  RejectParameter(search_config.ef_search.has_value(), "ef_search",
+                  index_config.type);
+}
+
+void NormalizeIVFSearch(const IndexConfig& index_config,
+                        SearchConfig& search_config) {
+  RejectParameter(search_config.ef_search.has_value(), "ef_search",
+                  index_config.type);
+  HYPERVEC_THROW_IF_NOT_MSG(index_config.defaults.nprobe.has_value() &&
+                                index_config.build.nlist.has_value(),
+                            "normalized IVF config is missing search defaults");
+  search_config.nprobe =
+      search_config.nprobe.value_or(*index_config.defaults.nprobe);
+  ValidateNprobe(*search_config.nprobe, *index_config.build.nlist, "nprobe");
+}
+
+void NormalizeHNSWSearch(const IndexConfig& index_config,
+                         SearchConfig& search_config) {
+  RejectParameter(search_config.nprobe.has_value(), "nprobe",
+                  index_config.type);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index_config.defaults.ef_search.has_value(),
+      "normalized HNSW config is missing search defaults");
+  search_config.ef_search =
+      search_config.ef_search.value_or(*index_config.defaults.ef_search);
+  ValidateEfSearch(*search_config.ef_search, "ef_search");
+}
+
+std::unique_ptr<SearchParameters> CreateScanSearchParameters(
+    const IndexConfig&, const SearchConfig&) {
+  return std::make_unique<SearchParameters>();
+}
+
+std::unique_ptr<SearchParameters> CreateIVFSearchParameters(
+    const IndexConfig&, const SearchConfig& search_config) {
+  auto parameters = std::make_unique<IVFSearchParameters>();
+  parameters->nprobe = *search_config.nprobe;
+  return parameters;
+}
+
+std::unique_ptr<SearchParameters> CreateHNSWSearchParameters(
+    const IndexConfig&, const SearchConfig& search_config) {
+  auto parameters = std::make_unique<SearchParametersHNSW>();
+  parameters->ef_search = *search_config.ef_search;
+  return parameters;
 }
 
 const std::vector<MetricType>& FlatMetrics() {
@@ -443,63 +505,81 @@ void RegisterBuiltinIndexes() {
                        FlatMetrics(),
                        cpu,
                        NormalizeFlat,
-                       CreateFlat});
+                       CreateFlat,
+                       NormalizeScanSearch,
+                       CreateScanSearchParameters});
     registry.Register({"pq",
                        {"indexpq"},
                        TrainedScanCapabilities(false),
                        l2,
                        cpu,
                        NormalizeScanPQ,
-                       CreatePQ});
+                       CreatePQ,
+                       NormalizeScanSearch,
+                       CreateScanSearchParameters});
     registry.Register({"lvq",
                        {"indexlvq"},
                        TrainedScanCapabilities(true),
                        l2,
                        cpu,
                        NormalizeScanLVQ,
-                       CreateLVQ});
+                       CreateLVQ,
+                       NormalizeScanSearch,
+                       CreateScanSearchParameters});
     registry.Register({"ivf_flat",
                        {"ivfflat", "indexivfflat"},
                        IVFCapabilities(true, false),
                        ivf_flat_metrics,
                        cpu,
                        NormalizeIVFFlat,
-                       CreateIVFFlat});
+                       CreateIVFFlat,
+                       NormalizeIVFSearch,
+                       CreateIVFSearchParameters});
     registry.Register({"ivf_pq",
                        {"ivfpq", "indexivfpq"},
                        IVFCapabilities(false, false),
                        l2,
                        cpu,
                        NormalizeIVFPQ,
-                       CreateIVFPQ});
+                       CreateIVFPQ,
+                       NormalizeIVFSearch,
+                       CreateIVFSearchParameters});
     registry.Register({"ivf_lvq",
                        {"ivflvq", "indexivflvq"},
                        IVFCapabilities(false, true),
                        l2,
                        cpu,
                        NormalizeIVFLVQ,
-                       CreateIVFLVQ});
+                       CreateIVFLVQ,
+                       NormalizeIVFSearch,
+                       CreateIVFSearchParameters});
     registry.Register({"hnsw_flat",
                        {"hnswflat", "indexhnswflat", "autoindex"},
                        HNSWCapabilities(false),
                        FlatMetrics(),
                        cpu,
                        NormalizeHNSWFlat,
-                       CreateHNSWFlat});
+                       CreateHNSWFlat,
+                       NormalizeHNSWSearch,
+                       CreateHNSWSearchParameters});
     registry.Register({"hnsw_pq",
                        {"hnswpq", "indexhnswpq"},
                        HNSWCapabilities(true),
                        l2,
                        cpu,
                        NormalizeHNSWPQ,
-                       CreateHNSWPQ});
+                       CreateHNSWPQ,
+                       NormalizeHNSWSearch,
+                       CreateHNSWSearchParameters});
     registry.Register({"hnsw_lvq",
                        {"hnswlvq", "indexhnswlvq"},
                        HNSWCapabilities(true),
                        l2,
                        cpu,
                        NormalizeHNSWLVQ,
-                       CreateHNSWLVQ});
+                       CreateHNSWLVQ,
+                       NormalizeHNSWSearch,
+                       CreateHNSWSearchParameters});
   });
 }
 

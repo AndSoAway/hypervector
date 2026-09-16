@@ -34,6 +34,12 @@ void IndexRegistry::Register(IndexDescriptor descriptor) {
                             "index descriptor requires a config normalizer");
   HYPERVEC_THROW_IF_NOT_MSG(static_cast<bool>(descriptor.creator),
                             "index descriptor requires a creator");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      static_cast<bool>(descriptor.normalize_search),
+      "index descriptor requires a search config normalizer");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      static_cast<bool>(descriptor.create_search_parameters),
+      "index descriptor requires a search parameters creator");
   HYPERVEC_THROW_IF_NOT_MSG(!descriptor.metrics.empty(),
                             "index descriptor requires supported metrics");
   HYPERVEC_THROW_IF_NOT_MSG(!descriptor.backends.empty(),

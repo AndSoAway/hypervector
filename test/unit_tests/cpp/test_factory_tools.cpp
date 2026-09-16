@@ -10,10 +10,12 @@
 #include <factory/index_registry.h>
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <index/hnsw/hnsw.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -62,6 +64,26 @@ TEST(TestFactoryTools, AcceptsUtf8Bom) {
       ParseIndexConfig("\xEF\xBB\xBF{\"type\":\"flat\",\"dimension\":4}");
   EXPECT_EQ(config.type, "flat");
   EXPECT_EQ(config.dimension, 4);
+}
+
+TEST(TestFactoryTools, ParsesStrictRuntimeSearchConfig) {
+  const SearchConfig config =
+      ParseSearchConfig(R"({"nprobe":4,"ef_search":32})");
+  EXPECT_EQ(config.nprobe, 4);
+  EXPECT_EQ(config.ef_search, 32);
+
+  const SearchConfig empty = ParseSearchConfig("{}");
+  EXPECT_FALSE(empty.nprobe.has_value());
+  EXPECT_FALSE(empty.ef_search.has_value());
+
+  EXPECT_THROW(ParseSearchConfig("[]"), HypervecException);
+  EXPECT_THROW(ParseSearchConfig(R"({"nprobe":1,"extra":2})"),
+               HypervecException);
+  EXPECT_THROW(ParseSearchConfig(R"({"nprobe":1,"nprobe":2})"),
+               HypervecException);
+  EXPECT_THROW(ParseSearchConfig(R"({"nprobe":1.5})"), HypervecException);
+  EXPECT_THROW(ParseSearchConfig(R"({"ef_search":2147483648})"),
+               HypervecException);
 }
 
 TEST(TestFactoryTools, RejectsMalformedAndAmbiguousJson) {
@@ -120,6 +142,10 @@ TEST(TestFactoryTools, RegistryRejectsDuplicateNamesTransactionally) {
       [](IndexConfig&) {},
       [](const IndexConfig& config, const ResourceContext&) {
         return std::make_unique<IndexFlatL2>(config.dimension);
+      },
+      [](const IndexConfig&, SearchConfig&) {},
+      [](const IndexConfig&, const SearchConfig&) {
+        return std::make_unique<SearchParameters>();
       }};
   registry.Register(descriptor);
   EXPECT_THROW(registry.Register(descriptor), HypervecException);
@@ -212,6 +238,178 @@ TEST(TestFactoryTools, NormalizesDefaultsAfterSelectingConcreteType) {
   EXPECT_EQ(normalized.defaults.nprobe, 1);
   EXPECT_EQ(normalized.build.by_residual, true);
   EXPECT_EQ(normalized.build.use_precomputed_table, 0);
+}
+
+TEST(TestFactoryTools, CreatesRuntimeSearchParametersWithoutMutatingIndex) {
+  Engine engine;
+  const IndexConfig ivf_config = ParseIndexConfig(R"({
+    "type":"ivf", "dimension":8,
+    "build":{"nlist":5}, "defaults":{"nprobe":2}
+  })");
+  const SearchConfig ivf_defaults = engine.NormalizeSearchConfig(ivf_config);
+  EXPECT_EQ(ivf_defaults.nprobe, 2);
+  EXPECT_FALSE(ivf_defaults.ef_search.has_value());
+
+  SearchConfig ivf_override;
+  ivf_override.nprobe = 4;
+  std::unique_ptr<SearchParameters> ivf_parameters =
+      engine.CreateSearchParameters(ivf_config, ivf_override);
+  const auto* concrete_ivf =
+      dynamic_cast<const IVFSearchParameters*>(ivf_parameters.get());
+  ASSERT_NE(concrete_ivf, nullptr);
+  EXPECT_EQ(concrete_ivf->nprobe, 4);
+
+  std::unique_ptr<Index> ivf_index = engine.CreateIndex(ivf_config);
+  const auto* ivf = dynamic_cast<const IndexIVFFlat*>(ivf_index.get());
+  ASSERT_NE(ivf, nullptr);
+  EXPECT_EQ(ivf->nprobe, 2);
+
+  const IndexConfig hnsw_config = ParseIndexConfig(R"({
+    "type":"hnsw", "dimension":8, "defaults":{"ef_search":24}
+  })");
+  const SearchConfig hnsw_defaults = engine.NormalizeSearchConfig(hnsw_config);
+  EXPECT_EQ(hnsw_defaults.ef_search, 24);
+  EXPECT_FALSE(hnsw_defaults.nprobe.has_value());
+
+  SearchConfig hnsw_override;
+  hnsw_override.ef_search = 48;
+  std::unique_ptr<SearchParameters> hnsw_parameters =
+      engine.CreateSearchParameters(hnsw_config, hnsw_override);
+  const auto* concrete_hnsw =
+      dynamic_cast<const SearchParametersHNSW*>(hnsw_parameters.get());
+  ASSERT_NE(concrete_hnsw, nullptr);
+  EXPECT_EQ(concrete_hnsw->ef_search, 48);
+
+  IndexConfig flat_config;
+  flat_config.type = "flat";
+  flat_config.dimension = 8;
+  EXPECT_NE(engine.CreateSearchParameters(flat_config), nullptr);
+}
+
+TEST(TestFactoryTools, RuntimeSearchParametersUseTheCommonIndexApi) {
+  Engine engine;
+  const std::array<float, 8> vectors = {0.0F, 0.0F, 1.0F, 0.0F,
+                                        0.0F, 2.0F, 3.0F, 3.0F};
+  const std::array<float, 2> query = {1.0F, 0.0F};
+
+  const IndexConfig ivf_config = ParseIndexConfig(R"({
+    "type":"ivf_flat", "dimension":2, "build":{"nlist":2}
+  })");
+  std::unique_ptr<Index> ivf = engine.CreateIndex(ivf_config);
+  ivf->Build({4, 2, vectors.data(), nullptr});
+  SearchConfig ivf_search;
+  ivf_search.nprobe = 2;
+  std::unique_ptr<SearchParameters> ivf_parameters =
+      engine.CreateSearchParameters(ivf_config, ivf_search);
+  std::array<float, 1> distances{};
+  std::array<idx_t, 1> labels{};
+  ivf->Search(1, query.data(), 1, distances.data(), labels.data(),
+              ivf_parameters.get());
+  EXPECT_EQ(labels[0], 1);
+  EXPECT_FLOAT_EQ(distances[0], 0.0F);
+
+  const IndexConfig hnsw_config = ParseIndexConfig(R"({
+    "type":"hnsw_flat", "dimension":2,
+    "build":{"graph_degree":2}, "id_mode":"external"
+  })");
+  std::unique_ptr<Index> hnsw = engine.CreateIndex(hnsw_config);
+  const std::array<idx_t, 4> ids = {10, 20, 30, 40};
+  hnsw->Build({4, 2, vectors.data(), ids.data()});
+  SearchConfig hnsw_search;
+  hnsw_search.ef_search = 8;
+  std::unique_ptr<SearchParameters> hnsw_parameters =
+      engine.CreateSearchParameters(hnsw_config, hnsw_search);
+  hnsw->Search(1, query.data(), 1, distances.data(), labels.data(),
+               hnsw_parameters.get());
+  EXPECT_EQ(labels[0], 20);
+  EXPECT_FLOAT_EQ(distances[0], 0.0F);
+}
+
+TEST(TestFactoryTools, RejectsInvalidRuntimeSearchParameters) {
+  Engine engine;
+  IndexConfig flat;
+  flat.type = "flat";
+  flat.dimension = 8;
+
+  SearchConfig nprobe;
+  nprobe.nprobe = 1;
+  EXPECT_THROW(engine.CreateSearchParameters(flat, nprobe), HypervecException);
+
+  IndexConfig ivf;
+  ivf.type = "ivf_flat";
+  ivf.dimension = 8;
+  ivf.build.nlist = 4;
+  SearchConfig ef_search;
+  ef_search.ef_search = 10;
+  EXPECT_THROW(engine.CreateSearchParameters(ivf, ef_search),
+               HypervecException);
+  nprobe.nprobe = 0;
+  EXPECT_THROW(engine.CreateSearchParameters(ivf, nprobe), HypervecException);
+  nprobe.nprobe = 5;
+  EXPECT_THROW(engine.CreateSearchParameters(ivf, nprobe), HypervecException);
+
+  IndexConfig hnsw;
+  hnsw.type = "hnsw_flat";
+  hnsw.dimension = 8;
+  EXPECT_THROW(engine.CreateSearchParameters(hnsw, nprobe), HypervecException);
+  ef_search.ef_search = 0;
+  EXPECT_THROW(engine.CreateSearchParameters(hnsw, ef_search),
+               HypervecException);
+}
+
+TEST(TestFactoryTools, SerializesCanonicalIndexAndSearchConfig) {
+  Engine engine;
+  const IndexConfig normalized_hnsw =
+      engine.NormalizeConfig(ParseIndexConfig(R"({
+    "type":"hnsw", "dimension":8,
+    "storage":{"type":"pq","pq_m":2,"nbits":3},
+    "build":{"graph_degree":7,"ef_construction":91},
+    "defaults":{"ef_search":37}
+  })"));
+  const std::string hnsw_json = SerializeIndexConfig(normalized_hnsw);
+  EXPECT_EQ(
+      hnsw_json,
+      R"({"type":"hnsw_pq","dimension":8,"metric":"l2","backend":"cpu","storage":{"type":"pq","pq_m":2,"nbits":3},"build":{"graph_degree":7,"ef_construction":91},"defaults":{"ef_search":37},"id_mode":"sequential"})");
+  EXPECT_EQ(
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(hnsw_json))),
+      hnsw_json);
+
+  const IndexConfig normalized_ivf =
+      engine.NormalizeConfig(ParseIndexConfig(R"({
+    "type":"ivf", "dimension":16, "id_mode":"external",
+    "storage":{"type":"pq","pq_m":4,"nbits":6},
+    "build":{"nlist":32,"by_residual":false,"use_precomputed_table":1},
+    "defaults":{"nprobe":7}
+  })"));
+  const std::string ivf_json = SerializeIndexConfig(normalized_ivf);
+  EXPECT_EQ(
+      ivf_json,
+      R"({"type":"ivf_pq","dimension":16,"metric":"l2","backend":"cpu","storage":{"type":"pq","pq_m":4,"nbits":6},"build":{"nlist":32,"by_residual":false,"use_precomputed_table":1},"defaults":{"nprobe":7},"id_mode":"external"})");
+  EXPECT_EQ(
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(ivf_json))),
+      ivf_json);
+
+  const IndexConfig normalized_flat = engine.NormalizeConfig(ParseIndexConfig(
+      R"({"type":"flat","dimension":3,"metric":"lp","metric_arg":1.25})"));
+  const std::string flat_json = SerializeIndexConfig(normalized_flat);
+  EXPECT_EQ(
+      flat_json,
+      R"({"type":"flat","dimension":3,"metric":"lp","metric_arg":1.25,"backend":"cpu","storage":{"type":"flat"},"build":{},"defaults":{},"id_mode":"sequential"})");
+  EXPECT_EQ(
+      SerializeIndexConfig(engine.NormalizeConfig(ParseIndexConfig(flat_json))),
+      flat_json);
+
+  const IndexConfig unresolved =
+      ParseIndexConfig(R"({"type":"hnsw","dimension":3})");
+  std::unique_ptr<Index> roundtrip =
+      engine.CreateIndex(ParseIndexConfig(SerializeIndexConfig(unresolved)));
+  ASSERT_NE(roundtrip, nullptr);
+  EXPECT_EQ(roundtrip->TypeName(), "hnsw_flat");
+
+  SearchConfig search;
+  search.ef_search = 64;
+  EXPECT_EQ(SerializeSearchConfig(search), R"({"ef_search":64})");
+  EXPECT_EQ(SerializeSearchConfig(ParseSearchConfig("{}")), "{}");
 }
 
 TEST(TestFactoryTools, RejectsUnsupportedOrMisplacedParameters) {

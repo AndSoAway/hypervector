@@ -59,6 +59,12 @@ struct NormalizedRequest {
   IndexDescriptorPtr descriptor;
 };
 
+struct NormalizedSearchRequest {
+  IndexConfig index_config;
+  SearchConfig search_config;
+  IndexDescriptorPtr descriptor;
+};
+
 NormalizedRequest NormalizeRequest(const IndexConfig& config) {
   IndexConfig normalized = config;
   if (normalized.dimension <= 0 ||
@@ -128,6 +134,16 @@ NormalizedRequest NormalizeRequest(const IndexConfig& config) {
   return {std::move(normalized), std::move(descriptor)};
 }
 
+NormalizedSearchRequest NormalizeSearchRequest(
+    const IndexConfig& index_config, const SearchConfig& search_config) {
+  NormalizedRequest index_request = NormalizeRequest(index_config);
+  SearchConfig normalized_search = search_config;
+  index_request.descriptor->normalize_search(index_request.config,
+                                             normalized_search);
+  return {std::move(index_request.config), std::move(normalized_search),
+          std::move(index_request.descriptor)};
+}
+
 }  // namespace
 
 Engine::Engine(ResourceContext resources) : resources_(std::move(resources)) {
@@ -136,6 +152,11 @@ Engine::Engine(ResourceContext resources) : resources_(std::move(resources)) {
 
 IndexConfig Engine::NormalizeConfig(const IndexConfig& config) const {
   return NormalizeRequest(config).config;
+}
+
+SearchConfig Engine::NormalizeSearchConfig(
+    const IndexConfig& index_config, const SearchConfig& search_config) const {
+  return NormalizeSearchRequest(index_config, search_config).search_config;
 }
 
 std::unique_ptr<Index> Engine::CreateIndex(const IndexConfig& config) const {
@@ -164,6 +185,21 @@ std::unique_ptr<Index> Engine::CreateIndex(const IndexConfig& config) const {
 
 std::unique_ptr<Index> Engine::CreateIndex(std::string_view json) const {
   return CreateIndex(ParseIndexConfig(json));
+}
+
+std::unique_ptr<SearchParameters> Engine::CreateSearchParameters(
+    const IndexConfig& index_config, const SearchConfig& search_config) const {
+  NormalizedSearchRequest request =
+      NormalizeSearchRequest(index_config, search_config);
+  std::unique_ptr<SearchParameters> parameters =
+      request.descriptor->create_search_parameters(request.index_config,
+                                                   request.search_config);
+  if (parameters == nullptr) {
+    throw HypervecException(
+        "search parameters creator returned null for type '" +
+        request.index_config.type + "'");
+  }
+  return parameters;
 }
 
 std::unique_ptr<Index> CreateIndex(std::string_view json) {

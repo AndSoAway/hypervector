@@ -63,6 +63,20 @@ struct IndexConfig {
 /** Parse strict JSON into typed configuration without applying defaults. */
 IndexConfig ParseIndexConfig(std::string_view json);
 
+/** Parse a strict runtime search configuration object. */
+SearchConfig ParseSearchConfig(std::string_view json);
+
+/** Serialize typed configuration in a deterministic JSON representation.
+ *
+ * This function does not normalize or validate the configuration. Pass the
+ * result of Engine::NormalizeConfig to emit a canonical, defaults-resolved
+ * representation.
+ */
+std::string SerializeIndexConfig(const IndexConfig& config);
+
+/** Serialize runtime search configuration in deterministic JSON form. */
+std::string SerializeSearchConfig(const SearchConfig& config);
+
 /** Convert a supported metric name to the C++ enum. */
 MetricType ParseMetricType(std::string_view name);
 

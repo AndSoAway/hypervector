@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -252,17 +253,69 @@ class HypervecServerEngine:
     def get_index_example(self, index_type: str) -> dict[str, Any] | None:
         return find_index_example(self.hypervec, index_type)
 
-    def _metric(self, metric_type: str) -> int:
+    def _metric_name(self, metric_type: str) -> str:
         metric = str(metric_type or "L2").upper()
         if metric in {"IP", "INNER_PRODUCT", "COSINE"}:
-            return int(self.hypervec.kMetricInnerProduct)
+            # Preserve the service's historical COSINE spelling. The current
+            # service stores untransformed vectors, so this remains the existing
+            # inner-product behavior until NormalizeTransform is available.
+            return "inner_product"
         if metric in {"L2", "EUCLIDEAN"}:
-            return int(self.hypervec.kMetricL2)
+            return "l2"
         raise ValueError(f"unsupported metric_type: {metric_type}")
 
-    def _make_index(self, dim: int, index_config: dict[str, Any]) -> Any:
-        metric = self._metric(str(index_config.get("metric_type", "L2")))
+    def _cpp_index_config(self, dim: int, index_config: dict[str, Any]) -> dict[str, Any]:
+        """Translate the service manifest shape to the C++ factory schema.
+
+        This adapter owns only legacy field spelling. Defaults, algorithm-specific
+        validation, and concrete index selection belong to the C++ registry.
+        """
+        if "type" in index_config:
+            allowed = {
+                "type",
+                "metric",
+                "metric_arg",
+                "backend",
+                "storage",
+                "build",
+                "defaults",
+                "id_mode",
+                "dimension",
+                "field_name",
+            }
+            unknown = sorted(set(index_config) - allowed)
+            if unknown:
+                raise ValueError(
+                    "unsupported canonical index field(s): " + ", ".join(unknown)
+                )
+            config = {
+                key: value
+                for key, value in index_config.items()
+                if key not in {"dimension", "field_name"}
+            }
+            config["dimension"] = dim
+            return config
+
         index_type = str(index_config.get("index_type") or "HNSWFlat").upper()
+        type_aliases = {
+            "FLAT": "flat",
+            "INDEXFLAT": "flat",
+            "IVF": "ivf_flat",
+            "IVFFLAT": "ivf_flat",
+            "INDEXIVFFLAT": "ivf_flat",
+            "IVFLVQ": "ivf_lvq",
+            "INDEXIVFLVQ": "ivf_lvq",
+            "IVFPQ": "ivf_pq",
+            "INDEXIVFPQ": "ivf_pq",
+            "HNSW": "hnsw_flat",
+            "HNSWFLAT": "hnsw_flat",
+            "INDEXHNSWFLAT": "hnsw_flat",
+            "AUTOINDEX": "hnsw_flat",
+            "HNSWLVQ": "hnsw_lvq",
+            "INDEXHNSWLVQ": "hnsw_lvq",
+            "HNSWPQ": "hnsw_pq",
+            "INDEXHNSWPQ": "hnsw_pq",
+        }
         params = dict(index_config.get("params") or {})
         deprecated = sorted(set(params) & {"M", "m", "M_hnsw", "M_pq"})
         if deprecated:
@@ -271,51 +324,54 @@ class HypervecServerEngine:
                 f"{', '.join(deprecated)}; use explicit m_hnsw or m_pq."
             )
 
-        def positive_int(name: str, default: int) -> int:
-            value = int(params.get(name, default))
-            if value <= 0:
-                raise ValueError(f"index parameter '{name}' must be positive.")
-            return value
+        aliases = {
+            "m_hnsw": ("build", "graph_degree"),
+            "graph_degree": ("build", "graph_degree"),
+            "ef_construction": ("build", "ef_construction"),
+            "nlist": ("build", "nlist"),
+            "by_residual": ("build", "by_residual"),
+            "use_precomputed_table": ("build", "use_precomputed_table"),
+            "m_pq": ("storage", "pq_m"),
+            "pq_m": ("storage", "pq_m"),
+            "nlocal": ("storage", "nlocal"),
+            "nbits": ("storage", "nbits"),
+            "nprobe": ("defaults", "nprobe"),
+            "ef_search": ("defaults", "ef_search"),
+            "ef": ("defaults", "ef_search"),
+        }
+        unknown = sorted(set(params) - set(aliases))
+        if unknown:
+            raise ValueError("unsupported index parameter(s): " + ", ".join(unknown))
 
-        def validate_pq_dim(m_pq: int) -> None:
-            if int(dim) % int(m_pq) != 0:
+        config: dict[str, Any] = {
+            "type": type_aliases.get(index_type, str(index_config.get("index_type"))),
+            "dimension": dim,
+            "metric": self._metric_name(str(index_config.get("metric_type", "L2"))),
+        }
+        for source_name, value in params.items():
+            section, target_name = aliases[source_name]
+            target = config.setdefault(section, {})
+            if target_name in target:
                 raise ValueError(
-                    f"vector dim {dim} must be divisible by m_pq {m_pq}."
+                    f"conflicting index parameters map to '{section}.{target_name}'"
                 )
+            target[target_name] = value
 
-        if index_type in {"FLAT", "INDEXFLAT"}:
-            if metric == int(self.hypervec.kMetricInnerProduct):
-                return self.hypervec.IndexFlatIP(dim)
-            return self.hypervec.IndexFlatL2(dim)
-        if index_type in {"IVF", "IVFFLAT", "INDEXIVFFLAT"}:
-            nlist = positive_int("nlist", 1024)
-            return self.hypervec.IndexIVFFlat(dim, nlist, metric)
-        if index_type in {"IVFLVQ", "INDEXIVFLVQ"}:
-            nlist = positive_int("nlist", 1024)
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            return self.hypervec.IndexIVFLVQ(dim, nlist, nlocal, nbits, metric)
-        if index_type in {"IVFPQ", "INDEXIVFPQ"}:
-            nlist = positive_int("nlist", 1024)
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexIVFPQ(dim, nlist, m_pq, nbits, metric)
-        if index_type in {"HNSW", "HNSWFLAT", "INDEXHNSWFLAT", "AUTOINDEX"}:
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWFlat(dim, m_hnsw, metric)
-        if index_type in {"HNSWLVQ", "INDEXHNSWLVQ"}:
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, m_hnsw, metric)
-        if index_type in {"HNSWPQ", "INDEXHNSWPQ"}:
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexHNSWPQ(dim, m_pq, nbits, m_hnsw, metric)
-        raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
+        for name in ("backend", "metric_arg", "id_mode"):
+            if name in index_config:
+                config[name] = index_config[name]
+        return config
+
+    @staticmethod
+    def _config_json(config: dict[str, Any]) -> str:
+        return json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+    def _make_index(self, dim: int, index_config: dict[str, Any]) -> Any:
+        config_json = self._config_json(self._cpp_index_config(dim, index_config))
+        try:
+            return self.hypervec.create_index(config_json)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
         index.add(vectors)
@@ -326,8 +382,23 @@ class HypervecServerEngine:
         query: np.ndarray,
         k: int,
         search_params: dict[str, Any] | None = None,
+        index_config: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
-        return index.search_with_params(query, k, search_params or {})
+        if index_config is None:
+            raise ValueError("index_config is required for configured search")
+        params = dict(search_params or {})
+        if "ef" in params:
+            if "ef_search" in params:
+                raise ValueError("search parameters 'ef' and 'ef_search' conflict")
+            params["ef_search"] = params.pop("ef")
+        config_json = self._config_json(
+            self._cpp_index_config(int(index.d), index_config)
+        )
+        search_json = self._config_json(params)
+        try:
+            return index.search_with_config(query, k, config_json, search_json)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _write_index(self, index: Any, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -630,7 +701,13 @@ class HypervecServerEngine:
                 candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
             else:
                 candidate_k = min(meta.total, int(limit))
-            distances, labels = self._search_index(index, query, candidate_k, search_params)
+            distances, labels = self._search_index(
+                index,
+                query,
+                candidate_k,
+                search_params,
+                self._index_config(meta),
+            )
             requested = set(output_fields or [])
             cache = self._scalar_cache.get(collection_name)
             results: list[list[dict[str, Any]]] = []

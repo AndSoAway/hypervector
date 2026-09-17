@@ -5,14 +5,18 @@
 %module swighypervec
 
 %include <stdint.i>
+%include <std_string.i>
 
 %{
 #include <Python.h>
+#include <factory/engine.h>
+#include <factory/index_config.h>
 #include <index/index.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -158,6 +162,45 @@ PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
   return result;
 }
 
+PyObject* index_search_with_config(const hypervec::Index* index, PyObject* obj,
+                                   hypervec::idx_t k,
+                                   const std::string& index_config_json,
+                                   const std::string& search_config_json) {
+  hypervec::Engine engine;
+  const hypervec::IndexConfig normalized = engine.NormalizeConfig(
+      hypervec::ParseIndexConfig(index_config_json));
+
+  const bool expected_id_map = normalized.id_mode == hypervec::IdMode::External;
+  const hypervec::Index* configured_index = index;
+  if (expected_id_map) {
+    const auto* id_map = dynamic_cast<const hypervec::IndexIDMap*>(index);
+    if (id_map == nullptr || id_map->index == nullptr) {
+      throw std::runtime_error(
+          "search_with_config: index instance does not match index config");
+    }
+    configured_index = id_map->index;
+  } else if (index->TypeName() == "idmap") {
+    throw std::runtime_error(
+        "search_with_config: index instance does not match index config");
+  }
+
+  const bool metric_arg_matches =
+      normalized.metric != hypervec::kMetricLp ||
+      configured_index->metric_arg == *normalized.metric_arg;
+  if (configured_index->TypeName() != normalized.type ||
+      configured_index->d != normalized.dimension ||
+      configured_index->metric_type != normalized.metric ||
+      !metric_arg_matches) {
+    throw std::runtime_error(
+        "search_with_config: index instance does not match index config");
+  }
+
+  std::unique_ptr<hypervec::SearchParameters> params =
+      engine.CreateSearchParameters(
+          normalized, hypervec::ParseSearchConfig(search_config_json));
+  return index_search_with_params(index, obj, k, params.get());
+}
+
 }  // namespace
 %}
 
@@ -281,11 +324,37 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
     }
     return index_search_with_params($self, x, k, nullptr);
   }
+
+  PyObject* search_with_config(PyObject* x, hypervec::idx_t k,
+                               const std::string& index_config_json,
+                               const std::string& search_config_json) {
+    return index_search_with_config($self, x, k, index_config_json,
+                                    search_config_json);
+  }
 }
 
 }  // namespace hypervec
 
+%newobject CreateIndexFromConfig;
+%inline %{
+namespace hypervec {
+
+Index* CreateIndexFromConfig(const std::string& config_json) {
+  return CreateIndex(config_json).release();
+}
+
+std::string NormalizeIndexConfigJson(const std::string& config_json) {
+  Engine engine;
+  return SerializeIndexConfig(
+      engine.NormalizeConfig(ParseIndexConfig(config_json)));
+}
+
+}  // namespace hypervec
+%}
+
 %pythoncode %{
 read_index = ReadIndex
 write_index = WriteIndex
+create_index = CreateIndexFromConfig
+normalize_index_config = NormalizeIndexConfigJson
 %}

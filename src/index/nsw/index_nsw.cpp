@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace hypervec {
 namespace {

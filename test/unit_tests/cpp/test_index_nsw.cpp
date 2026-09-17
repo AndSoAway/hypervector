@@ -18,6 +18,8 @@
 
 #include <array>
 #include <cstddef>
+#include <future>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -152,6 +154,58 @@ TEST(IndexNSWFlat, ValidatesParametersAndResetRestoresEmptyState) {
   EXPECT_EQ(index.entry_point, kInvalidGraphId);
   EXPECT_EQ(index.graph.NodeCount(), 0U);
   EXPECT_NO_THROW(index.CheckConsistency());
+}
+
+TEST(IndexNSWFlat, EmptySearchAndReconstructFollowFlatStorageContract) {
+  constexpr idx_t kDimension = 3;
+  const std::array<float, kDimension> query = {0.0F, 0.0F, 0.0F};
+  IndexNSWFlat index(kDimension, 2);
+
+  std::array<float, 2> distances = {0.0F, 0.0F};
+  std::array<idx_t, 2> labels = {0, 0};
+  index.Search(1, query.data(), 2, distances.data(), labels.data());
+  EXPECT_EQ(labels[0], -1);
+  EXPECT_EQ(labels[1], -1);
+  EXPECT_EQ(distances[0], (std::numeric_limits<float>::max)());
+  EXPECT_EQ(distances[1], (std::numeric_limits<float>::max)());
+
+  const std::array<float, 6> vectors = {
+      1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F,
+  };
+  index.Add(2, vectors.data());
+  std::array<float, kDimension> reconstructed = {};
+  index.Reconstruct(1, reconstructed.data());
+  EXPECT_EQ(reconstructed, (std::array<float, kDimension>{4.0F, 5.0F, 6.0F}));
+}
+
+TEST(IndexNSWFlat, ConcurrentSearchesUseIndependentTraversalState) {
+  constexpr idx_t kDimension = 8;
+  constexpr idx_t kCount = 128;
+  constexpr size_t kWorkers = 8;
+  const std::vector<float> vectors = MakeVectors(kCount, kDimension);
+  IndexNSWFlat index(kDimension, 8);
+  index.ef_construction = 48;
+  index.ef_search = static_cast<int>(kCount);
+  index.Add(kCount, vectors.data());
+
+  std::vector<float> expected_distances(static_cast<size_t>(kCount));
+  std::vector<idx_t> expected_labels(static_cast<size_t>(kCount));
+  index.Search(kCount, vectors.data(), 1, expected_distances.data(),
+               expected_labels.data());
+
+  std::vector<std::future<std::vector<idx_t>>> searches;
+  searches.reserve(kWorkers);
+  for (size_t worker = 0; worker < kWorkers; ++worker) {
+    searches.push_back(std::async(std::launch::async, [&index, &vectors]() {
+      std::vector<float> distances(static_cast<size_t>(kCount));
+      std::vector<idx_t> labels(static_cast<size_t>(kCount));
+      index.Search(kCount, vectors.data(), 1, distances.data(), labels.data());
+      return labels;
+    }));
+  }
+  for (auto& search : searches) {
+    EXPECT_EQ(search.get(), expected_labels);
+  }
 }
 
 }  // namespace

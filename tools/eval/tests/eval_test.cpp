@@ -6,8 +6,6 @@
  * source tree.
  */
 
-#include <H5Cpp.h>
-
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -40,52 +38,95 @@ void ExpectNear(double actual, double expected, double tolerance,
   }
 }
 
-std::string MakeDataset() {
-  const auto stamp =
-      std::chrono::steady_clock::now().time_since_epoch().count();
-  const char* temporary_directory = std::getenv("TMPDIR");
+std::string TemporaryDirectory() {
+  const char* directory = std::getenv("TMPDIR");
 #if defined(_WIN32)
-  if (temporary_directory == nullptr) {
-    temporary_directory = std::getenv("TEMP");
+  if (directory == nullptr) {
+    directory = std::getenv("TEMP");
   }
 #endif
-  std::string path = temporary_directory == nullptr ? "." : temporary_directory;
-  if (!path.empty() && path.back() != '/' && path.back() != '\\') {
-    path.push_back('/');
+  std::string result = directory == nullptr ? "." : directory;
+  if (!result.empty() && result.back() != '/' && result.back() != '\\') {
+    result.push_back('/');
   }
-  path += "hypervec_eval_test_" + std::to_string(stamp) + ".hdf5";
-  H5::H5File file(path, H5F_ACC_TRUNC);
-  const hsize_t train_dimensions[2] = {4, 2};
-  const hsize_t test_dimensions[2] = {2, 2};
-  const hsize_t truth_dimensions[2] = {2, 2};
-  const float train[] = {0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F, 1.0F};
-  const float test[] = {0.1F, 0.1F, 0.9F, 0.9F};
-  const std::int64_t neighbors[] = {0, 1, 3, 1};
-  const float distances[] = {0.02F, 0.82F, 0.02F, 0.82F};
-  H5::DataSpace train_space(2, train_dimensions);
-  H5::DataSpace test_space(2, test_dimensions);
-  H5::DataSpace truth_space(2, truth_dimensions);
-  file.createDataSet("train", H5::PredType::NATIVE_FLOAT, train_space)
-      .write(train, H5::PredType::NATIVE_FLOAT);
-  file.createDataSet("test", H5::PredType::NATIVE_FLOAT, test_space)
-      .write(test, H5::PredType::NATIVE_FLOAT);
-  file.createDataSet("neighbors", H5::PredType::NATIVE_INT64, truth_space)
-      .write(neighbors, H5::PredType::NATIVE_INT64);
-  file.createDataSet("distances", H5::PredType::NATIVE_FLOAT, truth_space)
-      .write(distances, H5::PredType::NATIVE_FLOAT);
-  return path;
+  return result;
+}
+
+void WriteFvecs(const std::string& path, const std::vector<float>& vectors,
+                std::int32_t dimension) {
+  std::ofstream output(path, std::ios::binary);
+  if (!output) {
+    throw std::runtime_error("failed to create fvecs file: " + path);
+  }
+  for (std::size_t i = 0; i < vectors.size();
+       i += static_cast<std::size_t>(dimension)) {
+    output.write(reinterpret_cast<const char*>(&dimension), sizeof(dimension));
+    output.write(reinterpret_cast<const char*>(vectors.data() + i),
+                 static_cast<std::streamsize>(dimension * sizeof(float)));
+  }
+}
+
+void WriteIvecs(const std::string& path, const std::vector<std::int64_t>& ids,
+                std::int32_t dimension) {
+  std::ofstream output(path, std::ios::binary);
+  if (!output) {
+    throw std::runtime_error("failed to create ivecs file: " + path);
+  }
+  for (std::size_t i = 0; i < ids.size();
+       i += static_cast<std::size_t>(dimension)) {
+    output.write(reinterpret_cast<const char*>(&dimension), sizeof(dimension));
+    for (std::int32_t j = 0; j < dimension; ++j) {
+      const std::int32_t id = static_cast<std::int32_t>(ids[i + j]);
+      output.write(reinterpret_cast<const char*>(&id), sizeof(id));
+    }
+  }
+}
+
+struct DatasetPaths {
+  std::string base;
+  std::string query;
+  std::string groundtruth;
+};
+
+DatasetPaths MakeDataset() {
+  const auto stamp =
+      std::chrono::steady_clock::now().time_since_epoch().count();
+  const std::string prefix =
+      TemporaryDirectory() + "hypervec_eval_test_" + std::to_string(stamp);
+  DatasetPaths paths{prefix + ".base.fvecs", prefix + ".query.fvecs",
+                     prefix + ".groundtruth.ivecs"};
+  const std::vector<float> train = {0.0F, 0.0F, 1.0F, 0.0F,
+                                    0.0F, 1.0F, 1.0F, 1.0F};
+  const std::vector<float> test = {0.1F, 0.1F, 0.9F, 0.9F};
+  const std::vector<std::int64_t> neighbors = {0, 1, 3, 1};
+  WriteFvecs(paths.base, train, 2);
+  WriteFvecs(paths.query, test, 2);
+  WriteIvecs(paths.groundtruth, neighbors, 2);
+  return paths;
 }
 
 void TestRecall() {
-  const float results[] = {0.1F, 1.0F};
-  const float ground_truth[] = {0.1F, 0.9F};
-  ExpectNear(
-      hypervec::eval::RecallMonitor::DistanceRecall(results, ground_truth, 2),
-      0.5, 1e-12, "distance recall is incorrect");
   const std::int64_t result_ids[] = {7, 7};
   const std::int64_t truth_ids[] = {7, 8};
   ExpectNear(hypervec::eval::RecallMonitor::IdRecall(result_ids, truth_ids, 2),
              0.5, 1e-12, "duplicate IDs must not count twice");
+}
+
+void TestGroundTruthValidation() {
+  const DatasetPaths paths = MakeDataset();
+  const std::vector<std::int64_t> bad_neighbors = {0, 1, 3, 9999};
+  WriteIvecs(paths.groundtruth, bad_neighbors, 2);
+  bool rejected = false;
+  try {
+    hypervec::eval::EvalDataset::Load(paths.base, paths.query,
+                                      paths.groundtruth);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  std::remove(paths.base.c_str());
+  std::remove(paths.query.c_str());
+  std::remove(paths.groundtruth.c_str());
+  Expect(rejected, "out-of-range ground-truth id must be rejected");
 }
 
 void TestLatency() {
@@ -100,18 +141,25 @@ void TestLatency() {
 }
 
 void TestEndToEnd() {
-  const std::string path = MakeDataset();
-  const std::string index_config_path = path + ".index.json";
+  const DatasetPaths paths = MakeDataset();
+  const std::string index_config_path = paths.base + ".index.json";
   {
     std::ofstream output(index_config_path);
     output << R"({"type":"flat","dimension":2,"metric":"l2"})";
   }
   try {
-    const auto dataset = hypervec::eval::EvalDataset::Load(path);
+    const auto dataset = hypervec::eval::EvalDataset::Load(
+        paths.base, paths.query, paths.groundtruth);
     Expect(dataset->GetDim() == 2, "dataset dimension is incorrect");
     Expect(dataset->GetNumberOfBase() == 4, "dataset base count is incorrect");
+    Expect(dataset->GetNumberOfQuery() == 2,
+           "dataset query count is incorrect");
+    Expect(dataset->GetGroundTruthK() == 2,
+           "dataset ground-truth k is incorrect");
     hypervec::eval::EvalConfig config;
-    config.dataset_path = path;
+    config.base_path = paths.base;
+    config.query_path = paths.query;
+    config.groundtruth_path = paths.groundtruth;
     config.index_config_path = index_config_path;
     config.action = "build_search";
     config.top_k = 2;
@@ -129,11 +177,15 @@ void TestEndToEnd() {
       Expect(result.contains(key), "an expected metric is missing");
     }
   } catch (...) {
-    std::remove(path.c_str());
+    std::remove(paths.base.c_str());
+    std::remove(paths.query.c_str());
+    std::remove(paths.groundtruth.c_str());
     std::remove(index_config_path.c_str());
     throw;
   }
-  std::remove(path.c_str());
+  std::remove(paths.base.c_str());
+  std::remove(paths.query.c_str());
+  std::remove(paths.groundtruth.c_str());
   std::remove(index_config_path.c_str());
 }
 
@@ -143,6 +195,7 @@ int main() {
   try {
     TestRecall();
     TestLatency();
+    TestGroundTruthValidation();
     TestEndToEnd();
     std::cout << "hypervec_eval tests passed\n";
     return 0;

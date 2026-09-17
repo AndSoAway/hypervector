@@ -15,6 +15,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 // Third-party dependencies.
@@ -32,19 +33,20 @@ using ArgumentMap = std::unordered_map<std::string, std::string>;
 void PrintHelp(const char* program) {
   std::cout
       << "HyperVec performance evaluation tool\n\n"
-      << "YAML mode:\n  " << program << " --config eval.yaml\n\n"
-      << "CLI mode:\n  " << program
-      << " --index-config hnsw.json --search-config search.json"
-         " --dataset sift128.hdf5 --topk 10\n\n"
+      << "Usage:\n  " << program
+      << " --base base.fvecs --query query.fvecs"
+         " --groundtruth groundtruth.ivecs --index-config ivf_flat.json"
+         " [--search-config search.json] [--topk 10]\n\n"
       << "Core options:\n"
       << "  --action build|search|build_search  (default: build_search)\n"
+      << "  --base PATH                       base vectors (.fvecs)\n"
+      << "  --query PATH                      query vectors (.fvecs)\n"
+      << "  --groundtruth PATH                ground-truth neighbors (.ivecs)\n"
       << "  --index-config PATH               public factory JSON config\n"
       << "  --search-config PATH              runtime search JSON config\n"
-      << "  --dataset PATH                    HDF5 train/test/ground truth\n"
       << "  --index_path PATH                 save/load a built index\n"
       << "  --topk N --search_query_count N\n"
       << "  --num_threads N or separate --num_threads_building/searching\n"
-      << "  --id_recall                      use ID-intersection recall\n"
       << "Output options:\n"
       << "  --format table|json --output PATH --append\n\n"
       << "Index types: ";
@@ -63,8 +65,7 @@ ArgumentMap ParseArguments(int argc, char** argv) {
     if (!key.starts_with("--")) {
       throw std::invalid_argument("unexpected positional argument: " + key);
     }
-    if (key == "--help" || key == "--append" || key == "--id_recall" ||
-        key.starts_with("--disable_")) {
+    if (key == "--help" || key == "--append" || key.starts_with("--disable_")) {
       result[key] = "true";
       continue;
     }
@@ -101,10 +102,44 @@ bool Has(const ArgumentMap& arguments, const char* key) {
   return arguments.contains(key);
 }
 
+void RejectUnknownArguments(const ArgumentMap& arguments) {
+  const std::unordered_set<std::string> known_keys = {
+      "--help",
+      "--append",
+      "--base",
+      "--query",
+      "--groundtruth",
+      "--action",
+      "--index-config",
+      "--search-config",
+      "--index_path",
+      "--topk",
+      "--search_query_count",
+      "--num_threads",
+      "--num_threads_building",
+      "--num_threads_searching",
+      "--format",
+      "--output",
+      "--disable_recall",
+      "--disable_percent_recall",
+      "--disable_qps",
+      "--disable_tps",
+      "--disable_memory",
+      "--disable_latency",
+      "--disable_percent_latency"};
+  for (const auto& entry : arguments) {
+    if (!known_keys.contains(entry.first)) {
+      throw std::invalid_argument("unknown option: " + entry.first);
+    }
+  }
+}
+
 hypervec::eval::EvalSuiteConfig LoadCliConfig(const ArgumentMap& arguments) {
   hypervec::eval::EvalSuiteConfig suite;
   hypervec::eval::EvalConfig config;
-  SetString(arguments, "--dataset", config.dataset_path);
+  SetString(arguments, "--base", config.base_path);
+  SetString(arguments, "--query", config.query_path);
+  SetString(arguments, "--groundtruth", config.groundtruth_path);
   SetString(arguments, "--action", config.action);
   SetString(arguments, "--index-config", config.index_config_path);
   SetString(arguments, "--search-config", config.search_config_path);
@@ -118,7 +153,6 @@ hypervec::eval::EvalSuiteConfig LoadCliConfig(const ArgumentMap& arguments) {
   SetInteger(arguments, "--num_threads_building", config.num_threads_building);
   SetInteger(arguments, "--num_threads_searching",
              config.num_threads_searching);
-  config.use_id_based_recall = Has(arguments, "--id_recall");
   config.enable_recall = !Has(arguments, "--disable_recall");
   config.enable_percent_recall = !Has(arguments, "--disable_percent_recall");
   config.enable_qps = !Has(arguments, "--disable_qps");
@@ -139,22 +173,12 @@ hypervec::eval::EvalSuiteConfig LoadCliConfig(const ArgumentMap& arguments) {
 int main(int argc, char** argv) {
   try {
     const ArgumentMap arguments = ParseArguments(argc, argv);
+    RejectUnknownArguments(arguments);
     if (argc == 1 || Has(arguments, "--help")) {
       PrintHelp(argv[0]);
       return 0;
     }
-    hypervec::eval::EvalSuiteConfig suite;
-    const auto config = arguments.find("--config");
-    if (config != arguments.end()) {
-      suite = hypervec::eval::LoadEvalConfig(config->second);
-      SetString(arguments, "--format", suite.output_format);
-      SetString(arguments, "--output", suite.output_path);
-      if (Has(arguments, "--append")) {
-        suite.append_output = true;
-      }
-    } else {
-      suite = LoadCliConfig(arguments);
-    }
+    const auto suite = LoadCliConfig(arguments);
     nlohmann::json output;
     output["results"] = nlohmann::json::array();
     for (const auto& eval_case : suite.cases) {

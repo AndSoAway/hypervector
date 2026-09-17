@@ -16,7 +16,9 @@ namespace hypervec::eval {
 
 struct EvalConfig {
   std::string name = "hypervec_eval";
-  std::string dataset_path;
+  std::string base_path;
+  std::string query_path;
+  std::string groundtruth_path;
   std::string action = "build_search";
   std::string index_config_path;
   std::string search_config_path;
@@ -32,7 +34,6 @@ struct EvalConfig {
   bool enable_memory = true;
   bool enable_latency = true;
   bool enable_percent_latency = true;
-  bool use_id_based_recall = false;
 
   // Populated by RunEvalCase after the public Engine normalizes the configs.
   std::string canonical_index_config;
@@ -46,7 +47,6 @@ struct EvalSuiteConfig {
   bool append_output = false;
 };
 
-EvalSuiteConfig LoadEvalConfig(const std::string& path);
 void ValidateEvalConfig(const EvalConfig& config);
 std::string ReadTextFile(const std::string& path);
 

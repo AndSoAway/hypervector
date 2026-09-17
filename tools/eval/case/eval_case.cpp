@@ -186,12 +186,11 @@ nlohmann::json SearchEvalCase::Run() {
     }
   }
   if (config_.enable_recall) {
-    RecallMonitor recall(config_.use_id_based_recall);
+    RecallMonitor recall;
     recall.Start();
     for (std::uint64_t query = 0; query < query_count; ++query) {
-      recall.Record(
-          distances.data() + query * top_k, labels.data() + query * top_k,
-          dataset_->GetDistances(query), dataset_->GetNeighbors(query), top_k);
+      recall.Record(labels.data() + query * top_k,
+                    dataset_->GetNeighbors(query), top_k);
     }
     recall.Stop();
     const nlohmann::json recall_result = recall.GetResult();
@@ -222,7 +221,8 @@ nlohmann::json BuildSearchEvalCase::Run() {
 
 nlohmann::json RunEvalCase(const EvalConfig& config) {
   ValidateEvalConfig(config);
-  auto dataset = EvalDataset::Load(config.dataset_path);
+  auto dataset = EvalDataset::Load(config.base_path, config.query_path,
+                                   config.groundtruth_path);
   hypervec::Engine engine;
   const hypervec::IndexConfig index_request =
       hypervec::ParseIndexConfig(ReadTextFile(config.index_config_path));

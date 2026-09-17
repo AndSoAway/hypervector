@@ -8,91 +8,131 @@
 
 #include "eval/eval_dataset.h"
 
-#include <H5Cpp.h>
-
-#include <limits>
+#include <cstdint>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace hypervec::eval {
 namespace {
 
-struct MatrixShape {
-  hsize_t rows;
-  hsize_t columns;
-};
-
-MatrixShape GetMatrixShape(const H5::DataSet& dataset, const char* name) {
-  const H5::DataSpace space = dataset.getSpace();
-  if (space.getSimpleExtentNdims() != 2) {
-    throw std::invalid_argument(std::string(name) +
-                                " must be a rank-2 HDF5 dataset");
+std::vector<float> ReadFvecs(const std::string& path, std::int64_t& dimension) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    throw std::runtime_error("failed to open fvecs file: " + path);
   }
-  hsize_t dimensions[2] = {0, 0};
-  space.getSimpleExtentDims(dimensions);
-  if (dimensions[0] == 0 || dimensions[1] == 0) {
-    throw std::invalid_argument(std::string(name) + " must not be empty");
+  std::vector<float> vectors;
+  dimension = -1;
+  for (;;) {
+    std::int32_t record_dim = 0;
+    input.read(reinterpret_cast<char*>(&record_dim), sizeof(record_dim));
+    if (input.gcount() == 0) {
+      break;  // clean end of file
+    }
+    if (input.gcount() != static_cast<std::streamsize>(sizeof(record_dim))) {
+      throw std::runtime_error("truncated fvecs header: " + path);
+    }
+    if (record_dim <= 0) {
+      throw std::runtime_error("invalid dimension in fvecs file: " + path);
+    }
+    if (dimension == -1) {
+      dimension = record_dim;
+    } else if (dimension != record_dim) {
+      throw std::runtime_error("inconsistent dimensions in fvecs file: " +
+                               path);
+    }
+    const std::size_t offset = vectors.size();
+    vectors.resize(offset + static_cast<std::size_t>(record_dim));
+    input.read(reinterpret_cast<char*>(vectors.data() + offset),
+               static_cast<std::streamsize>(record_dim * sizeof(float)));
+    if (input.gcount() !=
+        static_cast<std::streamsize>(record_dim * sizeof(float))) {
+      throw std::runtime_error("truncated fvecs body: " + path);
+    }
   }
-  return {dimensions[0], dimensions[1]};
+  if (vectors.empty() || dimension <= 0) {
+    throw std::runtime_error("empty fvecs file: " + path);
+  }
+  return vectors;
 }
 
-std::size_t CheckedElementCount(const MatrixShape& shape, const char* name) {
-  if (shape.rows > std::numeric_limits<std::size_t>::max() / shape.columns) {
-    throw std::overflow_error(std::string(name) + " is too large");
+std::vector<std::int64_t> ReadIvecs(const std::string& path,
+                                    std::int64_t& dimension) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    throw std::runtime_error("failed to open ivecs file: " + path);
   }
-  return static_cast<std::size_t>(shape.rows * shape.columns);
+  std::vector<std::int64_t> ids;
+  dimension = -1;
+  for (;;) {
+    std::int32_t record_dim = 0;
+    input.read(reinterpret_cast<char*>(&record_dim), sizeof(record_dim));
+    if (input.gcount() == 0) {
+      break;  // clean end of file
+    }
+    if (input.gcount() != static_cast<std::streamsize>(sizeof(record_dim))) {
+      throw std::runtime_error("truncated ivecs header: " + path);
+    }
+    if (record_dim <= 0) {
+      throw std::runtime_error("invalid dimension in ivecs file: " + path);
+    }
+    if (dimension == -1) {
+      dimension = record_dim;
+    } else if (dimension != record_dim) {
+      throw std::runtime_error("inconsistent dimensions in ivecs file: " +
+                               path);
+    }
+    std::vector<std::int32_t> row(static_cast<std::size_t>(record_dim));
+    input.read(reinterpret_cast<char*>(row.data()),
+               static_cast<std::streamsize>(record_dim * sizeof(std::int32_t)));
+    if (input.gcount() !=
+        static_cast<std::streamsize>(record_dim * sizeof(std::int32_t))) {
+      throw std::runtime_error("truncated ivecs body: " + path);
+    }
+    for (const std::int32_t id : row) {
+      ids.push_back(static_cast<std::int64_t>(id));
+    }
+  }
+  if (ids.empty() || dimension <= 0) {
+    throw std::runtime_error("empty ivecs file: " + path);
+  }
+  return ids;
 }
 
 }  // namespace
 
-std::shared_ptr<EvalDataset> EvalDataset::Load(const std::string& path) {
-  H5::Exception::dontPrint();
-  try {
-    H5::H5File file(path, H5F_ACC_RDONLY);
-    const H5::DataSet train_dataset = file.openDataSet("train");
-    const H5::DataSet test_dataset = file.openDataSet("test");
-    const H5::DataSet neighbors_dataset = file.openDataSet("neighbors");
-    const H5::DataSet distances_dataset = file.openDataSet("distances");
-    const MatrixShape train_shape = GetMatrixShape(train_dataset, "train");
-    const MatrixShape test_shape = GetMatrixShape(test_dataset, "test");
-    const MatrixShape neighbors_shape =
-        GetMatrixShape(neighbors_dataset, "neighbors");
-    const MatrixShape distances_shape =
-        GetMatrixShape(distances_dataset, "distances");
-    if (train_shape.columns != test_shape.columns) {
-      throw std::invalid_argument("train and test dimensions do not match");
-    }
-    if (test_shape.rows != neighbors_shape.rows ||
-        neighbors_shape.rows != distances_shape.rows ||
-        neighbors_shape.columns != distances_shape.columns) {
-      throw std::invalid_argument(
-          "ground-truth shapes do not match test queries");
-    }
-    auto result = std::make_shared<EvalDataset>();
-    result->path_ = path;
-    result->n_base_ = static_cast<std::int64_t>(train_shape.rows);
-    result->n_query_ = static_cast<std::int64_t>(test_shape.rows);
-    result->dim_ = static_cast<std::int64_t>(train_shape.columns);
-    result->ground_truth_k_ =
-        static_cast<std::int64_t>(neighbors_shape.columns);
-    result->train_.resize(CheckedElementCount(train_shape, "train"));
-    result->test_.resize(CheckedElementCount(test_shape, "test"));
-    result->neighbors_.resize(
-        CheckedElementCount(neighbors_shape, "neighbors"));
-    result->distances_.resize(
-        CheckedElementCount(distances_shape, "distances"));
-    train_dataset.read(result->train_.data(), H5::PredType::NATIVE_FLOAT);
-    test_dataset.read(result->test_.data(), H5::PredType::NATIVE_FLOAT);
-    neighbors_dataset.read(result->neighbors_.data(),
-                           H5::PredType::NATIVE_INT64);
-    distances_dataset.read(result->distances_.data(),
-                           H5::PredType::NATIVE_FLOAT);
-    return result;
-  } catch (const H5::Exception& error) {
-    throw std::runtime_error("failed to load HDF5 dataset '" + path +
-                             "': " + error.getDetailMsg());
+std::shared_ptr<EvalDataset> EvalDataset::Load(
+    const std::string& base_path, const std::string& query_path,
+    const std::string& groundtruth_path) {
+  auto result = std::make_shared<EvalDataset>();
+  std::int64_t base_dim = 0;
+  std::int64_t query_dim = 0;
+  std::int64_t ground_truth_k = 0;
+  result->train_ = ReadFvecs(base_path, base_dim);
+  result->test_ = ReadFvecs(query_path, query_dim);
+  result->neighbors_ = ReadIvecs(groundtruth_path, ground_truth_k);
+  if (base_dim != query_dim) {
+    throw std::invalid_argument("base and query dimensions do not match");
   }
+  result->path_ = base_path;
+  result->dim_ = base_dim;
+  result->ground_truth_k_ = ground_truth_k;
+  result->n_base_ = static_cast<std::int64_t>(result->train_.size()) / base_dim;
+  result->n_query_ = static_cast<std::int64_t>(result->test_.size()) / base_dim;
+  if (result->n_query_ * ground_truth_k !=
+      static_cast<std::int64_t>(result->neighbors_.size())) {
+    throw std::invalid_argument("ground-truth size does not match query count");
+  }
+  for (const std::int64_t id : result->neighbors_) {
+    if (id < 0 || id >= result->n_base_) {
+      throw std::invalid_argument(
+          "ground-truth contains an out-of-range neighbor id: " +
+          std::to_string(id));
+    }
+  }
+  return result;
 }
 
 const std::int64_t* EvalDataset::GetNeighbors(std::int64_t query) const {
@@ -100,13 +140,6 @@ const std::int64_t* EvalDataset::GetNeighbors(std::int64_t query) const {
     throw std::out_of_range("query index is outside the dataset");
   }
   return neighbors_.data() + query * ground_truth_k_;
-}
-
-const float* EvalDataset::GetDistances(std::int64_t query) const {
-  if (query < 0 || query >= n_query_) {
-    throw std::out_of_range("query index is outside the dataset");
-  }
-  return distances_.data() + query * ground_truth_k_;
 }
 
 }  // namespace hypervec::eval

@@ -8,93 +8,22 @@
 
 #include "eval/eval_config.h"
 
-#include <yaml-cpp/yaml.h>
-
-#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 
 namespace hypervec::eval {
-namespace {
-
-template <typename T>
-void SetIfDefined(const YAML::Node& node, const char* key, T& value) {
-  if (node && node[key]) {
-    value = node[key].as<T>();
-  }
-}
-
-EvalConfig LoadCase(const YAML::Node& node, const EvalConfig& defaults) {
-  EvalConfig result = defaults;
-  SetIfDefined(node, "name", result.name);
-  SetIfDefined(node, "dataset", result.dataset_path);
-  SetIfDefined(node, "dataset_path", result.dataset_path);
-  SetIfDefined(node, "action", result.action);
-  SetIfDefined(node, "type", result.action);
-  SetIfDefined(node, "index_config", result.index_config_path);
-  SetIfDefined(node, "index_config_path", result.index_config_path);
-  SetIfDefined(node, "search_config", result.search_config_path);
-  SetIfDefined(node, "search_config_path", result.search_config_path);
-  SetIfDefined(node, "index_path", result.index_path);
-  SetIfDefined(node, "top_k", result.top_k);
-  SetIfDefined(node, "topk", result.top_k);
-  SetIfDefined(node, "search_query_count", result.search_query_count);
-  SetIfDefined(node, "num_threads", result.num_threads_building);
-  SetIfDefined(node, "num_threads_building", result.num_threads_building);
-  SetIfDefined(node, "num_threads_searching", result.num_threads_searching);
-  SetIfDefined(node, "enable_recall", result.enable_recall);
-  SetIfDefined(node, "enable_percent_recall", result.enable_percent_recall);
-  SetIfDefined(node, "enable_qps", result.enable_qps);
-  SetIfDefined(node, "enable_tps", result.enable_tps);
-  SetIfDefined(node, "enable_memory", result.enable_memory);
-  SetIfDefined(node, "enable_latency", result.enable_latency);
-  SetIfDefined(node, "enable_percent_latency", result.enable_percent_latency);
-  SetIfDefined(node, "use_id_based_recall", result.use_id_based_recall);
-  if (node["num_threads"] && !node["num_threads_searching"]) {
-    result.num_threads_searching = result.num_threads_building;
-  }
-  return result;
-}
-
-}  // namespace
-
-EvalSuiteConfig LoadEvalConfig(const std::string& path) {
-  const YAML::Node root = YAML::LoadFile(path);
-  EvalSuiteConfig suite;
-  EvalConfig defaults;
-  if (root["global"]) {
-    defaults = LoadCase(root["global"], defaults);
-  }
-  if (root["output"]) {
-    SetIfDefined(root["output"], "format", suite.output_format);
-    SetIfDefined(root["output"], "path", suite.output_path);
-    SetIfDefined(root["output"], "append", suite.append_output);
-  }
-  if (root["cases"]) {
-    if (!root["cases"].IsSequence()) {
-      throw std::invalid_argument("cases must be a YAML sequence");
-    }
-    for (const auto& node : root["cases"]) {
-      suite.cases.push_back(LoadCase(node, defaults));
-    }
-  } else {
-    suite.cases.push_back(LoadCase(root, defaults));
-  }
-  if (suite.cases.empty()) {
-    throw std::invalid_argument(
-        "the configuration contains no evaluation cases");
-  }
-  for (const auto& config : suite.cases) {
-    ValidateEvalConfig(config);
-  }
-  return suite;
-}
 
 void ValidateEvalConfig(const EvalConfig& config) {
-  if (config.dataset_path.empty()) {
-    throw std::invalid_argument("dataset_path is required");
+  if (config.base_path.empty()) {
+    throw std::invalid_argument("base_path is required");
+  }
+  if (config.query_path.empty()) {
+    throw std::invalid_argument("query_path is required");
+  }
+  if (config.groundtruth_path.empty()) {
+    throw std::invalid_argument("groundtruth_path is required");
   }
   if (config.index_config_path.empty()) {
     throw std::invalid_argument("index_config is required");

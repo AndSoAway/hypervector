@@ -1759,6 +1759,11 @@ class IndexHNSW(Index):
 class IndexHNSWFlat(IndexHNSW):
     def __init__(self, d: int, M: int, metric: MetricType = kMetricL2) -> None: ...
 
+class IndexNSWFlat(Index):
+    def __init__(
+        self, d: int, graph_degree: int = 32, metric: MetricType = kMetricL2
+    ) -> None: ...
+
 class IndexHNSWPQ(IndexHNSW):
     pq: ProductQuantizer
 

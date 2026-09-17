@@ -18,6 +18,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -252,6 +253,11 @@ struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
 };
 
+struct IndexNSWFlat : Index {
+  IndexNSWFlat(int d, int graph_degree = 32,
+               MetricType metric = kMetricL2);
+};
+
 struct IndexLVQ : Index {
   IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
 };
@@ -310,6 +316,14 @@ Index* ReadIndex(const char* fname, int io_flags = 0);
     if (const auto* hnsw = dynamic_cast<const hypervec::IndexHNSW*>($self)) {
       (void)hnsw;
       hypervec::SearchParametersHNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* nsw = dynamic_cast<const hypervec::IndexNSWFlat*>($self)) {
+      (void)nsw;
+      hypervec::SearchParametersNSW params;
       PyObject* val = PyDict_GetItemString(py_params, "ef_search");
       if (!val) val = PyDict_GetItemString(py_params, "ef");
       if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));

@@ -14,6 +14,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -208,6 +209,53 @@ static Index* read_index_payload(IOReader* f, uint32_t h, int io_flags) {
         "IndexHNSWLVQ deserialize: inner IndexLVQ is not trained");
     idxhnsw->own_fields = true;
     return idxhnsw.release();
+  }
+
+  if (h == fourcc("INSW")) {
+    IndexNSWFlat metadata;
+    read_index_header(metadata, f);
+    int graph_degree;
+    int ef_construction;
+    int ef_search;
+    GraphId entry_point;
+    READ1(graph_degree);
+    READ1(ef_construction);
+    READ1(ef_search);
+    READ1(entry_point);
+    std::vector<uint8_t> codes;
+    std::vector<size_t> offsets;
+    std::vector<GraphId> edges;
+    READVECTOR(codes);
+    READVECTOR(offsets);
+    READVECTOR(edges);
+
+    auto idx = std::make_unique<IndexNSWFlat>(metadata.d, graph_degree,
+                                              metadata.metric_type);
+    idx->n_total = metadata.n_total;
+    idx->is_trained = metadata.is_trained;
+    idx->metric_arg = metadata.metric_arg;
+    idx->verbose = metadata.verbose;
+    idx->ef_construction = ef_construction;
+    idx->ef_search = ef_search;
+    idx->entry_point = entry_point;
+    idx->storage.n_total = metadata.n_total;
+    idx->storage.is_trained = metadata.is_trained;
+    idx->storage.metric_arg = metadata.metric_arg;
+    idx->storage.codes = MaybeOwnedVector<uint8_t>(std::move(codes));
+
+    const CsrGraph persisted_graph(std::move(offsets), std::move(edges));
+    HYPERVEC_THROW_IF_NOT_MSG(
+        persisted_graph.NodeCount() == static_cast<size_t>(idx->n_total) &&
+            persisted_graph.MaxDegree() <= idx->graph.MaxDegree(),
+        "IndexNSWFlat deserialize: graph shape is inconsistent");
+    idx->graph.Resize(persisted_graph.NodeCount());
+    for (size_t node = 0; node < persisted_graph.NodeCount(); ++node) {
+      idx->graph.SetNeighbors(
+          static_cast<GraphId>(node),
+          persisted_graph.Neighbors(static_cast<GraphId>(node)));
+    }
+    idx->CheckConsistency();
+    return idx.release();
   }
 
   if (h == fourcc("IFlm") || h == fourcc("IFll")) {

@@ -96,6 +96,7 @@ TEST(IndexPersistenceMetadata, RoundtripsEveryFactoryBuiltinConfig) {
       R"({"type":"hnsw_flat","dimension":8,"build":{"graph_degree":4}})",
       R"({"type":"hnsw_pq","dimension":8,"storage":{"pq_m":2,"nbits":2},"build":{"graph_degree":4}})",
       R"({"type":"hnsw_lvq","dimension":8,"storage":{"nlocal":2,"nbits":2},"build":{"graph_degree":4}})",
+      R"({"type":"nsw_flat","dimension":8,"build":{"graph_degree":4}})",
   };
   std::vector<float> vectors(32 * 8);
   for (size_t row = 0; row < 32; ++row) {

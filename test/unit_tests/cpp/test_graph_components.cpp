@@ -11,6 +11,7 @@
 #include <index/graph/graph_storage.h>
 #include <index/graph/graph_validation.h>
 #include <index/graph/neighbor_pruner.h>
+#include <index/graph/nsw_builder.h>
 #include <index/graph/visited_table.h>
 #include <index/hnsw/hnsw_graph_adapter.h>
 #include <index/hnsw/index_hnsw.h>
@@ -308,6 +309,47 @@ TEST(NeighborPruner, HnswHeuristicPreservesDiversityAndOptionalFill) {
   ASSERT_EQ(full.size(), 2U);
   EXPECT_EQ(full[0].id, 1);
   EXPECT_EQ(full[1].id, 2);
+}
+
+TEST(NeighborPruner, NearestNeighborPrunerKeepsSortedPrefix) {
+  ScalarDistanceComputer distance({0.0f, 1.0f, 2.0f, 3.0f});
+  const std::array<hypervec::NeighborCandidate, 3> candidates = {
+      hypervec::NeighborCandidate{1, 1.0f},
+      hypervec::NeighborCandidate{2, 4.0f},
+      hypervec::NeighborCandidate{3, 9.0f},
+  };
+  hypervec::GraphPruneStats stats;
+  const hypervec::NearestNeighborPruner pruner;
+  const auto selected = pruner.Prune(candidates, 2, distance, &stats);
+  ASSERT_EQ(selected.size(), 2U);
+  EXPECT_EQ(selected[0].id, 1);
+  EXPECT_EQ(selected[1].id, 2);
+  EXPECT_EQ(stats.candidates_examined, 3U);
+  EXPECT_EQ(stats.distance_computations, 0U);
+  EXPECT_EQ(stats.accepted, 2U);
+  EXPECT_EQ(stats.rejected, 1U);
+}
+
+TEST(NSWIncrementalBuilder, BuildsReachableGraphAndReportsWork) {
+  const std::vector<float> values = {0.0f, 3.0f, 1.0f, 2.0f, 5.0f};
+  ScalarDistanceComputer distance(values);
+  hypervec::MutableBoundedGraph graph(values.size(), 4);
+  hypervec::NSWIncrementalBuilder builder(graph, {2, 4});
+  hypervec::NSWBuildStats stats;
+
+  for (hypervec::GraphId node = 1;
+       node < static_cast<hypervec::GraphId>(values.size()); ++node) {
+    distance.SetQuery(&values[static_cast<size_t>(node)]);
+    builder.AddNode(node, 0, distance, &stats);
+  }
+
+  const auto report = hypervec::ValidateGraph(graph, 0);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, values.size());
+  EXPECT_EQ(stats.nodes_inserted, values.size() - 1);
+  EXPECT_EQ(stats.graph_searches, values.size() - 1);
+  EXPECT_GT(stats.distance_computations, 0U);
+  EXPECT_GT(stats.reciprocal_updates, 0U);
 }
 
 TEST(HnswGraphLayerView, ExposesLevelZeroWithoutCopyingNeighbors) {

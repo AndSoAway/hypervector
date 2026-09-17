@@ -8,6 +8,7 @@ set(HYPERVEC_TEST_SRC
   test_graph_components.cpp
   test_hnsw.cpp
   test_index_hnsw.cpp
+  test_index_nsw.cpp
   test_index_build.cpp
   test_callback.cpp
   test_utils.cpp

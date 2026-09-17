@@ -17,6 +17,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -112,9 +113,9 @@ TEST(TestFactoryTools, RegistersBuiltinsAndResolvesAliases) {
   Engine engine;
   const std::vector<IndexDescriptorPtr> descriptors =
       IndexRegistry::Global().List();
-  const std::array<std::string, 9> expected = {
-      "flat",    "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
-      "ivf_lvq", "ivf_pq",    "lvq",      "pq"};
+  const std::array<std::string, 10> expected = {
+      "flat",    "hnsw_flat", "hnsw_lvq", "hnsw_pq",  "ivf_flat",
+      "ivf_lvq", "ivf_pq",    "lvq",      "nsw_flat", "pq"};
   for (const std::string& name : expected) {
     EXPECT_NE(std::find_if(descriptors.begin(), descriptors.end(),
                            [&name](const IndexDescriptorPtr& descriptor) {
@@ -129,6 +130,9 @@ TEST(TestFactoryTools, RegistersBuiltinsAndResolvesAliases) {
   std::unique_ptr<Index> hyphen =
       engine.CreateIndex(R"({"type":"hnsw-flat","dimension":8})");
   EXPECT_EQ(hyphen->TypeName(), "hnsw_flat");
+  std::unique_ptr<Index> nsw =
+      engine.CreateIndex(R"({"type":"NSW","dimension":8})");
+  EXPECT_EQ(nsw->TypeName(), "nsw_flat");
 }
 
 TEST(TestFactoryTools, RegistryRejectsDuplicateNamesTransactionally) {
@@ -177,6 +181,8 @@ TEST(TestFactoryTools, CreatesEveryRegisteredBuiltinVariant) {
        "hnsw_pq"},
       {R"({"type":"hnsw","dimension":8,"storage":{"type":"lvq","nlocal":2,"nbits":2},"build":{"graph_degree":4}})",
        "hnsw_lvq"},
+      {R"({"type":"nsw","dimension":8,"build":{"graph_degree":4}})",
+       "nsw_flat"},
   };
 
   for (const auto& [json, type] : cases) {
@@ -220,6 +226,18 @@ TEST(TestFactoryTools, AppliesAlgorithmParametersToConcreteIndex) {
   EXPECT_EQ(ivf->pq.nbits, 2);
   EXPECT_FALSE(ivf->by_residual);
   EXPECT_EQ(ivf->use_precomputed_table, 1);
+
+  std::unique_ptr<Index> nsw_index = engine.CreateIndex(R"({
+    "type":"nsw", "dimension":8,
+    "build":{"graph_degree":6,"ef_construction":71},
+    "defaults":{"ef_search":29}
+  })");
+  const auto* nsw = dynamic_cast<const IndexNSWFlat*>(nsw_index.get());
+  ASSERT_NE(nsw, nullptr);
+  EXPECT_EQ(nsw->graph_degree, 6);
+  EXPECT_EQ(nsw->graph.MaxDegree(), 12U);
+  EXPECT_EQ(nsw->ef_construction, 71);
+  EXPECT_EQ(nsw->ef_search, 29);
 }
 
 TEST(TestFactoryTools, NormalizesDefaultsAfterSelectingConcreteType) {
@@ -279,6 +297,18 @@ TEST(TestFactoryTools, CreatesRuntimeSearchParametersWithoutMutatingIndex) {
       dynamic_cast<const SearchParametersHNSW*>(hnsw_parameters.get());
   ASSERT_NE(concrete_hnsw, nullptr);
   EXPECT_EQ(concrete_hnsw->ef_search, 48);
+
+  const IndexConfig nsw_config = ParseIndexConfig(R"({
+    "type":"nsw", "dimension":8, "defaults":{"ef_search":20}
+  })");
+  SearchConfig nsw_override;
+  nsw_override.ef_search = 36;
+  std::unique_ptr<SearchParameters> nsw_parameters =
+      engine.CreateSearchParameters(nsw_config, nsw_override);
+  const auto* concrete_nsw =
+      dynamic_cast<const SearchParametersNSW*>(nsw_parameters.get());
+  ASSERT_NE(concrete_nsw, nullptr);
+  EXPECT_EQ(concrete_nsw->ef_search, 36);
 
   IndexConfig flat_config;
   flat_config.type = "flat";
@@ -538,7 +568,8 @@ TEST(TestFactoryTools, RegistryCapabilitiesAreGuaranteedByInstances) {
       config.build.nlist = 4;
       config.defaults.nprobe = 2;
     }
-    if (descriptor->canonical_name.starts_with("hnsw_")) {
+    if (descriptor->canonical_name.starts_with("hnsw_") ||
+        descriptor->canonical_name.starts_with("nsw_")) {
       config.build.graph_degree = 4;
     }
 

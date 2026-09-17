@@ -14,6 +14,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -113,6 +114,23 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
     if (hnswflat->storage) {
       write_index_payload(hnswflat->storage, f, 0);
     }
+    return;
+  }
+
+  const IndexNSWFlat* nswflat = dynamic_cast<const IndexNSWFlat*>(index);
+  if (nswflat) {
+    nswflat->CheckConsistency();
+    const uint32_t h = fourcc("INSW");
+    WRITE1(h);
+    write_index_header(*nswflat, f);
+    WRITE1(nswflat->graph_degree);
+    WRITE1(nswflat->ef_construction);
+    WRITE1(nswflat->ef_search);
+    WRITE1(nswflat->entry_point);
+    WRITEVECTOR(nswflat->storage.codes);
+    const CsrGraph persisted_graph(nswflat->graph);
+    WRITEVECTOR(persisted_graph.Offsets());
+    WRITEVECTOR(persisted_graph.Edges());
     return;
   }
 

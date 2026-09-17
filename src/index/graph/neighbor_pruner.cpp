@@ -10,6 +10,7 @@
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace hypervec {
@@ -19,6 +20,32 @@ void GraphPruneStats::Combine(const GraphPruneStats& other) noexcept {
   distance_computations += other.distance_computations;
   accepted += other.accepted;
   rejected += other.rejected;
+}
+
+std::vector<NeighborCandidate> NearestNeighborPruner::Prune(
+    std::span<const NeighborCandidate> candidates, size_t max_degree,
+    DistanceComputer& /* distance */, GraphPruneStats* stats) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      max_degree > 0, "NearestNeighborPruner: max_degree must be positive");
+
+  GraphPruneStats local_stats;
+  local_stats.candidates_examined = candidates.size();
+  local_stats.accepted = std::min(candidates.size(), max_degree);
+  local_stats.rejected = candidates.size() - local_stats.accepted;
+  for (const NeighborCandidate& candidate : candidates) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        candidate.id >= 0,
+        "NearestNeighborPruner: candidate id must be non-negative");
+  }
+
+  std::vector<NeighborCandidate> selected;
+  selected.reserve(local_stats.accepted);
+  selected.insert(selected.end(), candidates.begin(),
+                  candidates.begin() + local_stats.accepted);
+  if (stats != nullptr) {
+    stats->Combine(local_stats);
+  }
+  return selected;
 }
 
 std::vector<NeighborCandidate> HnswHeuristicPruner::Prune(

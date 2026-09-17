@@ -44,11 +44,12 @@ endif()
 option(BUILD_TESTING "Build the HyperVec test suite" OFF)
 option(HYPERVEC_UNIT_TESTS_ONLY "Skip performance benchmarks" OFF)
 option(HYPERVEC_FETCH_DEPS
-       "Allow CMake to download missing test/benchmark dependencies" OFF)
+       "Allow CMake to download missing optional dependencies" OFF)
 option(HYPERVEC_ENABLE_MKL "Enable MKL." OFF)
 option(HYPERVEC_ENABLE_PYTHON "Build Python extension." OFF)
 option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
 option(HYPERVEC_ENABLE_EXTRAS "Build C++ examples" OFF)
+option(HYPERVEC_BUILD_EVAL "Build the HyperVec performance evaluation tool" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
 
 if(HYPERVEC_ENABLE_MKL)
@@ -81,6 +82,7 @@ message(STATUS "  build tests        : ${BUILD_TESTING}")
 message(STATUS "  fetch dependencies : ${HYPERVEC_FETCH_DEPS}")
 message(STATUS "  build Python       : ${HYPERVEC_ENABLE_PYTHON}")
 message(STATUS "  build examples     : ${HYPERVEC_ENABLE_EXTRAS}")
+message(STATUS "  build evaluation   : ${HYPERVEC_BUILD_EVAL}")
 message(STATUS "  enable LTO         : ${HYPERVEC_USE_LTO}")
 
 add_subdirectory(src)
@@ -91,6 +93,10 @@ endif()
 
 if(HYPERVEC_ENABLE_EXTRAS)
   add_subdirectory(test/examples/cpp)
+endif()
+
+if(HYPERVEC_BUILD_EVAL)
+  add_subdirectory(tools/eval)
 endif()
 
 # CTest must be included in the top level to enable make test target.

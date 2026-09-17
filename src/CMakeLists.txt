@@ -34,6 +34,7 @@ set(HYPERVEC_SRC
   index/idmap/index_id_map.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
+  persistence/index_metadata.cpp
   utils/common/interrupt_callback.cpp
   utils/common/buffer_list.cpp
   utils/common/range_search_result.cpp
@@ -97,6 +98,7 @@ set(HYPERVEC_HEADERS
   include/index/hnsw/visited_table.h
   include/index/idmap/index_id_map.h
   include/persistence/index_clone.h
+  include/persistence/index_io.h
   include/utils/common/interrupt_callback.h
   include/utils/common/buffer_list.h
   include/utils/common/range_search_result.h

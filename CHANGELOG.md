@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added a versioned, checksummed index-file envelope containing normalized
+  algorithm configuration. New readers continue to accept legacy payloads,
+  expose inferred legacy metadata, validate metadata against the payload, and
+  restore HNSW search defaults that the legacy payload did not record. Files
+  emitted by the new writer require a reader that understands format version 2.
 - Exposed the C++ registry factory and normalized JSON configuration through
   the Python binding. The Python service now uses the same C++ creation and
   per-query search-parameter validation path while retaining legacy direct

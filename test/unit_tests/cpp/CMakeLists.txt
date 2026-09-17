@@ -27,6 +27,7 @@ set(HYPERVEC_TEST_SRC
   test_index_ivfpq.cpp
   test_index_hnsw_pq.cpp
   test_index_id_map.cpp
+  test_index_persistence_metadata.cpp
   test_lvq.cpp
 )
 

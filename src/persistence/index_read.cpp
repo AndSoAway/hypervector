@@ -36,6 +36,8 @@
 #include <utility>
 #include <vector>
 
+#include "persistence/index_file_header.h"
+
 namespace hypervec {
 
 namespace {
@@ -113,11 +115,8 @@ static void read_HNSW(HNSW& hnsw, IOReader* f) {
   READVECTOR(hnsw.offsets);
 }
 
-Index* ReadIndex(IOReader* f, int io_flags) {
+static Index* read_index_payload(IOReader* f, uint32_t h, int io_flags) {
   (void)io_flags;
-
-  uint32_t h;
-  READ1(h);
 
   if (h == fourcc("IDMp")) {
     IndexIDMap metadata;
@@ -366,6 +365,39 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   HYPERVEC_THROW_MSG("unknown index type");
 }
 
+static Index* read_index_with_metadata(IOReader* f, int io_flags,
+                                       IndexFileMetadata* output_metadata) {
+  HYPERVEC_THROW_IF_NOT_MSG(f != nullptr, "ReadIndex: reader must not be null");
+  uint32_t h;
+  READ1(h);
+
+  if (h == persistence_detail::IndexFileEnvelopeMagic()) {
+    IndexFileMetadata metadata = persistence_detail::ReadIndexFileHeader(f);
+    READ1(h);
+    std::unique_ptr<Index> index(read_index_payload(f, h, io_flags));
+    persistence_detail::ApplyAndValidateIndexFileMetadata(index.get(),
+                                                          metadata);
+    if (output_metadata != nullptr) {
+      *output_metadata = std::move(metadata);
+    }
+    return index.release();
+  }
+
+  std::unique_ptr<Index> index(read_index_payload(f, h, io_flags));
+  if (output_metadata != nullptr) {
+    *output_metadata = GetIndexFileMetadata(*index);
+    output_metadata->format_major = 1;
+    output_metadata->format_minor = 0;
+    output_metadata->algorithm_version = 0;
+    output_metadata->is_legacy = true;
+  }
+  return index.release();
+}
+
+Index* ReadIndex(IOReader* f, int io_flags) {
+  return read_index_with_metadata(f, io_flags, nullptr);
+}
+
 ProductQuantizer* read_ProductQuantizer(IOReader* f) {
   uint32_t h;
   READ1(h);
@@ -429,12 +461,30 @@ std::unique_ptr<Index> ReadIndexUp(IOReader* reader, int io_flags) {
   return std::unique_ptr<Index>(ReadIndex(reader, io_flags));
 }
 
+std::unique_ptr<Index> ReadIndexUp(IOReader* reader,
+                                   IndexFileMetadata* metadata, int io_flags) {
+  return std::unique_ptr<Index>(
+      read_index_with_metadata(reader, io_flags, metadata));
+}
+
 std::unique_ptr<Index> ReadIndexUp(FILE* f, int io_flags) {
   return std::unique_ptr<Index>(ReadIndex(f, io_flags));
 }
 
+std::unique_ptr<Index> ReadIndexUp(FILE* f, IndexFileMetadata* metadata,
+                                   int io_flags) {
+  FileIOReader reader(f);
+  return ReadIndexUp(&reader, metadata, io_flags);
+}
+
 std::unique_ptr<Index> ReadIndexUp(const char* fname, int io_flags) {
   return std::unique_ptr<Index>(ReadIndex(fname, io_flags));
+}
+
+std::unique_ptr<Index> ReadIndexUp(const char* fname,
+                                   IndexFileMetadata* metadata, int io_flags) {
+  std::unique_ptr<IOReader> reader(new FileIOReader(fname));
+  return ReadIndexUp(reader.get(), metadata, io_flags);
 }
 
 }  // namespace hypervec

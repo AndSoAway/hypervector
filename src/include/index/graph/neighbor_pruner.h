@@ -44,6 +44,19 @@ class NeighborPruner {
       DistanceComputer& distance, GraphPruneStats* stats = nullptr) const = 0;
 };
 
+/** Keep the closest candidates up to the requested degree.
+ *
+ * This is the connection rule used by the incremental NSW builder. It does
+ * not perform extra pairwise distance computations.
+ */
+class NearestNeighborPruner final : public NeighborPruner {
+ public:
+  std::vector<NeighborCandidate> Prune(
+      std::span<const NeighborCandidate> candidates, size_t max_degree,
+      DistanceComputer& distance,
+      GraphPruneStats* stats = nullptr) const override;
+};
+
 /** HNSW diversity heuristic extracted from HNSW::ShrinkNeighborList. */
 class HnswHeuristicPruner final : public NeighborPruner {
  public:

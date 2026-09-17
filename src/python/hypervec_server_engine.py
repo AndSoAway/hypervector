@@ -315,17 +315,22 @@ class HypervecServerEngine:
             "INDEXHNSWLVQ": "hnsw_lvq",
             "HNSWPQ": "hnsw_pq",
             "INDEXHNSWPQ": "hnsw_pq",
+            "NSW": "nsw_flat",
+            "NSWFLAT": "nsw_flat",
+            "INDEXNSW": "nsw_flat",
+            "INDEXNSWFLAT": "nsw_flat",
         }
         params = dict(index_config.get("params") or {})
         deprecated = sorted(set(params) & {"M", "m", "M_hnsw", "M_pq"})
         if deprecated:
             raise ValueError(
                 "unsupported index parameter(s) "
-                f"{', '.join(deprecated)}; use explicit m_hnsw or m_pq."
+                f"{', '.join(deprecated)}; use explicit m_hnsw, m_nsw, or m_pq."
             )
 
         aliases = {
             "m_hnsw": ("build", "graph_degree"),
+            "m_nsw": ("build", "graph_degree"),
             "graph_degree": ("build", "graph_degree"),
             "ef_construction": ("build", "ef_construction"),
             "nlist": ("build", "nlist"),

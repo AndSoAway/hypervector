@@ -3,6 +3,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added the CPU `nsw_flat` index with incremental single-layer NSW
+  construction, shared graph traversal, Flat metric support, filtering,
+  per-query `ef_search`, registry/Python service integration, and versioned
+  persistence.
 - Added a versioned, checksummed index-file envelope containing normalized
   algorithm configuration. New readers continue to accept legacy payloads,
   expose inferred legacy metadata, validate metadata against the payload, and

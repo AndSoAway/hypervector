@@ -9,6 +9,7 @@
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
+#include <index/nsw/index_nsw.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/assert.h>
 
@@ -54,6 +55,12 @@ void WithTranslatedParameters(const IndexIDMap& id_map,
   }
   if (const auto* ivf = dynamic_cast<const IVFSearchParameters*>(params)) {
     IVFSearchParameters translated = *ivf;
+    translated.sel = &translated_selector;
+    callback(&translated);
+    return;
+  }
+  if (const auto* nsw = dynamic_cast<const SearchParametersNSW*>(params)) {
+    SearchParametersNSW translated = *nsw;
     translated.sel = &translated_selector;
     callback(&translated);
     return;

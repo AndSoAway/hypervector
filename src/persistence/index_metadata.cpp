@@ -13,6 +13,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -129,7 +130,13 @@ IndexConfig DescribeIndexConfig(const Index& index) {
   }
   config.id_mode = id_mode;
 
-  if (const auto* hnsw = dynamic_cast<const IndexHNSW*>(concrete)) {
+  if (const auto* nsw = dynamic_cast<const IndexNSWFlat*>(concrete)) {
+    nsw->CheckConsistency();
+    config.storage.type = "flat";
+    config.build.graph_degree = nsw->graph_degree;
+    config.build.ef_construction = nsw->ef_construction;
+    config.defaults.ef_search = nsw->ef_search;
+  } else if (const auto* hnsw = dynamic_cast<const IndexHNSW*>(concrete)) {
     DescribeHnsw(*hnsw, &config);
   } else if (const auto* ivf_pq = dynamic_cast<const IndexIVFPQ*>(concrete)) {
     config.storage.type = "pq";
@@ -277,6 +284,11 @@ void ApplyAndValidateIndexFileMetadata(Index* index,
     HYPERVEC_THROW_IF_NOT_MSG(metadata.config.defaults.ef_search.has_value(),
                               "index metadata: HNSW ef_search is missing");
     hnsw->hnsw.ef_search = *metadata.config.defaults.ef_search;
+  }
+  if (auto* nsw = dynamic_cast<IndexNSWFlat*>(concrete)) {
+    HYPERVEC_THROW_IF_NOT_MSG(metadata.config.defaults.ef_search.has_value(),
+                              "index metadata: NSW ef_search is missing");
+    nsw->ef_search = *metadata.config.defaults.ef_search;
   }
 
   const IndexFileMetadata actual = GetIndexFileMetadata(*index);

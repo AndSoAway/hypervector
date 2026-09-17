@@ -11,6 +11,7 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <persistence/index_clone.h>
 #include <persistence/index_io.h>
 #include <unistd.h>
@@ -152,6 +153,27 @@ TEST(IndexIDMapCorrectness, SelectorUsesExternalIdsAndPreservesSubtype) {
   EXPECT_EQ(labels[0], 200);
   EXPECT_EQ(labels[1], -1);
   EXPECT_EQ(labels[2], -1);
+}
+
+TEST(IndexIDMapCorrectness, NSWSelectorUsesExternalIdsAndPreservesSubtype) {
+  constexpr hypervec::idx_t d = 2;
+  hypervec::IndexNSWFlat storage(d, 2);
+  hypervec::IndexIDMap index(&storage);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f,
+                                      2.0f, 2.0f, 3.0f, 3.0f};
+  const std::vector<hypervec::idx_t> ids = {100, 200, 300, 400};
+  index.AddWithIds(4, vectors.data(), ids.data());
+
+  hypervec::IDSelectorRange selector(300, 301);
+  hypervec::SearchParametersNSW params;
+  params.ef_search = 8;
+  params.sel = &selector;
+  std::vector<float> distances(2);
+  std::vector<hypervec::idx_t> labels(2);
+  index.Search(1, vectors.data(), 2, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels[0], 300);
+  EXPECT_EQ(labels[1], -1);
 }
 
 TEST(IndexIDMapCorrectness, RangeSearchTranslatesLabels) {

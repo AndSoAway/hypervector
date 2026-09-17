@@ -13,6 +13,7 @@ __all__ = [
     "IndexFlatL2",
     "IndexHNSWFlat",
     "IndexHNSWLVQ",
+    "IndexNSWFlat",
     "create_index",
     "normalize_index_config",
     "IndexIVFLVQ",

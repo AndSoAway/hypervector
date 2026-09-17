@@ -50,7 +50,7 @@ class FakeHypervec:
     def create_index(self, config_json: str):
         config = json.loads(config_json)
         self.constructor_calls.append(("create_index", config))
-        trained = config["type"] in {"flat", "hnsw_flat"}
+        trained = config["type"] in {"flat", "hnsw_flat", "nsw_flat"}
         return FakeIndexFlatL2(int(config["dimension"]), trained=trained)
 
     def IndexFlatL2(self, d: int):
@@ -75,6 +75,10 @@ class FakeHypervec:
 
     def IndexHNSWFlat(self, d: int, m_hnsw: int, metric: int):
         self.constructor_calls.append(("IndexHNSWFlat", d, m_hnsw, metric))
+        return FakeIndexFlatL2(d)
+
+    def IndexNSWFlat(self, d: int, m_nsw: int, metric: int):
+        self.constructor_calls.append(("IndexNSWFlat", d, m_nsw, metric))
         return FakeIndexFlatL2(d)
 
     def IndexHNSWLVQ(self, d: int, nlocal: int, nbits: int, m_hnsw: int, metric: int):
@@ -246,6 +250,16 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_config(tmp_pat
             },
         ),
         (
+            "IndexNSWFlat",
+            {"m_nsw": 8},
+            {
+                "type": "nsw_flat",
+                "dimension": 4,
+                "metric": "l2",
+                "build": {"graph_degree": 8},
+            },
+        ),
+        (
             "IndexHNSWPQ",
             {"m_hnsw": 8, "m_pq": 2, "nbits": 1},
             {
@@ -288,7 +302,7 @@ def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
                 },
             )
         except ValueError as exc:
-            assert "use explicit m_hnsw or m_pq" in str(exc)
+            assert "use explicit m_hnsw, m_nsw, or m_pq" in str(exc)
         else:
             raise AssertionError(f"expected {bad_param} to be rejected")
 
@@ -325,6 +339,7 @@ def test_hypervec_server_engine_supported_index_examples_follow_exports():
         "IndexIVFFlat",
         "IndexIVFLVQ",
         "IndexIVFPQ",
+        "IndexNSWFlat",
         "IndexHNSWFlat",
         "IndexHNSWLVQ",
         "IndexHNSWPQ",

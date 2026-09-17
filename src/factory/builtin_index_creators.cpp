@@ -14,6 +14,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -47,6 +48,7 @@ enum class IndexFamily {
   Scan,
   IVF,
   HNSW,
+  NSW,
 };
 
 enum class StorageKind {
@@ -73,7 +75,7 @@ void RejectIvfParameters(const IndexConfig& config) {
                   config.type);
 }
 
-void RejectHnswParameters(const IndexConfig& config) {
+void RejectGraphParameters(const IndexConfig& config) {
   RejectParameter(config.build.graph_degree.has_value(), "build.graph_degree",
                   config.type);
   RejectParameter(config.build.ef_construction.has_value(),
@@ -155,7 +157,7 @@ void NormalizeIVF(IndexConfig* config) {
                  "defaults.nprobe");
 }
 
-void NormalizeHNSW(IndexConfig* config) {
+void NormalizeGraph(IndexConfig* config) {
   config->build.graph_degree =
       config->build.graph_degree.value_or(kDefaultGraphDegree);
   config->build.ef_construction =
@@ -201,10 +203,10 @@ void NormalizeBuiltin(IndexConfig* config, IndexFamily family,
   } else {
     RejectIvfParameters(*config);
   }
-  if (family == IndexFamily::HNSW) {
-    NormalizeHNSW(config);
+  if (family == IndexFamily::HNSW || family == IndexFamily::NSW) {
+    NormalizeGraph(config);
   } else {
-    RejectHnswParameters(*config);
+    RejectGraphParameters(*config);
   }
 
   if (storage == StorageKind::PQ) {
@@ -288,6 +290,10 @@ void NormalizeHNSWLVQ(IndexConfig& config) {
   NormalizeBuiltin(&config, IndexFamily::HNSW, StorageKind::LVQ);
 }
 
+void NormalizeNSWFlat(IndexConfig& config) {
+  NormalizeBuiltin(&config, IndexFamily::NSW, StorageKind::Flat);
+}
+
 void NormalizeScanSearch(const IndexConfig& index_config,
                          SearchConfig& search_config) {
   RejectParameter(search_config.nprobe.has_value(), "nprobe",
@@ -320,6 +326,17 @@ void NormalizeHNSWSearch(const IndexConfig& index_config,
   ValidateEfSearch(*search_config.ef_search, "ef_search");
 }
 
+void NormalizeNSWSearch(const IndexConfig& index_config,
+                        SearchConfig& search_config) {
+  RejectParameter(search_config.nprobe.has_value(), "nprobe",
+                  index_config.type);
+  HYPERVEC_THROW_IF_NOT_MSG(index_config.defaults.ef_search.has_value(),
+                            "normalized NSW config is missing search defaults");
+  search_config.ef_search =
+      search_config.ef_search.value_or(*index_config.defaults.ef_search);
+  ValidateEfSearch(*search_config.ef_search, "ef_search");
+}
+
 std::unique_ptr<SearchParameters> CreateScanSearchParameters(
     const IndexConfig&, const SearchConfig&) {
   return std::make_unique<SearchParameters>();
@@ -335,6 +352,13 @@ std::unique_ptr<SearchParameters> CreateIVFSearchParameters(
 std::unique_ptr<SearchParameters> CreateHNSWSearchParameters(
     const IndexConfig&, const SearchConfig& search_config) {
   auto parameters = std::make_unique<SearchParametersHNSW>();
+  parameters->ef_search = *search_config.ef_search;
+  return parameters;
+}
+
+std::unique_ptr<SearchParameters> CreateNSWSearchParameters(
+    const IndexConfig&, const SearchConfig& search_config) {
+  auto parameters = std::make_unique<SearchParametersNSW>();
   parameters->ef_search = *search_config.ef_search;
   return parameters;
 }
@@ -444,6 +468,20 @@ std::unique_ptr<Index> CreateHNSWLVQ(const IndexConfig& config,
   return index;
 }
 
+std::unique_ptr<Index> CreateNSWFlat(const IndexConfig& config,
+                                     const ResourceContext&) {
+  auto index =
+      std::make_unique<IndexNSWFlat>(static_cast<int>(config.dimension),
+                                     *config.build.graph_degree, config.metric);
+  index->ef_construction = *config.build.ef_construction;
+  index->ef_search = *config.defaults.ef_search;
+  if (config.metric_arg.has_value()) {
+    index->metric_arg = *config.metric_arg;
+    index->storage.metric_arg = *config.metric_arg;
+  }
+  return index;
+}
+
 IndexCapabilities FlatCapabilities() {
   return IndexCapability::BatchBuild | IndexCapability::IncrementalAdd |
          IndexCapability::KnnSearch | IndexCapability::Filter |
@@ -486,6 +524,12 @@ IndexCapabilities HNSWCapabilities(bool trained) {
     capabilities |= IndexCapability::Serialize;
   }
   return capabilities;
+}
+
+IndexCapabilities NSWCapabilities() {
+  return IndexCapability::BatchBuild | IndexCapability::IncrementalAdd |
+         IndexCapability::KnnSearch | IndexCapability::Filter |
+         IndexCapability::ConcurrentSearch | IndexCapability::Serialize;
 }
 
 }  // namespace
@@ -580,6 +624,15 @@ void RegisterBuiltinIndexes() {
                        CreateHNSWLVQ,
                        NormalizeHNSWSearch,
                        CreateHNSWSearchParameters});
+    registry.Register({"nsw_flat",
+                       {"nsw", "nswflat", "indexnsw", "indexnswflat"},
+                       NSWCapabilities(),
+                       FlatMetrics(),
+                       cpu,
+                       NormalizeNSWFlat,
+                       CreateNSWFlat,
+                       NormalizeNSWSearch,
+                       CreateNSWSearchParameters});
   });
 }
 

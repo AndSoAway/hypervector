@@ -13,6 +13,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -217,6 +218,7 @@ TEST(IndexBuild, DefaultBuildWorksForEveryCurrentIndexFamily) {
   indexes.emplace_back(std::make_unique<hypervec::IndexHNSWFlat>(d, 4));
   indexes.emplace_back(std::make_unique<hypervec::IndexHNSWPQ>(d, 2, 2, 4));
   indexes.emplace_back(std::make_unique<hypervec::IndexHNSWLVQ>(d, 2, 2, 4));
+  indexes.emplace_back(std::make_unique<hypervec::IndexNSWFlat>(d, 4));
 
   for (const auto &index : indexes) {
     ASSERT_TRUE(hypervec::HasCapability(index->Capabilities(),
@@ -267,6 +269,13 @@ TEST(IndexCapabilities, MatchImplementedBehavior) {
   ExpectCapability(generic_hnsw, hypervec::IndexCapability::Serialize, true);
   ExpectCapability(generic_hnsw, hypervec::IndexCapability::Clone, false);
 
+  hypervec::IndexNSWFlat nsw_flat(4, 4);
+  ExpectCapability(nsw_flat, hypervec::IndexCapability::IncrementalAdd, true);
+  ExpectCapability(nsw_flat, hypervec::IndexCapability::RangeSearch, false);
+  ExpectCapability(nsw_flat, hypervec::IndexCapability::Filter, true);
+  ExpectCapability(nsw_flat, hypervec::IndexCapability::Serialize, true);
+  ExpectCapability(nsw_flat, hypervec::IndexCapability::Clone, false);
+
   hypervec::IndexPQ pq(4, 2, 2);
   EXPECT_EQ(pq.TypeName(), std::string_view("pq"));
   ExpectCapability(pq, hypervec::IndexCapability::NeedsTrain, true);
@@ -316,6 +325,7 @@ TEST(IndexTypeName, IsStableForEveryCurrentConcreteFamily) {
   hypervec::IndexHNSWFlat hnsw_flat(4, 4);
   hypervec::IndexHNSWPQ hnsw_pq(4, 2, 2, 4);
   hypervec::IndexHNSWLVQ hnsw_lvq(4, 2, 2, 4);
+  hypervec::IndexNSWFlat nsw_flat(4, 4);
   hypervec::IndexIDMap id_map(&flat_l2);
 
   EXPECT_EQ(flat_codes.TypeName(), std::string_view("flat_codes"));
@@ -332,5 +342,6 @@ TEST(IndexTypeName, IsStableForEveryCurrentConcreteFamily) {
   EXPECT_EQ(hnsw_flat.TypeName(), std::string_view("hnsw_flat"));
   EXPECT_EQ(hnsw_pq.TypeName(), std::string_view("hnsw_pq"));
   EXPECT_EQ(hnsw_lvq.TypeName(), std::string_view("hnsw_lvq"));
+  EXPECT_EQ(nsw_flat.TypeName(), std::string_view("nsw_flat"));
   EXPECT_EQ(id_map.TypeName(), std::string_view("idmap"));
 }

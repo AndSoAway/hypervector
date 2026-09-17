@@ -3,6 +3,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Exposed the C++ registry factory and normalized JSON configuration through
+  the Python binding. The Python service now uses the same C++ creation and
+  per-query search-parameter validation path while retaining legacy direct
+  index constructors.
 - Added reusable graph storage, search, validation, and neighbor-pruning
   components. Bounded HNSW level-0 traversal now uses the shared graph search
   path without changing its result, filtering, or statistics semantics.

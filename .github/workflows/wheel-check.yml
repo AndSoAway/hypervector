@@ -52,6 +52,8 @@ jobs:
           /tmp/hv-venv/bin/pip install numpy fastapi uvicorn hypercorn h2
           /tmp/hv-venv/bin/pip install --force-reinstall --no-deps build-wheel/src/python/dist/*.whl
           /tmp/hv-venv/bin/python - <<'PY'
+          import json
+          import numpy as np
           import hypervec
           import hypervec.examples_data
           import hypervec.hypervec_bundle
@@ -60,5 +62,23 @@ jobs:
           import hypervec.rwlock
           index = hypervec.IndexFlatL2(4)
           assert index is not None
+          config = json.dumps({
+              "type": "hnsw_flat",
+              "dimension": 4,
+              "metric": "l2",
+              "build": {"graph_degree": 4},
+              "defaults": {"ef_search": 8},
+          })
+          normalized = json.loads(hypervec.normalize_index_config(config))
+          assert normalized["type"] == "hnsw_flat"
+          factory_index = hypervec.create_index(config)
+          factory_index.add(np.eye(4, dtype=np.float32))
+          distances, labels = factory_index.search_with_config(
+              np.eye(1, 4, dtype=np.float32),
+              1,
+              config,
+              json.dumps({"ef_search": 4}),
+          )
+          assert labels[0][0] == 0
           print("import-ok")
           PY

@@ -6,8 +6,6 @@
  * source tree.
  */
 
-#include "persistence/index_file_header.h"
-
 #include <factory/engine.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
@@ -28,6 +26,8 @@
 #include <limits>
 #include <string>
 #include <string_view>
+
+#include "persistence/index_file_header.h"
 
 namespace hypervec {
 

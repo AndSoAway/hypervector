@@ -68,7 +68,7 @@ void IndexFlat::RangeSearch(idx_t n, const float* x, float radius,
       range_search_L2sqr(x, GetXb(), d, n, n_total, radius, result, sel);
       break;
     default:
-      HYPERVEC_THROW_MSG("metric type not supported");
+      IndexFlatCodes::RangeSearch(n, x, radius, result, params);
   }
 }
 

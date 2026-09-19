@@ -22,7 +22,13 @@
 namespace hypervec {
 
 IndexIVFFlat::IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric)
-  : IndexIVF(d, nlist, (size_t)d * sizeof(float), metric) {}
+    : IndexIVF(d, nlist, (size_t)d * sizeof(float), metric) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      metric == kMetricL2 || metric == kMetricInnerProduct,
+      "IndexIVFFlat: supports kMetricL2 and kMetricInnerProduct only, got "
+      "metric=%d",
+      static_cast<int>(metric));
+}
 
 IndexCapabilities IndexIVFFlat::GetCapabilities() const {
   IndexCapabilities capabilities = IndexIVF::GetCapabilities();

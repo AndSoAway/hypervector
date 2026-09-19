@@ -17,6 +17,8 @@
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <utils/common/range_search_result.h>
+#include <utils/log/exception.h>
 
 TEST(IndexCapabilities, FlatReportsMutableExactOperations) {
   hypervec::IndexFlatL2 index(4);
@@ -28,6 +30,25 @@ TEST(IndexCapabilities, FlatReportsMutableExactOperations) {
   EXPECT_TRUE(capabilities.supports_range_search);
   EXPECT_TRUE(capabilities.supports_reconstruct);
   EXPECT_TRUE(capabilities.supports_merge);
+}
+
+TEST(IndexCapabilities, FlatRangeSearchSupportsExtraMetrics) {
+  hypervec::IndexFlat index(2, hypervec::kMetricL1);
+  const float database[] = {0.0F, 0.0F, 2.0F, 0.0F};
+  const float query[] = {0.0F, 0.0F};
+  index.Add(2, database);
+
+  hypervec::RangeSearchResult result(1);
+  index.RangeSearch(1, query, 1.5F, &result);
+
+  ASSERT_EQ(result.lims[1], 1U);
+  EXPECT_EQ(result.labels[0], 0);
+  EXPECT_FLOAT_EQ(result.distances[0], 0.0F);
+}
+
+TEST(IndexCapabilities, IvfFlatRejectsUnsupportedMetrics) {
+  EXPECT_THROW((hypervec::IndexIVFFlat(4, 2, hypervec::kMetricL1)),
+               hypervec::HypervecException);
 }
 
 TEST(IndexCapabilities, FlatQuantizersReportTrainingAndReconstruction) {

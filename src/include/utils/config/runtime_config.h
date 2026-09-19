@@ -52,7 +52,7 @@ struct ConfigOption {
   const char* section;
   const char* key;
   ConfigValueType type;
-  const char* default_value;
+  std::string default_value;
   const char* description;
   bool optional;
 };

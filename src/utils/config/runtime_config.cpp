@@ -9,31 +9,48 @@
 #include <utils/config/runtime_config.h>
 
 #include <sstream>
+#include <string>
 
 namespace hypervec {
 
+namespace {
+
+std::string ToString(bool value) { return value ? "true" : "false"; }
+
+std::string ToString(int value) { return std::to_string(value); }
+
+}  // namespace
+
 const std::vector<ConfigOption>& GetConfigOptions() {
+  // HypervecConfig field defaults are the single source of truth for default
+  // values; this metadata table only mirrors them so the sample config and the
+  // later INI/CLI layering cannot drift apart.
+  static const HypervecConfig defaults;
   static const std::vector<ConfigOption> options = {
-    {"server", "data_root", ConfigValueType::kString, "./data",
+    {"server", "data_root", ConfigValueType::kString, defaults.server.data_root,
      "Root directory for server collection data.", false},
-    {"server", "host", ConfigValueType::kString, "127.0.0.1",
+    {"server", "host", ConfigValueType::kString, defaults.server.host,
      "Server bind host.", false},
-    {"server", "port", ConfigValueType::kInt, "8080",
+    {"server", "port", ConfigValueType::kInt, ToString(defaults.server.port),
      "Server bind port.", false},
-    {"server", "server_mode", ConfigValueType::kString, "http",
-     "Startup mode: http, grpc, or dual.", false},
-    {"server", "enable_http2", ConfigValueType::kBool, "true",
+    {"server", "server_mode", ConfigValueType::kString,
+     defaults.server.server_mode, "Startup mode: http, grpc, or dual.", false},
+    {"server", "enable_http2", ConfigValueType::kBool,
+     ToString(defaults.server.enable_http2),
      "Enable HTTP/2 when the selected ASGI server supports it.", false},
-    {"logging", "enable_logging", ConfigValueType::kBool, "true",
-     "Global runtime logging switch.", false},
-    {"logging", "log_level", ConfigValueType::kString, "info",
+    {"logging", "enable_logging", ConfigValueType::kBool,
+     ToString(defaults.logging.enable_logging), "Global runtime logging switch.",
+     false},
+    {"logging", "log_level", ConfigValueType::kString, defaults.logging.log_level,
      "Global minimum log level.", false},
-    {"logging", "log_to_stderr", ConfigValueType::kBool, "true",
-     "Write runtime logs to stderr.", false},
-    {"logging", "log_to_file", ConfigValueType::kBool, "false",
-     "Write runtime logs to a file.", false},
+    {"logging", "log_to_stderr", ConfigValueType::kBool,
+     ToString(defaults.logging.log_to_stderr), "Write runtime logs to stderr.",
+     false},
+    {"logging", "log_to_file", ConfigValueType::kBool,
+     ToString(defaults.logging.log_to_file), "Write runtime logs to a file.",
+     false},
     {"logging", "log_file_path", ConfigValueType::kString,
-     "logs/hypervec.log", "Runtime log file path.", true},
+     defaults.logging.log_file_path, "Runtime log file path.", true},
   };
   return options;
 }

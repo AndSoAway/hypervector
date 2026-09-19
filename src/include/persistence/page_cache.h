@@ -63,6 +63,7 @@ class PageCache {
 
   size_t PageSize() const noexcept;
   size_t CapacityPages() const noexcept;
+  uint64_t SourceSize() const noexcept;
   uint64_t PageCount() const noexcept;
   size_t CachedPages() const noexcept;
 

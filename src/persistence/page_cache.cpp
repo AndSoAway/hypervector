@@ -209,6 +209,8 @@ size_t PageCache::CapacityPages() const noexcept {
   return impl_->capacity_pages;
 }
 
+uint64_t PageCache::SourceSize() const noexcept { return impl_->source_size; }
+
 uint64_t PageCache::PageCount() const noexcept { return impl_->page_count; }
 
 size_t PageCache::CachedPages() const noexcept {

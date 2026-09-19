@@ -121,7 +121,7 @@ std::vector<GraphSearchResult> GraphSearcher::Search(
     }
     candidates.pop();
 
-    const GraphNeighborView neighbors = graph_.Neighbors(current.id);
+    const GraphNeighborList neighbors = graph_.Neighbors(current.id);
     ++local_stats.expanded_nodes;
     local_stats.traversed_edges += neighbors.size();
     for (GraphId neighbor : neighbors) {

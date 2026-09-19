@@ -90,10 +90,10 @@ size_t MutableBoundedGraph::NodeCount() const noexcept {
 
 size_t MutableBoundedGraph::MaxDegree() const noexcept { return max_degree_; }
 
-GraphNeighborView MutableBoundedGraph::Neighbors(GraphId node) const {
+GraphNeighborList MutableBoundedGraph::Neighbors(GraphId node) const {
   const size_t index =
       ValidateNode(node, NodeCount(), "MutableBoundedGraph::Neighbors");
-  return adjacency_[index];
+  return GraphNeighborList(GraphNeighborView(adjacency_[index]));
 }
 
 void MutableBoundedGraph::Prefetch(GraphId node) const noexcept {
@@ -178,10 +178,11 @@ size_t FixedDegreeGraph::NodeCount() const noexcept { return degrees_.size(); }
 
 size_t FixedDegreeGraph::MaxDegree() const noexcept { return max_degree_; }
 
-GraphNeighborView FixedDegreeGraph::Neighbors(GraphId node) const {
+GraphNeighborList FixedDegreeGraph::Neighbors(GraphId node) const {
   const size_t index =
       ValidateNode(node, NodeCount(), "FixedDegreeGraph::Neighbors");
-  return GraphNeighborView(data_.data() + index * max_degree_, degrees_[index]);
+  return GraphNeighborList(
+      GraphNeighborView(data_.data() + index * max_degree_, degrees_[index]));
 }
 
 void FixedDegreeGraph::Prefetch(GraphId node) const noexcept {
@@ -233,7 +234,7 @@ CsrGraph::CsrGraph(const GraphStorage& graph) {
   offsets_.push_back(0);
   for (size_t node = 0; node < graph.NodeCount(); ++node) {
     const GraphId graph_node = static_cast<GraphId>(node);
-    const GraphNeighborView neighbors = graph.Neighbors(graph_node);
+    const GraphNeighborList neighbors = graph.Neighbors(graph_node);
     const std::vector<GraphId> validated =
         ValidateNeighbors(graph_node, neighbors, graph.NodeCount(),
                           graph.MaxDegree(), "CsrGraph");
@@ -253,11 +254,11 @@ size_t CsrGraph::NodeCount() const noexcept {
 
 size_t CsrGraph::MaxDegree() const noexcept { return max_degree_; }
 
-GraphNeighborView CsrGraph::Neighbors(GraphId node) const {
+GraphNeighborList CsrGraph::Neighbors(GraphId node) const {
   const size_t index = ValidateNode(node, NodeCount(), "CsrGraph::Neighbors");
   const size_t count = offsets_[index + 1] - offsets_[index];
   const GraphId* first = count == 0 ? nullptr : edges_.data() + offsets_[index];
-  return GraphNeighborView(first, count);
+  return GraphNeighborList(GraphNeighborView(first, count));
 }
 
 void CsrGraph::Prefetch(GraphId node) const noexcept {

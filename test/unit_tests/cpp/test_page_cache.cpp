@@ -139,6 +139,7 @@ TEST(PageCache, LoadsPagesAndKeepsTheFinalPageExact) {
 
   EXPECT_EQ(cache.PageSize(), 4U);
   EXPECT_EQ(cache.CapacityPages(), 3U);
+  EXPECT_EQ(cache.SourceSize(), 10U);
   EXPECT_EQ(cache.PageCount(), 3U);
   EXPECT_EQ(cache.CachedPages(), 2U);
   EXPECT_EQ(middle->id, 1U);

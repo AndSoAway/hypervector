@@ -12,6 +12,7 @@ set(HYPERVEC_TEST_SRC
   test_nsg_builder.cpp
   test_index_nsg.cpp
   test_nsw_builder.cpp
+  test_paged_graph_storage.cpp
   test_vamana_builder.cpp
   test_index_vamana.cpp
   test_index_nsw.cpp

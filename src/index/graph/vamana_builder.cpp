@@ -78,7 +78,7 @@ NeighborList CollectCandidates(
     NodeQueryDistanceComputer& query_distance, VisitedTable* pooled,
     size_t candidate_pool_size, VamanaBuildStats* stats) {
   NeighborList candidates;
-  const GraphNeighborView previous = graph.Neighbors(source);
+  const GraphNeighborList previous = graph.Neighbors(source);
   candidates.reserve(add_no_overflow(search_results.size(), previous.size(),
                                      "VamanaBuilder candidate pool"));
   pooled->set(static_cast<size_t>(source));
@@ -105,7 +105,7 @@ void InsertReciprocal(MutableBoundedGraph* graph, GraphId source,
                       GraphId neighbor, DistanceComputer& distance,
                       const VamanaRobustPruner& pruner, size_t max_degree,
                       VamanaBuildStats* stats) {
-  const GraphNeighborView current = graph->Neighbors(neighbor);
+  const GraphNeighborList current = graph->Neighbors(neighbor);
   if (Contains(current, source)) {
     return;
   }
@@ -168,7 +168,7 @@ Reachability FindReachable(const GraphStorage& graph, GraphId entry_point) {
 
 bool HasRepairCapacity(const MutableBoundedGraph& graph, GraphId source,
                        size_t max_degree, std::span<const GraphId> parent) {
-  const GraphNeighborView neighbors = graph.Neighbors(source);
+  const GraphNeighborList neighbors = graph.Neighbors(source);
   if (neighbors.size() < max_degree) {
     return true;
   }

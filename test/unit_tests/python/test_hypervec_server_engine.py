@@ -366,7 +366,9 @@ def test_engine_purge_removes_data_keeps_metadata(tmp_path):
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}])
     engine.flush("col1")
-    engine.export_collection_bundle("col1")
+    export_result = engine.export_collection_bundle("col1")
+    exported_path = Path(export_result["path"])
+    assert exported_path.exists()
 
     result = engine.purge_collection_data("col1")
     assert result["purged"] is True
@@ -380,8 +382,8 @@ def test_engine_purge_removes_data_keeps_metadata(tmp_path):
     assert meta.last_purged_at is not None
 
     # Index file gone
-    from pathlib import Path
     assert not Path(meta.index_path).exists()
+    assert not exported_path.exists()
 
     # Scalar count = 0
     assert engine.scalar_store.count("col1") == 0
@@ -397,7 +399,7 @@ def test_engine_purge_requires_export_by_default(tmp_path):
         engine.purge_collection_data("col1", require_exported=True)
     except Exception as exc:
         assert type(exc).__name__ == "ConflictError"
-        assert "no recorded export" in str(exc)
+        assert "no export matching the current data+index snapshot" in str(exc)
     else:
         raise AssertionError("should have raised ConflictError")
 
@@ -413,11 +415,13 @@ def test_engine_import_bundle_restores_data(tmp_path):
         ],
     )
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    backup_path = tmp_path / "client-backup.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", backup_path)
     engine.purge_collection_data("col1", require_exported=True)
 
     # Verify purged state
     assert engine.scalar_store.count("col1") == 0
+    assert backup_path.exists()
 
     # Restore
     restore_result = engine.import_collection_bundle("col1", export_result["path"])
@@ -460,9 +464,11 @@ def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
+    backup_path = tmp_path / "client-backup.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", backup_path)
 
     engine.purge_collection_data("col1")
+    assert backup_path.exists()
     try:
         engine.import_collection_bundle(
             "col1",

@@ -728,8 +728,11 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         """Export scalar rows + index as a self-contained bundle ZIP.
 
-        If output_path is None, the bundle is written alongside the index file
-        as {collection_dir}/{collection_name}.hypervec-bundle.
+        If output_path is None, the bundle is written to a temporary directory
+        inside the collection directory for HTTP/gRPC download handlers to
+        consume and remove.  A caller that needs the archive to survive
+        purge_collection_data() must provide a destination outside the
+        collection directory.
         Updates last_exported_at and bundle_format in metadata.
         Raises FileNotFoundError if the collection has no flushed index.
         Raises ConflictError if data_state == "purged" (nothing to export),

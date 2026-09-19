@@ -28,6 +28,10 @@ struct IndexIVFLVQ : IndexIVF {
                          const idx_t* list_ids, const float* centroid_dis,
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
+
+  void RangeSearch(idx_t n, const float* x, float radius,
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
   void Reconstruct(idx_t key, float* recons) const override;
 };
 

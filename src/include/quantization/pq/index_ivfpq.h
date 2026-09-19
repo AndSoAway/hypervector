@@ -84,6 +84,10 @@ struct IndexIVFPQ : IndexIVF {
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
 
+  void RangeSearch(idx_t n, const float* x, float radius,
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
+
   /** Reconstruct an indexed vector by id: decode the PQ code and add the
    *  coarse centroid back if by_residual. O(n_total) — scans all lists. */
   void Reconstruct(idx_t key, float* recons) const override;

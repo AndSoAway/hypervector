@@ -111,6 +111,14 @@ void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   n_total += n;
 }
 
+void IndexIVFLVQ::RangeSearch(idx_t /*n*/, const float* /*x*/, float /*radius*/,
+                              RangeSearchResult* /*result*/,
+                              const SearchParameters* /*params*/) const {
+  HYPERVEC_THROW_MSG(
+      "IndexIVFLVQ::RangeSearch is unsupported until an LVQ-aware scanner is "
+      "implemented");
+}
+
 void IndexIVFLVQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
                                     const idx_t* list_ids,
                                     const float* /*centroid_dis*/,

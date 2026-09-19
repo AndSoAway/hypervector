@@ -23,6 +23,7 @@ set(HYPERVEC_TEST_SRC
   test_pq.cpp
   test_index_pq.cpp
   test_index_ivf_flat.cpp
+  test_index_ivf_correctness.cpp
   test_index_ivfpq.cpp
   test_index_hnsw_pq.cpp
   test_lvq.cpp

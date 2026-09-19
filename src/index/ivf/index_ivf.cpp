@@ -7,13 +7,14 @@
  */
 
 #include <index/ivf/index_ivf.h>
-
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 #include <utils/structures/heap.h>
 
 #include <algorithm>
+#include <exception>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -39,9 +40,11 @@ IndexIVF::~IndexIVF() {
 }
 
 void IndexIVF::Train(idx_t n, const float* x) {
-  // Default KMeansParameters reproduces historical IVF behaviour
-  // (niter=25, seed=HYPERVEC_KMEANS_DEFAULT_SEED, nredo=1).
-  RunKMeans(n, x, d, nlist, centroids.data(), KMeansParameters{});
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_total == 0,
+      "IndexIVF::Train: reset the index before replacing coarse centroids");
+  std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
+  centroids = std::move(trained_centroids);
   is_trained = true;
 }
 
@@ -50,7 +53,10 @@ void IndexIVF::Add(idx_t n, const float* x) {
 }
 
 void IndexIVF::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
-  HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexIVF::AddWithIds: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVF::AddWithIds: n must be non-negative");
   if (n == 0) {
     return;
   }
@@ -65,28 +71,26 @@ void IndexIVF::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   std::vector<uint8_t> codes(static_cast<size_t>(n) * code_sz);
   EncodeVectors(n, x, codes.data());
 
-  // Insert into inverted lists
-  for (idx_t i = 0; i < n; i++) {
-    const idx_t id = (xids != nullptr) ? xids[i] : n_total + i;
-    const idx_t list_no = centroid_ids[static_cast<size_t>(i)];
-    invlists->add_entry(static_cast<size_t>(list_no), id,
-                        codes.data() + static_cast<size_t>(i) * code_sz);
-  }
-
-  n_total += n;
+  AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
 void IndexIVF::Search(idx_t n, const float* x, idx_t k, float* distances,
                       idx_t* labels,
                       const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexIVF::Search: n must be non-negative");
   HYPERVEC_THROW_IF_NOT(k > 0);
+  if (n == 0) {
+    return;
+  }
 
   const IVFSearchParameters* ivf_params =
     dynamic_cast<const IVFSearchParameters*>(params);
   const IDSelector* sel = params ? params->sel : nullptr;
   idx_t nprobe_actual =
     ivf_params ? ivf_params->nprobe : nprobe;
+  HYPERVEC_THROW_IF_NOT_MSG(nprobe_actual > 0,
+                            "IndexIVF::Search: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
   std::vector<float> centroid_dis(static_cast<size_t>(n) * nprobe_actual);
@@ -102,12 +106,25 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
                            RangeSearchResult* result,
                            const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVF::RangeSearch: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(result != nullptr,
+                            "IndexIVF::RangeSearch: result must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      result->nq == static_cast<size_t>(n),
+      "IndexIVF::RangeSearch: result query count does not match n");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      invlists->code_size == static_cast<size_t>(d) * sizeof(float),
+      "IndexIVF::RangeSearch only supports raw float vector codes; compressed "
+      "IVF indexes require a codec-aware implementation");
 
   const IVFSearchParameters* ivf_params =
     dynamic_cast<const IVFSearchParameters*>(params);
   const IDSelector* sel = params ? params->sel : nullptr;
   idx_t nprobe_actual =
     ivf_params ? ivf_params->nprobe : nprobe;
+  HYPERVEC_THROW_IF_NOT_MSG(nprobe_actual > 0,
+                            "IndexIVF::RangeSearch: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
   std::vector<float> centroid_dis(static_cast<size_t>(n) * nprobe_actual);
@@ -186,18 +203,92 @@ void IndexIVF::Reset() {
 void IndexIVF::FindNearestCentroids(idx_t nq, const float* xq, idx_t k,
                                     float* distances, idx_t* labels) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  FindNearestCentroidsIn(centroids, nq, xq, k, distances, labels);
+}
+
+std::vector<float> IndexIVF::TrainCoarseCentroids(idx_t n,
+                                                  const float* x) const {
+  std::vector<float> trained_centroids(static_cast<size_t>(nlist) * d);
+  KMeansParameters params;
+  params.metric = metric_type;
+  params.metric_arg = metric_arg;
+  params.spherical = metric_type == kMetricInnerProduct;
+  RunKMeans(n, x, d, nlist, trained_centroids.data(), params);
+  return trained_centroids;
+}
+
+void IndexIVF::FindNearestCentroidsIn(
+    const std::vector<float>& coarse_centroids, idx_t nq, const float* xq,
+    idx_t k, float* distances, idx_t* labels) const {
+  HYPERVEC_THROW_IF_NOT_MSG(nq >= 0,
+                            "centroid query count must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0 && k <= nlist,
+                            "centroid neighbor count must be in [1, nlist]");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      coarse_centroids.size() == static_cast<size_t>(nlist) * d,
+      "coarse centroid table has an invalid size");
+  if (nq == 0) {
+    return;
+  }
   if (IsSimilarityMetric(metric_type)) {
     float_minheap_array_t res = {static_cast<size_t>(nq),
                                  static_cast<size_t>(k), labels, distances};
-    knn_inner_product(xq, centroids.data(), static_cast<size_t>(d),
+    knn_inner_product(xq, coarse_centroids.data(), static_cast<size_t>(d),
                       static_cast<size_t>(nq), static_cast<size_t>(nlist),
                       &res);
   } else {
     float_maxheap_array_t res = {static_cast<size_t>(nq),
                                  static_cast<size_t>(k), labels, distances};
-    knn_L2sqr(xq, centroids.data(), static_cast<size_t>(d),
+    knn_L2sqr(xq, coarse_centroids.data(), static_cast<size_t>(d),
               static_cast<size_t>(nq), static_cast<size_t>(nlist), &res);
   }
+}
+
+void IndexIVF::AddEncodedVectors(idx_t n, const idx_t* list_ids,
+                                 const uint8_t* codes, const idx_t* xids) {
+  const size_t code_size = invlists->code_size;
+  std::vector<std::vector<idx_t>> ids_by_list(static_cast<size_t>(nlist));
+  std::vector<std::vector<uint8_t>> codes_by_list(static_cast<size_t>(nlist));
+  std::vector<size_t> old_sizes(static_cast<size_t>(nlist));
+  std::vector<idx_t> touched_lists;
+
+  for (idx_t i = 0; i < n; ++i) {
+    const idx_t list_no = list_ids[static_cast<size_t>(i)];
+    HYPERVEC_THROW_IF_NOT_MSG(list_no >= 0 && list_no < nlist,
+                              "coarse assignment is outside [0, nlist)");
+    auto& ids = ids_by_list[static_cast<size_t>(list_no)];
+    auto& list_codes = codes_by_list[static_cast<size_t>(list_no)];
+    if (ids.empty()) {
+      old_sizes[static_cast<size_t>(list_no)] =
+          invlists->list_size(static_cast<size_t>(list_no));
+      touched_lists.push_back(list_no);
+    }
+    ids.push_back(xids != nullptr ? xids[i] : n_total + i);
+    const uint8_t* code = codes + static_cast<size_t>(i) * code_size;
+    list_codes.insert(list_codes.end(), code, code + code_size);
+  }
+
+  try {
+    for (const idx_t list_no : touched_lists) {
+      const auto& ids = ids_by_list[static_cast<size_t>(list_no)];
+      const auto& list_codes = codes_by_list[static_cast<size_t>(list_no)];
+      invlists->add_entries(static_cast<size_t>(list_no), ids.size(),
+                            ids.data(), list_codes.data());
+    }
+  } catch (...) {
+    const std::exception_ptr insertion_error = std::current_exception();
+    for (const idx_t list_no : touched_lists) {
+      try {
+        invlists->resize(static_cast<size_t>(list_no),
+                         old_sizes[static_cast<size_t>(list_no)]);
+      } catch (...) {
+        // Preserve the insertion error if a custom backend cannot roll back.
+      }
+    }
+    std::rethrow_exception(insertion_error);
+  }
+
+  n_total += n;
 }
 
 }  // namespace hypervec

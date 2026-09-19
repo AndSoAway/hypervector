@@ -109,6 +109,19 @@ struct IndexIVF : Index {
    *  @param labels    output centroid indices, size nq * k */
   void FindNearestCentroids(idx_t nq, const float* xq, idx_t k,
                             float* distances, idx_t* labels) const;
+
+ protected:
+  /** Train coarse centroids without mutating the index. */
+  std::vector<float> TrainCoarseCentroids(idx_t n, const float* x) const;
+
+  /** Find nearest centroids in an explicitly supplied table. */
+  void FindNearestCentroidsIn(const std::vector<float>& coarse_centroids,
+                              idx_t nq, const float* xq, idx_t k,
+                              float* distances, idx_t* labels) const;
+
+  /** Append pre-encoded vectors, rolling back partial list writes on error. */
+  void AddEncodedVectors(idx_t n, const idx_t* list_ids, const uint8_t* codes,
+                         const idx_t* xids);
 };
 
 }  // namespace hypervec

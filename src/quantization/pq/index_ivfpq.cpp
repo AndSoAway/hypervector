@@ -276,6 +276,14 @@ void IndexIVFPQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
   }
 }
 
+void IndexIVFPQ::RangeSearch(idx_t /*n*/, const float* /*x*/, float /*radius*/,
+                             RangeSearchResult* /*result*/,
+                             const SearchParameters* /*params*/) const {
+  HYPERVEC_THROW_MSG(
+      "IndexIVFPQ::RangeSearch is unsupported until a PQ-aware scanner is "
+      "implemented");
+}
+
 // ===========================================================================
 // Reconstruct
 // ===========================================================================

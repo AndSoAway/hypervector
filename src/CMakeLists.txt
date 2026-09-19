@@ -58,6 +58,7 @@ set(HYPERVEC_SRC
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   quantization/rabitq/rabitq_quantizer.cpp
+  quantization/rabitq/index_ivf_rabitq.cpp
   quantization/quantizer.cpp
   transform/opq_matrix.cpp
   transform/vector_transform.cpp

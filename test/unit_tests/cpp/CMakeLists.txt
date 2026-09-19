@@ -36,6 +36,7 @@ set(HYPERVEC_TEST_SRC
   test_pq.cpp
   test_quantizer_protocol.cpp
   test_rabitq_quantizer.cpp
+  test_index_ivf_rabitq.cpp
   test_opq_matrix.cpp
   test_vector_transform.cpp
   test_index_pq.cpp

@@ -37,6 +37,8 @@ struct IndexIDMap : Index {
 
   ~IndexIDMap() override;
 
+  IndexCapabilities GetCapabilities() const override;
+
   idx_t to_internal(idx_t id) const;
 
   idx_t from_internal(idx_t id) const;

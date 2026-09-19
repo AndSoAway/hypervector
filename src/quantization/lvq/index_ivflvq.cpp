@@ -32,6 +32,12 @@ IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
   own_invlists = true;
 }
 
+IndexCapabilities IndexIVFLVQ::GetCapabilities() const {
+  IndexCapabilities capabilities = IndexIVF::GetCapabilities();
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
+
 void IndexIVFLVQ::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(
       n_total == 0,

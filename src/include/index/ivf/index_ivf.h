@@ -49,6 +49,8 @@ struct IndexIVF : Index {
 
   ~IndexIVF() override;
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Train k-means on n vectors.  Sets is_trained = true. */
   void Train(idx_t n, const float* x) override;
 

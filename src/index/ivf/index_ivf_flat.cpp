@@ -24,6 +24,13 @@ namespace hypervec {
 IndexIVFFlat::IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric)
   : IndexIVF(d, nlist, (size_t)d * sizeof(float), metric) {}
 
+IndexCapabilities IndexIVFFlat::GetCapabilities() const {
+  IndexCapabilities capabilities = IndexIVF::GetCapabilities();
+  capabilities.supports_range_search = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
+
 void IndexIVFFlat::EncodeVectors(idx_t n, const float* x,
                                  uint8_t* codes) const {
   if (n > 0) {

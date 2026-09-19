@@ -25,6 +25,13 @@ IndexLVQ::IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric)
   is_trained = false;
 }
 
+IndexCapabilities IndexLVQ::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  capabilities.requires_training = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
+
 void IndexLVQ::Train(idx_t n, const float* x) {
   lvq.Train(n, x);
   is_trained = true;

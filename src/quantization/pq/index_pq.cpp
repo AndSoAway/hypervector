@@ -28,6 +28,13 @@ IndexPQ::IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric)
   is_trained = false;
 }
 
+IndexCapabilities IndexPQ::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  capabilities.requires_training = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
+
 void IndexPQ::Train(idx_t n, const float* x) {
   pq.Train(n, x);
   is_trained = true;

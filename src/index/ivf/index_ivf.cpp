@@ -39,6 +39,13 @@ IndexIVF::~IndexIVF() {
   }
 }
 
+IndexCapabilities IndexIVF::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  capabilities.requires_training = true;
+  capabilities.supports_add_with_ids = true;
+  return capabilities;
+}
+
 void IndexIVF::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(
       n_total == 0,

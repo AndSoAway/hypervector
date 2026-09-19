@@ -21,6 +21,8 @@ struct IndexIVFLVQ : IndexIVF {
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;

@@ -44,6 +44,8 @@ struct IndexPQ : Index {
    *  @param metric  distance metric; T1 requires kMetricL2 */
   IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Train the underlying ProductQuantizer on the given vectors. */
   void Train(idx_t n, const float* x) override;
 

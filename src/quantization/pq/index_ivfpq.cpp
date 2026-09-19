@@ -75,6 +75,12 @@ IndexIVFPQ::IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
     static_cast<int>(metric));
 }
 
+IndexCapabilities IndexIVFPQ::GetCapabilities() const {
+  IndexCapabilities capabilities = IndexIVF::GetCapabilities();
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
+
 // ===========================================================================
 // Training
 // ===========================================================================

@@ -93,6 +93,20 @@ struct SearchParameters {
   virtual ~SearchParameters() {}
 };
 
+/** Optional operations and construction requirements exposed by an index.
+ *
+ * These flags describe the index type, not its current trained or populated
+ * state. A supported operation can still reject invalid arguments or state.
+ */
+struct IndexCapabilities {
+  bool requires_training = false;
+  bool supports_add_with_ids = false;
+  bool supports_remove_ids = false;
+  bool supports_range_search = false;
+  bool supports_reconstruct = false;
+  bool supports_merge = false;
+};
+
 /** Abstract structure for an index, supports adding vectors and searching
  * them.
  *
@@ -124,6 +138,9 @@ struct Index {
     , metric_arg(0) {}
 
   virtual ~Index();
+
+  /** Report optional operations supported by this index type. */
+  virtual IndexCapabilities GetCapabilities() const;
 
   /** Perform training on a representative set of vectors
    *

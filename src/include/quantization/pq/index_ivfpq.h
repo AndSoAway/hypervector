@@ -61,6 +61,8 @@ struct IndexIVFPQ : IndexIVF {
   IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
              MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Train the coarse quantizer on x, then train the PQ on residuals
    *  (if by_residual) or on x directly. If use_precomputed_table is set,
    *  populate the cache as well. */

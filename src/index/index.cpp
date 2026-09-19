@@ -23,6 +23,8 @@ namespace hypervec {
 
 Index::~Index() = default;
 
+IndexCapabilities Index::GetCapabilities() const { return {}; }
+
 void Index::Train(idx_t /*n*/, const float* /*x*/) {
   // does nothing by default
 }

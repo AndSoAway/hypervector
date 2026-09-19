@@ -119,6 +119,15 @@ IndexIDMap::~IndexIDMap() {
   }
 }
 
+IndexCapabilities IndexIDMap::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  if (index != nullptr) {
+    capabilities = index->GetCapabilities();
+  }
+  capabilities.supports_add_with_ids = true;
+  return capabilities;
+}
+
 idx_t IndexIDMap::to_internal(idx_t id) const {
   auto it = id_map.find(id);
   if (it == id_map.end()) {

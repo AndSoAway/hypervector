@@ -73,6 +73,19 @@ IndexHNSW::~IndexHNSW() {
   }
 }
 
+IndexCapabilities IndexHNSW::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  if (storage != nullptr) {
+    const IndexCapabilities storage_capabilities = storage->GetCapabilities();
+    capabilities.requires_training = storage_capabilities.requires_training;
+    capabilities.supports_range_search =
+        storage_capabilities.supports_range_search;
+    capabilities.supports_reconstruct =
+        storage_capabilities.supports_reconstruct;
+  }
+  return capabilities;
+}
+
 void IndexHNSW::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
                             "IndexHNSW::Train: storage is null");

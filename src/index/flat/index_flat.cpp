@@ -27,6 +27,15 @@ namespace hypervec {
 IndexFlat::IndexFlat(idx_t d, MetricType metric)
   : IndexFlatCodes(sizeof(float) * d, d, metric) {}
 
+IndexCapabilities IndexFlat::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  capabilities.supports_remove_ids = true;
+  capabilities.supports_range_search = true;
+  capabilities.supports_reconstruct = true;
+  capabilities.supports_merge = true;
+  return capabilities;
+}
+
 void IndexFlat::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
   IDSelector* sel = params ? params->sel : nullptr;

@@ -38,6 +38,7 @@ option(HYPERVEC_ENABLE_MKL "Enable MKL." OFF)
 option(HYPERVEC_ENABLE_PYTHON "Build Python extension." OFF)
 option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
 option(HYPERVEC_ENABLE_EXTRAS "Build C++ examples" OFF)
+option(HYPERVEC_ENABLE_EVAL "Build the hypervec_eval command-line tool" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
 
 # FindBLAS otherwise tries every installed provider and may combine HyperVec's
@@ -83,6 +84,7 @@ message(STATUS "  build tests         : ${BUILD_TESTING}")
 message(STATUS "  fetch dependencies  : ${HYPERVEC_FETCH_DEPS}")
 message(STATUS "  build Python        : ${HYPERVEC_ENABLE_PYTHON}")
 message(STATUS "  build examples      : ${HYPERVEC_ENABLE_EXTRAS}")
+message(STATUS "  build eval tool     : ${HYPERVEC_ENABLE_EVAL}")
 message(STATUS "  enable LTO          : ${HYPERVEC_USE_LTO}")
 
 # CTest is included before test subdirectories so BUILD_TESTING has one clear,
@@ -97,6 +99,10 @@ endif()
 
 if(HYPERVEC_ENABLE_EXTRAS)
   add_subdirectory(test/examples/cpp)
+endif()
+
+if(HYPERVEC_ENABLE_EVAL)
+  add_subdirectory(tools/eval)
 endif()
 
 if(BUILD_TESTING)

@@ -7,6 +7,7 @@
 
 set(HYPERVEC_SRC
   eval/search_evaluator.cpp
+  eval/vector_dataset.cpp
   index/index.cpp
   index/index_factory.cpp
   index/search_parameters_factory.cpp

@@ -1,0 +1,44 @@
+name: pull-request-policy
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      CLANG_FORMAT_BINARY: clang-format-18
+      GIT_CLANG_FORMAT_BINARY: git-clang-format-18
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce review-size limit
+        run: scripts/ci/check_pr_size.sh "${BASE_SHA}" "${HEAD_SHA}" 1000
+
+      - name: Install formatting tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-18
+
+      - name: Check changed C++ lines
+        run: scripts/ci/check_clang_format.sh "${BASE_SHA}" "${HEAD_SHA}"

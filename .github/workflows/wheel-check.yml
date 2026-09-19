@@ -1,22 +1,28 @@
 name: python-wheel-check
 
-# Automated version of the "build the wheel from the CMake build dir" gate
-# that D1/D2 were missing (Issue #41). The Python package is assembled from
-# two places that used to be maintained by hand — CMake configure_file list
-# and setup.py copyfile list — and a drift between them only surfaced as a
-# FileNotFoundError (missing rwlock.py / examples_data.py) when building the
-# Docker image, i.e. at deploy time. This job rebuilds the wheel from a clean
-# CMake build dir on every push/PR so the same failure becomes a CI error.
-
 on:
   push:
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   wheel:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |

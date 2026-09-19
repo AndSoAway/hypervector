@@ -1,0 +1,84 @@
+name: cpp-build-check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC
+            cc: gcc
+            cxx: g++
+          - name: Clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install C++ dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build libomp-dev \
+            libopenblas-dev liblapack-dev libgtest-dev
+
+      - name: Build release core
+        run: |
+          cmake -S . -B build/core -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHYPERVEC_FETCH_DEPS=OFF \
+            -DHYPERVEC_OPT_LEVEL=generic
+          cmake --build build/core --parallel 2
+
+      - name: Build tests and examples
+        run: |
+          cmake -S . -B build/development -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+            -DHYPERVEC_FETCH_DEPS=OFF \
+            -DHYPERVEC_ENABLE_EXTRAS=ON \
+            -DHYPERVEC_OPT_LEVEL=generic
+          cmake --build build/development --parallel 2
+
+      - name: Run C++ tests
+        run: |
+          ctest --test-dir build/development \
+            --output-on-failure \
+            --no-tests=error \
+            --timeout 120
+
+      - name: Verify unavailable target rejection
+        if: matrix.name == 'GCC'
+        run: |
+          if cmake -S . -B build/unavailable -G Ninja \
+            -DBUILD_TESTING=OFF \
+            -DHYPERVEC_OPT_LEVEL=avx2; then
+            echo "::error::The unavailable avx2 target was accepted."
+            exit 1
+          fi

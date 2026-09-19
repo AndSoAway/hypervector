@@ -143,11 +143,35 @@ struct Index {
   virtual void Train(idx_t n, const float* x, idx_t n_train_q,
                      const float* xq_train);
 
+  /** Train an empty index and add its initial dataset in one operation.
+   *
+   * Build is the common construction entry point for callers that should not
+   * need to know whether a concrete index requires training. Implementations
+   * that need a different construction pipeline may override it.
+   *
+   * @param n      number of vectors; must be positive
+   * @param x      input vectors, size n * d
+   */
+  virtual void Build(idx_t n, const float* x);
+
+  /** Query-aware Build variant for algorithms that train with representative
+   * queries as well as base vectors. */
+  virtual void Build(idx_t n, const float* x, idx_t n_train_q,
+                     const float* xq_train);
+
   virtual void TrainEx(idx_t n, const void* x, NumericType numeric_type) {
     if (numeric_type == NumericType::kFloat32) {
       Train(n, static_cast<const float*>(x));
     } else {
       HYPERVEC_THROW_MSG("Index::Train: unsupported numeric type");
+    }
+  }
+
+  virtual void BuildEx(idx_t n, const void* x, NumericType numeric_type) {
+    if (numeric_type == NumericType::kFloat32) {
+      Build(n, static_cast<const float*>(x));
+    } else {
+      HYPERVEC_THROW_MSG("Index::Build: unsupported numeric type");
     }
   }
 

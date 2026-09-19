@@ -8,12 +8,14 @@
 
 // -*- c++ -*-
 
-#include <utils/distances/distance_computer.h>
-#include <utils/log/exception.h>
 #include <index/index.h>
 #include <utils/common/range_search_result.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/distances/distances.h>
+#include <utils/log/exception.h>
 
+#include <cinttypes>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 
@@ -25,9 +27,61 @@ void Index::Train(idx_t /*n*/, const float* /*x*/) {
   // does nothing by default
 }
 
-void Index::Train(idx_t /*n*/, const float* /*x*/, idx_t /*n_train_q*/,
+void Index::Train(idx_t n, const float* x, idx_t /*n_train_q*/,
                   const float* /*xq_train*/) {
-  // does nothing by default
+  // Indexes that do not use representative queries fall back to their
+  // regular training implementation.
+  Train(n, x);
+}
+
+namespace {
+
+void ValidateBuildInputs(const Index& index, idx_t n, const float* x) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.n_total == 0,
+                            "Index::Build: index must be empty");
+  HYPERVEC_THROW_IF_NOT_MSG(n > 0, "Index::Build: n must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr, "Index::Build: x must not be null");
+}
+
+void ValidateBuildResult(const Index& index, idx_t expected_total) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.is_trained,
+      "Index::Build: Train returned without marking the index as trained");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      index.n_total == expected_total,
+      "Index::Build: Add produced an unexpected vector count (expected %" PRId64
+      ", got %" PRId64 ")",
+      static_cast<int64_t>(expected_total),
+      static_cast<int64_t>(index.n_total));
+}
+
+}  // namespace
+
+void Index::Build(idx_t n, const float* x) {
+  ValidateBuildInputs(*this, n, x);
+  Train(n, x);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      is_trained,
+      "Index::Build: Train returned without marking the index as trained");
+  Add(n, x);
+  ValidateBuildResult(*this, n);
+}
+
+void Index::Build(idx_t n, const float* x, idx_t n_train_q,
+                  const float* xq_train) {
+  ValidateBuildInputs(*this, n, x);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_train_q >= 0,
+      "Index::Build: query training count must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_train_q == 0 || xq_train != nullptr,
+      "Index::Build: query training data must not be null");
+  Train(n, x, n_train_q, xq_train);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      is_trained,
+      "Index::Build: Train returned without marking the index as trained");
+  Add(n, x);
+  ValidateBuildResult(*this, n);
 }
 
 void Index::RangeSearch(idx_t, const float*, float, RangeSearchResult*,

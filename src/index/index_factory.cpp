@@ -21,6 +21,7 @@
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
 #include <transform/opq_matrix.h>
 #include <utils/log/assert.h>
 
@@ -176,6 +177,20 @@ std::unique_ptr<Index> MakeIVFLVQ(const IndexConfig& config) {
                                        config.metric_type);
 }
 
+std::unique_ptr<Index> MakeIVFRaBitQ(const IndexConfig& config) {
+  RequireL2(config, "ivf_rabitq");
+  const idx_t nlist = PositiveIndexParameter(config, "nlist", 1024);
+  const int64_t random_seed = config.GetInteger(
+      "random_seed", static_cast<int64_t>(HYPERVEC_RABITQ_DEFAULT_SEED));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      random_seed >= 0, "index parameter 'random_seed' must be non-negative");
+  const int rotation_rounds = PositiveIntParameter(
+      config, "rotation_rounds", HYPERVEC_RABITQ_DEFAULT_ROTATION_ROUNDS);
+  return std::make_unique<IndexIVFRaBitQ>(config.dimension, nlist,
+                                          static_cast<uint64_t>(random_seed),
+                                          rotation_rounds, config.metric_type);
+}
+
 std::unique_ptr<Index> MakeHNSWFlat(const IndexConfig& config) {
   const int degree = HnswDegree(config);
   auto index = std::make_unique<IndexHNSWFlat>(
@@ -297,6 +312,10 @@ void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register(
       {"ivf_lvq", {"ivflvq", "IndexIVFLVQ"}, {"nlist", "nlocal", "nbits"}},
       MakeIVFLVQ);
+  registry->Register({"ivf_rabitq",
+                      {"ivfrabitq", "IndexIVFRaBitQ"},
+                      {"nlist", "random_seed", "rotation_rounds"}},
+                     MakeIVFRaBitQ);
   registry->Register({"hnsw_flat",
                       {"hnsw", "hnswflat", "IndexHNSWFlat", "autoindex"},
                       {"m_hnsw"}},

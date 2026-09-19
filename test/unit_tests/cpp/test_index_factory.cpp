@@ -22,6 +22,7 @@
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
 #include <transform/opq_matrix.h>
 #include <utils/log/exception.h>
 
@@ -42,6 +43,7 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("nlocal", 2)
       .SetInteger("nbits", 2)
       .SetInteger("opq_iterations", 2)
+      .SetInteger("rotation_rounds", 2)
       .SetInteger("m_hnsw", 4)
       .SetInteger("table_count", 3)
       .SetInteger("bits_per_table", 4)
@@ -118,10 +120,10 @@ TEST(IndexRegistry, ListsAllBuiltInIndexesDeterministically) {
     names.push_back(descriptor.name);
   }
 
-  EXPECT_EQ(names, (std::vector<std::string>{"flat", "hnsw_flat", "hnsw_lvq",
-                                             "hnsw_pq", "ivf_flat", "ivf_lvq",
-                                             "ivf_pq", "lsh", "lvq", "nsg_flat",
-                                             "nsw_flat", "opq_pq", "pq"}));
+  EXPECT_EQ(names, (std::vector<std::string>{
+                       "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
+                       "ivf_lvq", "ivf_pq", "ivf_rabitq", "lsh", "lvq",
+                       "nsg_flat", "nsw_flat", "opq_pq", "pq"}));
 }
 
 TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
@@ -132,6 +134,7 @@ TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
   ExpectBuiltIn<hypervec::IndexIVFFlat>("ivf_flat");
   ExpectBuiltIn<hypervec::IndexIVFPQ>("ivf_pq");
   ExpectBuiltIn<hypervec::IndexIVFLVQ>("ivf_lvq");
+  ExpectBuiltIn<hypervec::IndexIVFRaBitQ>("ivf_rabitq");
   ExpectBuiltIn<hypervec::IndexHNSWFlat>("hnsw_flat");
   ExpectBuiltIn<hypervec::IndexHNSWPQ>("hnsw_pq");
   ExpectBuiltIn<hypervec::IndexHNSWLVQ>("hnsw_lvq");
@@ -151,6 +154,18 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(ivf->nlist, 7);
   EXPECT_EQ(ivf->pq.M, 3);
   EXPECT_EQ(ivf->pq.nbits, 4);
+
+  hypervec::IndexConfig rabitq_config("ivf_rabitq", 12);
+  rabitq_config.SetInteger("nlist", 7)
+      .SetInteger("random_seed", 19)
+      .SetInteger("rotation_rounds", 4);
+  auto rabitq_base = hypervec::CreateIndex(rabitq_config);
+  auto* rabitq = dynamic_cast<hypervec::IndexIVFRaBitQ*>(rabitq_base.get());
+  ASSERT_NE(rabitq, nullptr);
+  ASSERT_NE(rabitq->rabitq, nullptr);
+  EXPECT_EQ(rabitq->nlist, 7);
+  EXPECT_EQ(rabitq->rabitq->Seed(), 19U);
+  EXPECT_EQ(rabitq->rabitq->RotationRounds(), 4);
 
   hypervec::IndexConfig opq_config("opq_pq", 12);
   opq_config.SetInteger("m_pq", 3)
@@ -277,6 +292,11 @@ TEST(IndexRegistry, ResolvesAliasesCaseInsensitively) {
   opq_config.SetInteger("m_pq", 2).SetInteger("nbits", 2);
   auto opq = hypervec::CreateIndex(opq_config);
   EXPECT_NE(dynamic_cast<hypervec::IndexPreTransform*>(opq.get()), nullptr);
+
+  hypervec::IndexConfig rabitq_config("InDeXiVfRaBiTq", 4);
+  rabitq_config.SetInteger("nlist", 2);
+  auto rabitq = hypervec::CreateIndex(rabitq_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexIVFRaBitQ*>(rabitq.get()), nullptr);
 }
 
 TEST(IndexRegistry, CanComposeAnOwningIdMap) {
@@ -344,6 +364,16 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   EXPECT_THROW(hypervec::CreateIndex(
                    hypervec::IndexConfig("ivf_flat", 4, hypervec::kMetricL1)),
                hypervec::HypervecException);
+
+  EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig(
+                   "ivf_rabitq", 4, hypervec::kMetricInnerProduct)),
+               hypervec::HypervecException);
+  hypervec::IndexConfig bad_rabitq("ivf_rabitq", 4);
+  bad_rabitq.SetInteger("random_seed", -1);
+  EXPECT_THROW(hypervec::CreateIndex(bad_rabitq), hypervec::HypervecException);
+  bad_rabitq = hypervec::IndexConfig("ivf_rabitq", 4);
+  bad_rabitq.SetInteger("rotation_rounds", 17);
+  EXPECT_THROW(hypervec::CreateIndex(bad_rabitq), hypervec::HypervecException);
 
   hypervec::IndexConfig bad_lp("flat", 4, hypervec::kMetricLp);
   EXPECT_THROW(hypervec::CreateIndex(bad_lp), hypervec::HypervecException);

@@ -15,6 +15,8 @@ set(HYPERVEC_SRC
   index/flat/index_flat_codes.cpp
   index/graph/graph_searcher.cpp
   index/graph/graph_storage.cpp
+  index/graph/graph_validation.cpp
+  index/graph/neighbor_pruner.cpp
   index/graph/visited_table.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp

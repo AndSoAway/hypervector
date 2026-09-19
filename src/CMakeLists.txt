@@ -6,6 +6,7 @@
 # CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
+  eval/search_evaluator.cpp
   index/index.cpp
   index/index_factory.cpp
   index/search_parameters_factory.cpp

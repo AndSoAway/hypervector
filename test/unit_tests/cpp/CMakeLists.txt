@@ -25,6 +25,7 @@ set(HYPERVEC_TEST_SRC
   test_index_capabilities.cpp
   test_index_factory.cpp
   test_search_parameters_factory.cpp
+  test_search_evaluator.cpp
   test_index_lsh.cpp
   test_index_pre_transform.cpp
   test_index_hnsw_correctness.cpp

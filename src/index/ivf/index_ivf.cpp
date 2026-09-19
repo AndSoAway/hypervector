@@ -7,13 +7,19 @@
  */
 
 #include <index/ivf/index_ivf.h>
+#include <index/ivf/inverted_list_scanner.h>
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 #include <utils/structures/heap.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include <algorithm>
 #include <exception>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -24,11 +30,11 @@ namespace hypervec {
 // ---------------------------------------------------------------------------
 
 IndexIVF::IndexIVF(idx_t d, idx_t nlist, size_t code_size, MetricType metric)
-  : Index(d, metric)
-  , nlist(nlist)
-  , nprobe(1)
-  , invlists(new ArrayInvertedLists(nlist, code_size))
-  , own_invlists(true) {
+    : Index(d, metric),
+      nlist(nlist),
+      nprobe(1),
+      invlists(new ArrayInvertedLists(nlist, code_size)),
+      own_invlists(true) {
   is_trained = false;
   centroids.resize(static_cast<size_t>(nlist) * d);
 }
@@ -55,9 +61,7 @@ void IndexIVF::Train(idx_t n, const float* x) {
   is_trained = true;
 }
 
-void IndexIVF::Add(idx_t n, const float* x) {
-  AddWithIds(n, x, nullptr);
-}
+void IndexIVF::Add(idx_t n, const float* x) { AddWithIds(n, x, nullptr); }
 
 void IndexIVF::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
@@ -82,31 +86,137 @@ void IndexIVF::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
 }
 
 void IndexIVF::Search(idx_t n, const float* x, idx_t k, float* distances,
-                      idx_t* labels,
-                      const SearchParameters* params) const {
+                      idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexIVF::Search: n must be non-negative");
   HYPERVEC_THROW_IF_NOT(k > 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || (x != nullptr && distances != nullptr && labels != nullptr),
+      "IndexIVF::Search: input and output pointers must not be null");
   if (n == 0) {
     return;
   }
 
   const IVFSearchParameters* ivf_params =
-    dynamic_cast<const IVFSearchParameters*>(params);
+      dynamic_cast<const IVFSearchParameters*>(params);
   const IDSelector* sel = params ? params->sel : nullptr;
-  idx_t nprobe_actual =
-    ivf_params ? ivf_params->nprobe : nprobe;
+  idx_t nprobe_actual = ivf_params ? ivf_params->nprobe : nprobe;
   HYPERVEC_THROW_IF_NOT_MSG(nprobe_actual > 0,
                             "IndexIVF::Search: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
-  std::vector<float> centroid_dis(static_cast<size_t>(n) * nprobe_actual);
-  std::vector<idx_t> centroid_ids(static_cast<size_t>(n) * nprobe_actual);
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::Search assignment count");
+  std::vector<float> centroid_dis(assignment_count);
+  std::vector<idx_t> centroid_ids(assignment_count);
   FindNearestCentroids(n, x, nprobe_actual, centroid_dis.data(),
                        centroid_ids.data());
 
   SearchPreassigned(n, x, k, centroid_ids.data(), centroid_dis.data(),
                     distances, labels, nprobe_actual, sel);
+}
+
+void IndexIVF::SearchPreassigned(idx_t n, const float* x, idx_t k,
+                                 const idx_t* list_ids,
+                                 const float* centroid_dis, float* distances,
+                                 idx_t* labels, idx_t nprobe_actual,
+                                 const IDSelector* sel) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      is_trained, "IndexIVF::SearchPreassigned: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n >= 0, "IndexIVF::SearchPreassigned: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0,
+                            "IndexIVF::SearchPreassigned: k must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nprobe_actual > 0 && nprobe_actual <= nlist,
+      "IndexIVF::SearchPreassigned: nprobe must be in [1, nlist]");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || (x != nullptr && list_ids != nullptr && distances != nullptr &&
+                 labels != nullptr),
+      "IndexIVF::SearchPreassigned: input and output pointers must not be "
+      "null");
+  if (n == 0) {
+    return;
+  }
+
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::SearchPreassigned assignment count");
+  for (size_t i = 0; i < assignment_count; ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        list_ids[i] < 0 || list_ids[i] < nlist,
+        "IndexIVF::SearchPreassigned: list id is outside [0, nlist)");
+  }
+
+  size_t scanner_count = 1;
+#ifdef _OPENMP
+  scanner_count = static_cast<size_t>(omp_get_max_threads());
+#endif
+  scanner_count = std::min(scanner_count, static_cast<size_t>(n));
+  std::vector<std::unique_ptr<InvertedListScanner>> scanners;
+  scanners.reserve(scanner_count);
+  for (size_t i = 0; i < scanner_count; ++i) {
+    std::unique_ptr<InvertedListScanner> scanner = CreateInvertedListScanner();
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner != nullptr,
+        "IndexIVF::SearchPreassigned: scanner factory returned null");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        scanner->Metric() == metric_type &&
+            scanner->CodeSize() == invlists->code_size,
+        "IndexIVF::SearchPreassigned: scanner does not match index storage");
+    scanners.push_back(std::move(scanner));
+  }
+
+  const bool similarity = IsSimilarityMetric(metric_type);
+#pragma omp parallel num_threads(scanner_count) if (n > 1)
+  {
+    size_t scanner_no = 0;
+#ifdef _OPENMP
+    scanner_no = static_cast<size_t>(omp_get_thread_num());
+#endif
+    InvertedListScanner* scanner = scanners[scanner_no].get();
+#pragma omp for schedule(dynamic, 1)
+    for (idx_t query_no = 0; query_no < n; ++query_no) {
+      scanner->SetQuery(x + query_no * d);
+      float* heap_distances = distances + query_no * k;
+      idx_t* heap_ids = labels + query_no * k;
+      if (similarity) {
+        heap_heapify<CMin<float, idx_t>>(k, heap_distances, heap_ids);
+      } else {
+        heap_heapify<CMax<float, idx_t>>(k, heap_distances, heap_ids);
+      }
+
+      for (idx_t probe = 0; probe < nprobe_actual; ++probe) {
+        const size_t probe_offset =
+            static_cast<size_t>(query_no) * nprobe_actual + probe;
+        const idx_t list_no = list_ids[probe_offset];
+        if (list_no < 0) {
+          continue;
+        }
+        const size_t list_size =
+            invlists->list_size(static_cast<size_t>(list_no));
+        if (list_size == 0) {
+          continue;
+        }
+
+        const float coarse_distance =
+            centroid_dis == nullptr ? 0.0F : centroid_dis[probe_offset];
+        scanner->SetList(list_no, coarse_distance);
+        InvertedLists::ScopedCodes codes(invlists,
+                                         static_cast<size_t>(list_no));
+        InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
+        scanner->ScanKnn(codes.get(), ids.get(), list_size, sel, k,
+                         heap_distances, heap_ids);
+      }
+
+      if (similarity) {
+        heap_reorder<CMin<float, idx_t>>(k, heap_distances, heap_ids);
+      } else {
+        heap_reorder<CMax<float, idx_t>>(k, heap_distances, heap_ids);
+      }
+    }
+  }
 }
 
 void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
@@ -120,35 +230,48 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
   HYPERVEC_THROW_IF_NOT_MSG(
       result->nq == static_cast<size_t>(n),
       "IndexIVF::RangeSearch: result query count does not match n");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      invlists->code_size == static_cast<size_t>(d) * sizeof(float),
-      "IndexIVF::RangeSearch only supports raw float vector codes; compressed "
-      "IVF indexes require a codec-aware implementation");
+  HYPERVEC_THROW_IF_NOT_MSG(n == 0 || x != nullptr,
+                            "IndexIVF::RangeSearch: query pointer must not be "
+                            "null when n is positive");
+  if (n == 0) {
+    result->DoAllocation();
+    return;
+  }
 
   const IVFSearchParameters* ivf_params =
-    dynamic_cast<const IVFSearchParameters*>(params);
+      dynamic_cast<const IVFSearchParameters*>(params);
   const IDSelector* sel = params ? params->sel : nullptr;
-  idx_t nprobe_actual =
-    ivf_params ? ivf_params->nprobe : nprobe;
+  idx_t nprobe_actual = ivf_params ? ivf_params->nprobe : nprobe;
   HYPERVEC_THROW_IF_NOT_MSG(nprobe_actual > 0,
                             "IndexIVF::RangeSearch: nprobe must be positive");
   nprobe_actual = std::min(nprobe_actual, nlist);
 
-  std::vector<float> centroid_dis(static_cast<size_t>(n) * nprobe_actual);
-  std::vector<idx_t> centroid_ids(static_cast<size_t>(n) * nprobe_actual);
+  const size_t assignment_count = mul_no_overflow(
+      static_cast<size_t>(n), static_cast<size_t>(nprobe_actual),
+      "IndexIVF::RangeSearch assignment count");
+  std::vector<float> centroid_dis(assignment_count);
+  std::vector<idx_t> centroid_ids(assignment_count);
   FindNearestCentroids(n, x, nprobe_actual, centroid_dis.data(),
                        centroid_ids.data());
 
-  const bool sim = IsSimilarityMetric(metric_type);
-
   // Collect results per query, then fill the RangeSearchResult in two passes.
   std::vector<std::vector<std::pair<float, idx_t>>> per_query(
-    static_cast<size_t>(n));
+      static_cast<size_t>(n));
+
+  std::unique_ptr<InvertedListScanner> scanner = CreateInvertedListScanner();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      scanner != nullptr,
+      "IndexIVF::RangeSearch: scanner factory returned null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      scanner->Metric() == metric_type &&
+          scanner->CodeSize() == invlists->code_size,
+      "IndexIVF::RangeSearch: scanner does not match index storage");
 
   for (idx_t qi = 0; qi < n; qi++) {
-    const float* xq = x + qi * d;
+    scanner->SetQuery(x + qi * d);
     for (idx_t pi = 0; pi < nprobe_actual; pi++) {
-      const idx_t list_no = centroid_ids[qi * nprobe_actual + pi];
+      const size_t probe_offset = static_cast<size_t>(qi) * nprobe_actual + pi;
+      const idx_t list_no = centroid_ids[probe_offset];
       if (list_no < 0) {
         continue;
       }
@@ -159,28 +282,9 @@ void IndexIVF::RangeSearch(idx_t n, const float* x, float radius,
 
       InvertedLists::ScopedCodes codes(invlists, static_cast<size_t>(list_no));
       InvertedLists::ScopedIds ids(invlists, static_cast<size_t>(list_no));
-      const float* vecs = reinterpret_cast<const float*>(codes.get());
-      const idx_t* id_ptr = ids.get();
-
-      for (size_t j = 0; j < list_sz; j++) {
-        if (sel && !sel->IsMember(id_ptr[j])) {
-          continue;
-        }
-        float dist;
-        if (sim) {
-          dist = fvec_inner_product(xq, vecs + j * static_cast<size_t>(d),
-                                    static_cast<size_t>(d));
-          if (dist >= radius) {
-            per_query[static_cast<size_t>(qi)].push_back({dist, id_ptr[j]});
-          }
-        } else {
-          dist = fvec_L2sqr(xq, vecs + j * static_cast<size_t>(d),
-                            static_cast<size_t>(d));
-          if (dist <= radius) {
-            per_query[static_cast<size_t>(qi)].push_back({dist, id_ptr[j]});
-          }
-        }
-      }
+      scanner->SetList(list_no, centroid_dis[probe_offset]);
+      scanner->ScanRange(codes.get(), ids.get(), list_sz, sel, radius,
+                         &per_query[static_cast<size_t>(qi)]);
     }
   }
 
@@ -296,6 +400,11 @@ void IndexIVF::AddEncodedVectors(idx_t n, const idx_t* list_ids,
   }
 
   n_total += n;
+}
+
+InvertedListScannerPtr IndexIVF::CreateInvertedListScanner() const {
+  HYPERVEC_THROW_MSG(
+      "IndexIVF: this index does not provide an inverted-list scanner");
 }
 
 }  // namespace hypervec

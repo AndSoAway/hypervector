@@ -52,7 +52,9 @@ jobs:
 
       - name: Install wheel and import gate
         run: |
-          /tmp/hv-venv/bin/pip install numpy fastapi uvicorn hypercorn h2
+          /tmp/hv-venv/bin/pip install \
+            numpy pytest httpx fastapi uvicorn hypercorn h2 \
+            'grpcio>=1.83,<2' 'protobuf>=7.35.1,<8'
           /tmp/hv-venv/bin/pip install --force-reinstall --no-deps build-wheel/src/python/dist/*.whl
           /tmp/hv-venv/bin/python - <<'PY'
           import hypervec
@@ -62,3 +64,15 @@ jobs:
           assert index.d == 2
           print("import-ok")
           PY
+
+      - name: Run maintained Python unit tests
+        run: |
+          # These legacy suites are tracked separately: the external
+          # module is not part of the wheel target, test_io imports a missing
+          # common_Hypervec_tests fixture, and the OpenMP/SIMD utility APIs are
+          # not currently exposed through SWIG.
+          /tmp/hv-venv/bin/python -m pytest -q test/unit_tests/python \
+            --ignore=test/unit_tests/python/external_module_test.py \
+            --ignore=test/unit_tests/python/test_io.py \
+            --ignore=test/unit_tests/python/test_omp_threads_py.py \
+            --ignore=test/unit_tests/python/test_simd_dispatch.py

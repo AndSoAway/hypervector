@@ -39,8 +39,6 @@ struct ServerConfig {
   std::string data_root = "./data";
   std::string host = "127.0.0.1";
   int port = 8080;
-  std::string server_mode = "http";
-  bool enable_http2 = true;
 };
 
 struct HypervecConfig {

@@ -81,7 +81,7 @@ TEST(IndexCapabilities, IvfVariantsDistinguishRangeSearchSupport) {
   const auto pq_capabilities = pq.GetCapabilities();
   EXPECT_TRUE(pq_capabilities.requires_training);
   EXPECT_TRUE(pq_capabilities.supports_add_with_ids);
-  EXPECT_FALSE(pq_capabilities.supports_range_search);
+  EXPECT_TRUE(pq_capabilities.supports_range_search);
   EXPECT_TRUE(pq_capabilities.supports_reconstruct);
 
   const auto lvq_capabilities = lvq.GetCapabilities();

@@ -140,19 +140,6 @@ TEST(IndexIVFCorrectness, AddRollsBackEveryListOnFailure) {
   EXPECT_EQ(index.invlists->list_size(1), 0);
 }
 
-TEST(IndexIVFCorrectness, TrainedPQRangeSearchFailsExplicitly) {
-  constexpr hypervec::idx_t d = 4;
-  constexpr hypervec::idx_t count = 16;
-  const auto training = RandomVectors(count, d, 2001);
-
-  hypervec::IndexIVFPQ pq(d, 2, 2, 2);
-  pq.Train(count, training.data());
-  pq.Add(count, training.data());
-  hypervec::RangeSearchResult pq_result(1);
-  EXPECT_THROW(pq.RangeSearch(1, training.data(), 1.0f, &pq_result),
-               hypervec::HypervecException);
-}
-
 TEST(IndexIVFCorrectness, NonPositiveNprobeIsRejected) {
   constexpr hypervec::idx_t d = 2;
   hypervec::IndexIVFFlat index(d, 1);

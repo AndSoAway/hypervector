@@ -53,6 +53,31 @@ class FailingArrayInvertedLists : public hypervec::ArrayInvertedLists {
   int calls_ = 0;
 };
 
+void InstallFailingLists(hypervec::IndexIVF* index) {
+  const size_t code_size = index->invlists->code_size;
+  delete index->invlists;
+  index->invlists = new FailingArrayInvertedLists(
+      static_cast<size_t>(index->nlist), code_size, /*fail_on_call=*/2);
+  index->own_invlists = true;
+}
+
+void ExpectCompressedAddRollback(hypervec::IndexIVF* index) {
+  ASSERT_EQ(index->d, 4);
+  ASSERT_EQ(index->nlist, 2);
+  index->centroids = {
+      0.0f, 0.0f, 0.0f, 0.0f, 100.0f, 100.0f, 100.0f, 100.0f,
+  };
+  InstallFailingLists(index);
+
+  const std::vector<float> vectors = {
+      0.0f, 0.0f, 0.0f, 0.0f, 100.0f, 100.0f, 100.0f, 100.0f,
+  };
+  EXPECT_THROW(index->Add(2, vectors.data()), std::runtime_error);
+  EXPECT_EQ(index->n_total, 0);
+  EXPECT_EQ(index->invlists->list_size(0), 0);
+  EXPECT_EQ(index->invlists->list_size(1), 0);
+}
+
 }  // namespace
 
 TEST(IndexIVFCorrectness, InnerProductTrainingUsesSphericalCentroids) {
@@ -148,4 +173,78 @@ TEST(IndexIVFCorrectness, NonPositiveNprobeIsRejected) {
   hypervec::idx_t label;
   EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label, &params),
                hypervec::HypervecException);
+}
+
+TEST(IndexIVFCorrectness, FailedQuantizerTrainingDoesNotPartiallyCommit) {
+  constexpr hypervec::idx_t d = 4;
+  const auto insufficient = RandomVectors(4, d, 2002);
+
+  hypervec::IndexIVFPQ pq(d, 2, 2, 3);
+  const auto pq_centroids = pq.centroids;
+  EXPECT_THROW(pq.Train(4, insufficient.data()), hypervec::HypervecException);
+  EXPECT_FALSE(pq.is_trained);
+  EXPECT_FALSE(pq.pq.is_trained);
+  EXPECT_EQ(pq.centroids, pq_centroids);
+
+  hypervec::IndexIVFLVQ lvq(d, 2, 8, 2);
+  const auto lvq_centroids = lvq.centroids;
+  EXPECT_THROW(lvq.Train(4, insufficient.data()), hypervec::HypervecException);
+  EXPECT_FALSE(lvq.is_trained);
+  EXPECT_FALSE(lvq.lvq.is_trained);
+  EXPECT_EQ(lvq.centroids, lvq_centroids);
+}
+
+TEST(IndexIVFCorrectness, FailedQuantizerRetrainingPreservesUsableState) {
+  constexpr hypervec::idx_t d = 4;
+  const auto training = RandomVectors(16, d, 2003);
+  const auto insufficient = RandomVectors(2, d, 2004);
+
+  hypervec::IndexIVFPQ pq(d, 2, 2, 2);
+  pq.use_precomputed_table = 1;
+  pq.Train(16, training.data());
+  const auto pq_coarse = pq.centroids;
+  const auto pq_codebooks = pq.pq.centroids;
+  const auto pq_table = pq.precomputed_table;
+  EXPECT_THROW(pq.Train(2, insufficient.data()), hypervec::HypervecException);
+  EXPECT_TRUE(pq.is_trained);
+  EXPECT_TRUE(pq.pq.is_trained);
+  EXPECT_EQ(pq.centroids, pq_coarse);
+  EXPECT_EQ(pq.pq.centroids, pq_codebooks);
+  EXPECT_EQ(pq.precomputed_table, pq_table);
+
+  hypervec::IndexIVFLVQ lvq(d, 2, 4, 2);
+  lvq.Train(16, training.data());
+  const auto lvq_coarse = lvq.centroids;
+  const auto lvq_codebooks = lvq.lvq.decoded_codebooks;
+  EXPECT_THROW(lvq.Train(2, insufficient.data()), hypervec::HypervecException);
+  EXPECT_TRUE(lvq.is_trained);
+  EXPECT_TRUE(lvq.lvq.is_trained);
+  EXPECT_EQ(lvq.centroids, lvq_coarse);
+  EXPECT_EQ(lvq.lvq.decoded_codebooks, lvq_codebooks);
+}
+
+TEST(IndexIVFCorrectness, InvalidPrecomputedModeDoesNotCommitTraining) {
+  constexpr hypervec::idx_t d = 4;
+  const auto training = RandomVectors(16, d, 2005);
+  hypervec::IndexIVFPQ pq(d, 2, 2, 2);
+  pq.by_residual = false;
+  pq.use_precomputed_table = 1;
+
+  EXPECT_THROW(pq.Train(16, training.data()), hypervec::HypervecException);
+  EXPECT_FALSE(pq.is_trained);
+  EXPECT_FALSE(pq.pq.is_trained);
+  EXPECT_TRUE(pq.precomputed_table.empty());
+}
+
+TEST(IndexIVFCorrectness, QuantizedAddsRollBackEveryTouchedList) {
+  constexpr hypervec::idx_t d = 4;
+  const auto training = RandomVectors(16, d, 2006);
+
+  hypervec::IndexIVFPQ pq(d, 2, 2, 2);
+  pq.Train(16, training.data());
+  ExpectCompressedAddRollback(&pq);
+
+  hypervec::IndexIVFLVQ lvq(d, 2, 2, 2);
+  lvq.Train(16, training.data());
+  ExpectCompressedAddRollback(&lvq);
 }

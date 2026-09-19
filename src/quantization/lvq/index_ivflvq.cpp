@@ -6,14 +6,14 @@
  * source tree.
  */
 
-#include <quantization/lvq/index_ivflvq.h>
-
 #include <invlists/inverted_lists.h>
+#include <quantization/lvq/index_ivflvq.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
 #include <utils/structures/heap.h>
 
 #include <cinttypes>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -33,25 +33,35 @@ IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
 }
 
 void IndexIVFLVQ::Train(idx_t n, const float* x) {
-  IndexIVF::Train(n, x);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_total == 0,
+      "IndexIVFLVQ::Train: reset the index before replacing trained state");
+
+  std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
+  LocalVectorQuantizer trained_lvq(lvq.d, lvq.nlocal, lvq.nbits);
   if (by_residual) {
     std::vector<float> coarse_dis(static_cast<size_t>(n));
     std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
-    FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
+    FindNearestCentroidsIn(trained_centroids, n, x, 1, coarse_dis.data(),
+                           centroid_ids.data());
 
     std::vector<float> residuals(static_cast<size_t>(n) * d);
     for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() + centroid_ids[i] * d;
+      const float* c = trained_centroids.data() + centroid_ids[i] * d;
       const float* xi = x + i * d;
       float* ri = residuals.data() + i * d;
       for (idx_t j = 0; j < d; j++) {
         ri[j] = xi[j] - c[j];
       }
     }
-    lvq.Train(n, residuals.data());
+    trained_lvq.Train(n, residuals.data());
   } else {
-    lvq.Train(n, x);
+    trained_lvq.Train(n, x);
   }
+
+  centroids = std::move(trained_centroids);
+  lvq = std::move(trained_lvq);
+  is_trained = true;
 }
 
 void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
@@ -78,7 +88,10 @@ void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
 }
 
 void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
-  HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexIVFLVQ::AddWithIds: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVFLVQ::AddWithIds: n must be non-negative");
   if (n == 0) {
     return;
   }
@@ -103,12 +116,7 @@ void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
     lvq.ComputeCodes(n, x, codes.data());
   }
 
-  for (idx_t i = 0; i < n; i++) {
-    const idx_t id = (xids != nullptr) ? xids[i] : n_total + i;
-    invlists->add_entry(static_cast<size_t>(centroid_ids[i]), id,
-                        codes.data() + static_cast<size_t>(i) * lvq.code_size);
-  }
-  n_total += n;
+  AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
 void IndexIVFLVQ::RangeSearch(idx_t /*n*/, const float* /*x*/, float /*radius*/,

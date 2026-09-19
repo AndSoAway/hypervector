@@ -140,12 +140,6 @@ void ProductQuantizer::Train(idx_t n, const float* x,
                             "ProductQuantizer::Train: nredo must be > 0, got %d",
                             params.nredo);
 
-  KMeansParameters kp;
-  kp.niter = params.niter;
-  kp.nredo = params.nredo;
-  kp.verbose = params.verbose;
-  kp.metric = kMetricL2;  // T1 scope: L2 only
-
   // Subquantizers are independent — train them in parallel. Each thread
   // needs its own slice buffer (size n * dsub) to hold the m-th subvector
   // slice contiguously.
@@ -154,6 +148,11 @@ void ProductQuantizer::Train(idx_t n, const float* x,
 #pragma omp parallel
   {
     std::vector<float> xslice(static_cast<size_t>(n) * dsub);
+    KMeansParameters kp;
+    kp.niter = params.niter;
+    kp.nredo = params.nredo;
+    kp.verbose = params.verbose;
+    kp.metric = kMetricL2;  // T1 scope: L2 only
 
 #pragma omp for
     for (idx_t m = 0; m < M; m++) {

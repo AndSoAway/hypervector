@@ -6,9 +6,8 @@
  * source tree.
  */
 
-#include <quantization/pq/index_ivfpq.h>
-
 #include <invlists/inverted_lists.h>
+#include <quantization/pq/index_ivfpq.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
@@ -16,9 +15,46 @@
 
 #include <cinttypes>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
+
+namespace {
+
+std::vector<float> BuildPrecomputedTable(
+    idx_t d, idx_t nlist, const std::vector<float>& coarse_centroids,
+    const ProductQuantizer& pq) {
+  const idx_t pq_m = pq.M;
+  const idx_t pq_ksub = pq.ksub;
+  const size_t table_per_cell = static_cast<size_t>(pq_m) * pq_ksub;
+  std::vector<float> table(static_cast<size_t>(nlist) * table_per_cell, 0.0f);
+
+  std::vector<float> residual_norms(table_per_cell);
+  for (idx_t m = 0; m < pq_m; ++m) {
+    fvec_norms_L2sqr(residual_norms.data() + m * pq_ksub, pq.GetCentroids(m, 0),
+                     static_cast<size_t>(pq.dsub),
+                     static_cast<size_t>(pq_ksub));
+  }
+
+#pragma omp parallel for if (nlist > 1)
+  for (idx_t i = 0; i < nlist; ++i) {
+    const float* centroid = coarse_centroids.data() + i * d;
+    float* cell_table = table.data() + i * table_per_cell;
+    for (idx_t m = 0; m < pq_m; ++m) {
+      fvec_inner_products_ny(cell_table + m * pq_ksub, centroid + m * pq.dsub,
+                             pq.GetCentroids(m, 0),
+                             static_cast<size_t>(pq.dsub),
+                             static_cast<size_t>(pq_ksub));
+    }
+    for (size_t entry = 0; entry < table_per_cell; ++entry) {
+      cell_table[entry] = residual_norms[entry] + 2.0f * cell_table[entry];
+    }
+  }
+  return table;
+}
+
+}  // namespace
 
 // ===========================================================================
 // Construction
@@ -44,21 +80,26 @@ IndexIVFPQ::IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
 // ===========================================================================
 
 void IndexIVFPQ::Train(idx_t n, const float* x) {
-  // 1. Train the coarse quantizer on raw x via the IVF base. This populates
-  //    `centroids` and sets is_trained = true.
-  IndexIVF::Train(n, x);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_total == 0,
+      "IndexIVFPQ::Train: reset the index before replacing trained state");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      use_precomputed_table == 0 || by_residual,
+      "IndexIVFPQ::Train: precomputed tables require residual encoding");
+
+  std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
+  ProductQuantizer trained_pq(pq.d, pq.M, pq.nbits);
 
   if (by_residual) {
-    // 2a. Compute residuals: assign each x to its nearest centroid, then
-    //     subtract.
     std::vector<float> coarse_dis(static_cast<size_t>(n));
     std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
-    FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
+    FindNearestCentroidsIn(trained_centroids, n, x, 1, coarse_dis.data(),
+                           centroid_ids.data());
 
     std::vector<float> residuals(static_cast<size_t>(n) * d);
     for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() +
-                       centroid_ids[static_cast<size_t>(i)] * d;
+      const float* c =
+          trained_centroids.data() + centroid_ids[static_cast<size_t>(i)] * d;
       const float* xi = x + i * d;
       float* ri = residuals.data() + i * d;
       for (idx_t j = 0; j < d; j++) {
@@ -66,16 +107,21 @@ void IndexIVFPQ::Train(idx_t n, const float* x) {
       }
     }
 
-    pq.Train(n, residuals.data());
+    trained_pq.Train(n, residuals.data());
   } else {
-    // 2b. Train PQ on raw x.
-    pq.Train(n, x);
+    trained_pq.Train(n, x);
   }
 
-  // 3. T2: build the per-(coarse cell, m, k) cache.
+  std::vector<float> trained_precomputed_table;
   if (use_precomputed_table != 0) {
-    PrecomputeTable();
+    trained_precomputed_table =
+        BuildPrecomputedTable(d, nlist, trained_centroids, trained_pq);
   }
+
+  centroids = std::move(trained_centroids);
+  pq = std::move(trained_pq);
+  precomputed_table = std::move(trained_precomputed_table);
+  is_trained = true;
 }
 
 // ===========================================================================
@@ -109,7 +155,10 @@ void IndexIVFPQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
 }
 
 void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
-  HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexIVFPQ::AddWithIds: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVFPQ::AddWithIds: n must be non-negative");
   if (n == 0) {
     return;
   }
@@ -140,15 +189,7 @@ void IndexIVFPQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
     pq.ComputeCodes(n, x, codes.data());
   }
 
-  for (idx_t i = 0; i < n; i++) {
-    const idx_t id = (xids != nullptr) ? xids[i] : n_total + i;
-    const idx_t list_no = centroid_ids[static_cast<size_t>(i)];
-    invlists->add_entry(static_cast<size_t>(list_no), id,
-                        codes.data() +
-                          static_cast<size_t>(i) * pq.code_size);
-  }
-
-  n_total += n;
+  AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
 // ===========================================================================
@@ -327,38 +368,7 @@ void IndexIVFPQ::PrecomputeTable() {
     "IndexIVFPQ::PrecomputeTable assumes by_residual=true; "
     "the L2 expansion only telescopes when PQ encodes residuals");
 
-  const idx_t pq_M = pq.M;
-  const idx_t pq_ksub = pq.ksub;
-  const size_t table_per_cell = static_cast<size_t>(pq_M) * pq_ksub;
-
-  precomputed_table.assign(static_cast<size_t>(nlist) * table_per_cell, 0.0f);
-
-  // Term 1: ||p_{m,k}||² — only depends on PQ centroids, compute once.
-  std::vector<float> r_norms(table_per_cell);
-  for (idx_t m = 0; m < pq_M; m++) {
-    fvec_norms_L2sqr(r_norms.data() + m * pq_ksub, pq.GetCentroids(m, 0),
-                     static_cast<size_t>(pq.dsub),
-                     static_cast<size_t>(pq_ksub));
-  }
-
-  // Term 2: <c_i, p_{m,k}> per coarse cell i, subquantizer m, code k.
-  // For each (i, m), this is fvec_inner_products_ny over ksub centroids.
-  // Parallelise across coarse cells.
-#pragma omp parallel for if (nlist > 1)
-  for (idx_t i = 0; i < nlist; i++) {
-    const float* c_i = centroids.data() + i * d;
-    float* tab = precomputed_table.data() + i * table_per_cell;
-    for (idx_t m = 0; m < pq_M; m++) {
-      fvec_inner_products_ny(tab + m * pq_ksub, c_i + m * pq.dsub,
-                             pq.GetCentroids(m, 0),
-                             static_cast<size_t>(pq.dsub),
-                             static_cast<size_t>(pq_ksub));
-    }
-    // Combine: precomputed[i, m, k] = ||p_{m,k}||² + 2 * <c_i, p_{m,k}>
-    for (size_t t = 0; t < table_per_cell; t++) {
-      tab[t] = r_norms[t] + 2.0f * tab[t];
-    }
-  }
+  precomputed_table = BuildPrecomputedTable(d, nlist, centroids, pq);
 }
 
 }  // namespace hypervec

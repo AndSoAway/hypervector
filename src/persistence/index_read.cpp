@@ -30,6 +30,7 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
 #include <transform/opq_matrix.h>
 #include <transform/vector_transform.h>
 #include <utils/log/assert.h>
@@ -202,6 +203,33 @@ void ReadInvertedLists(IndexIVF& index, size_t code_size, IOReader* f) {
   }
   index.invlists = loaded.release();
   index.own_invlists = true;
+}
+
+void ValidateRaBitQCodes(const IndexIVFRaBitQ& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.rabitq != nullptr && index.invlists != nullptr &&
+          index.invlists->code_size == index.rabitq->CodeSize(),
+      "IndexIVFRaBitQ deserialize: code storage is inconsistent");
+  const size_t factor_offset = index.rabitq->BitBytes();
+  for (size_t list_no = 0; list_no < static_cast<size_t>(index.nlist);
+       ++list_no) {
+    const size_t list_size = index.invlists->list_size(list_no);
+    if (list_size == 0) {
+      continue;
+    }
+    InvertedLists::ScopedCodes codes(index.invlists, list_no);
+    for (size_t offset = 0; offset < list_size; ++offset) {
+      const uint8_t* code = codes.get() + offset * index.rabitq->CodeSize();
+      float norm_squared;
+      float scale;
+      std::memcpy(&norm_squared, code + factor_offset, sizeof(float));
+      std::memcpy(&scale, code + factor_offset + sizeof(float), sizeof(float));
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(norm_squared) && norm_squared >= 0.0F &&
+              std::isfinite(scale) && scale >= 0.0F,
+          "IndexIVFRaBitQ deserialize: code factors are invalid");
+    }
+  }
 }
 
 void ValidateHnswGraph(const Index& index, const HNSW& hnsw,
@@ -978,6 +1006,34 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     idx->lvq.is_trained = idx->is_trained;
 
     ReadInvertedLists(*idx, idx->lvq.code_size, f);
+    return idx.release();
+  }
+
+  if (h == fourcc("IVRQ")) {
+    auto idx = std::make_unique<IndexIVFRaBitQ>();
+    read_index_header(*idx, f);
+    READ1(idx->nlist);
+    READ1(idx->nprobe);
+    const size_t centroid_count = ValidateIvfMetadata(*idx);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        idx->is_trained && idx->metric_type == kMetricL2,
+        "IndexIVFRaBitQ deserialize: index must be trained with kMetricL2");
+    ReadVectorExact(idx->centroids, centroid_count, f,
+                    "IndexIVFRaBitQ centroids");
+    for (float centroid : idx->centroids) {
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(centroid),
+          "IndexIVFRaBitQ deserialize: centroids must be finite");
+    }
+    idx->by_residual = read_bool(f, "IndexIVFRaBitQ by_residual");
+    uint64_t random_seed;
+    int rotation_rounds;
+    READ1(random_seed);
+    READ1(rotation_rounds);
+    idx->rabitq =
+        std::make_unique<RaBitQQuantizer>(idx->d, random_seed, rotation_rounds);
+    ReadInvertedLists(*idx, idx->rabitq->CodeSize(), f);
+    ValidateRaBitQCodes(*idx);
     return idx.release();
   }
 

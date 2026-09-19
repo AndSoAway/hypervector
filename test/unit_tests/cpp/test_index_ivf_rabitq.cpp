@@ -8,6 +8,9 @@
 
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <invlists/inverted_lists.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <quantization/rabitq/index_ivf_rabitq.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
@@ -16,7 +19,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -221,6 +226,86 @@ TEST(IndexIVFRaBitQ, ReconstructsAndSupportsRepeatedAdds) {
   }
   EXPECT_THROW(index.Reconstruct(200, reconstructed.data()),
                hypervec::HypervecException);
+}
+
+TEST(IndexIVFRaBitQ, PersistenceRoundtripPreservesBothEncodingModes) {
+  constexpr hypervec::idx_t dimension = 16;
+  constexpr hypervec::idx_t count = 96;
+  const std::vector<float> vectors = RandomVectors(count, dimension, 909);
+
+  for (const bool by_residual : {true, false}) {
+    hypervec::IndexIVFRaBitQ source(dimension, 8, 12345, 4);
+    source.by_residual = by_residual;
+    source.nprobe = 5;
+    source.Train(count, vectors.data());
+    source.Add(count, vectors.data());
+
+    hypervec::IVFSearchParameters parameters;
+    parameters.nprobe = source.nlist;
+    std::vector<float> expected_distances(12);
+    std::vector<hypervec::idx_t> expected_labels(12);
+    source.Search(4, vectors.data(), 3, expected_distances.data(),
+                  expected_labels.data(), &parameters);
+
+    hypervec::VectorIOWriter writer;
+    hypervec::WriteIndex(&source, &writer);
+    hypervec::VectorIOReader reader;
+    reader.data = writer.data;
+    std::unique_ptr<hypervec::Index> restored_base =
+        hypervec::ReadIndexUp(&reader);
+    auto* restored =
+        dynamic_cast<hypervec::IndexIVFRaBitQ*>(restored_base.get());
+    ASSERT_NE(restored, nullptr);
+    ASSERT_NE(restored->rabitq, nullptr);
+    EXPECT_EQ(restored->d, source.d);
+    EXPECT_EQ(restored->n_total, source.n_total);
+    EXPECT_EQ(restored->nlist, source.nlist);
+    EXPECT_EQ(restored->nprobe, source.nprobe);
+    EXPECT_EQ(restored->centroids, source.centroids);
+    EXPECT_EQ(restored->by_residual, source.by_residual);
+    EXPECT_EQ(restored->rabitq->Seed(), source.rabitq->Seed());
+    EXPECT_EQ(restored->rabitq->RotationRounds(),
+              source.rabitq->RotationRounds());
+    for (size_t list_no = 0; list_no < static_cast<size_t>(source.nlist);
+         ++list_no) {
+      EXPECT_EQ(restored->invlists->list_size(list_no),
+                source.invlists->list_size(list_no));
+    }
+
+    std::vector<float> actual_distances(12);
+    std::vector<hypervec::idx_t> actual_labels(12);
+    restored->Search(4, vectors.data(), 3, actual_distances.data(),
+                     actual_labels.data(), &parameters);
+    EXPECT_EQ(actual_labels, expected_labels);
+    EXPECT_EQ(actual_distances, expected_distances);
+    restored->Add(1, vectors.data());
+    EXPECT_EQ(restored->n_total, count + 1);
+  }
+}
+
+TEST(IndexIVFRaBitQ, PersistenceRejectsCorruptedInMemoryFactors) {
+  constexpr hypervec::idx_t dimension = 8;
+  const std::vector<float> vectors = RandomVectors(32, dimension, 1001);
+  hypervec::IndexIVFRaBitQ index(dimension, 2);
+  index.Train(32, vectors.data());
+  index.Add(32, vectors.data());
+
+  auto* lists = dynamic_cast<hypervec::ArrayInvertedLists*>(index.invlists);
+  ASSERT_NE(lists, nullptr);
+  size_t populated_list = 0;
+  while (populated_list < lists->nlist &&
+         lists->list_size(populated_list) == 0) {
+    ++populated_list;
+  }
+  ASSERT_LT(populated_list, lists->nlist);
+  const float invalid_norm = (std::numeric_limits<float>::quiet_NaN)();
+  std::memcpy(lists->codes[populated_list].data() + index.rabitq->BitBytes(),
+              &invalid_norm, sizeof(float));
+
+  hypervec::VectorIOWriter writer;
+  EXPECT_THROW(hypervec::WriteIndex(&index, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
 }
 
 TEST(IndexIVFRaBitQ, RejectsInvalidLifecycleWithoutMutation) {

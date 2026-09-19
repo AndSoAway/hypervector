@@ -24,6 +24,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -113,6 +114,23 @@ void WriteIvfFlatList(hypervec::VectorIOWriter* writer,
                                    sizeof(float));
   ASSERT_EQ((*writer)(codes.data(), sizeof(uint8_t), codes.size()),
             codes.size());
+}
+
+void WriteIvfRaBitQPrefix(hypervec::VectorIOWriter* writer,
+                          hypervec::idx_t n_total, uint8_t by_residual,
+                          int rotation_rounds) {
+  const uint32_t tag = hypervec::fourcc("IVRQ");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 4, n_total, true);
+  const hypervec::idx_t nlist = 1;
+  const hypervec::idx_t nprobe = 1;
+  WriteOne(writer, nlist);
+  WriteOne(writer, nprobe);
+  WriteVector(writer, std::vector<float>(4, 0.0F));
+  WriteOne(writer, by_residual);
+  const uint64_t random_seed = 42;
+  WriteOne(writer, random_seed);
+  WriteOne(writer, rotation_rounds);
 }
 
 void WriteNswFlatPayload(hypervec::VectorIOWriter* writer,
@@ -453,6 +471,36 @@ TEST(PersistenceValidation, RejectsInvalidIvfPqModeBeforeCodecPayload) {
   const int use_precomputed_table = 0;
   WriteOne(&writer, invalid_by_residual);
   WriteOne(&writer, use_precomputed_table);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidIvfRaBitQModeAndRotation) {
+  for (const auto [by_residual, rotation_rounds] :
+       {std::pair<uint8_t, int>{2, 3}, std::pair<uint8_t, int>{1, 17}}) {
+    hypervec::VectorIOWriter writer;
+    WriteIvfRaBitQPrefix(&writer, 0, by_residual, rotation_rounds);
+
+    hypervec::VectorIOReader reader;
+    reader.data = writer.data;
+    EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+  }
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteIvfRaBitQCodeFactors) {
+  hypervec::VectorIOWriter writer;
+  WriteIvfRaBitQPrefix(&writer, 1, 1, 3);
+  const size_t list_size = 1;
+  WriteOne(&writer, list_size);
+  const hypervec::idx_t id = 0;
+  WriteOne(&writer, id);
+  constexpr size_t bit_bytes = 1;
+  std::vector<uint8_t> code(bit_bytes + 2 * sizeof(float), 0);
+  const float invalid_norm = (std::numeric_limits<float>::quiet_NaN)();
+  std::memcpy(code.data() + bit_bytes, &invalid_norm, sizeof(float));
+  ASSERT_EQ(writer(code.data(), sizeof(uint8_t), code.size()), code.size());
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

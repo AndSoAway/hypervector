@@ -29,13 +29,16 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
 #include <transform/opq_matrix.h>
 #include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 
 namespace hypervec {
@@ -478,6 +481,94 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
       InvertedLists::ScopedCodes codes(ivflvq->invlists, list_no);
       WRITEANDCHECK(ids.get(), sz);
       WRITEANDCHECK(codes.get(), sz * ivflvq->lvq.code_size);
+    }
+    return;
+  }
+
+  const auto* ivfrabitq = dynamic_cast<const IndexIVFRaBitQ*>(index);
+  if (ivfrabitq) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->is_trained && ivfrabitq->metric_type == kMetricL2 &&
+            ivfrabitq->rabitq != nullptr && ivfrabitq->invlists != nullptr &&
+            ivfrabitq->rabitq->Dimension() == ivfrabitq->d &&
+            ivfrabitq->invlists->code_size == ivfrabitq->rabitq->CodeSize(),
+        "IndexIVFRaBitQ serialize: index metadata is inconsistent");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->nlist > 0 && ivfrabitq->nprobe > 0,
+        "IndexIVFRaBitQ serialize: nlist and nprobe must be positive");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->n_total >= 0 && static_cast<uint64_t>(ivfrabitq->n_total) <=
+                                       std::numeric_limits<size_t>::max(),
+        "IndexIVFRaBitQ serialize: n_total does not fit in size_t");
+    const size_t expected_total = static_cast<size_t>(ivfrabitq->n_total);
+    const size_t centroid_count = mul_no_overflow(
+        static_cast<size_t>(ivfrabitq->nlist),
+        static_cast<size_t>(ivfrabitq->d), "IndexIVFRaBitQ centroids");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->centroids.size() == centroid_count,
+        "IndexIVFRaBitQ serialize: centroid count is inconsistent");
+    for (float centroid : ivfrabitq->centroids) {
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(centroid),
+          "IndexIVFRaBitQ serialize: centroids must be finite");
+    }
+
+    size_t stored_total = 0;
+    for (size_t list_no = 0; list_no < static_cast<size_t>(ivfrabitq->nlist);
+         ++list_no) {
+      const size_t list_size = ivfrabitq->invlists->list_size(list_no);
+      stored_total = add_no_overflow(stored_total, list_size,
+                                     "IndexIVFRaBitQ entry count");
+      if (list_size == 0) {
+        continue;
+      }
+      InvertedLists::ScopedCodes codes(ivfrabitq->invlists, list_no);
+      const size_t factor_offset = ivfrabitq->rabitq->BitBytes();
+      for (size_t offset = 0; offset < list_size; ++offset) {
+        const uint8_t* code =
+            codes.get() + offset * ivfrabitq->rabitq->CodeSize();
+        float norm_squared;
+        float scale;
+        std::memcpy(&norm_squared, code + factor_offset, sizeof(float));
+        std::memcpy(&scale, code + factor_offset + sizeof(float),
+                    sizeof(float));
+        HYPERVEC_THROW_IF_NOT_MSG(
+            std::isfinite(norm_squared) && norm_squared >= 0.0F &&
+                std::isfinite(scale) && scale >= 0.0F,
+            "IndexIVFRaBitQ serialize: code factors are invalid");
+      }
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        stored_total == expected_total,
+        "IndexIVFRaBitQ serialize: list entries do not match n_total");
+
+    uint32_t h = fourcc("IVRQ");
+    WRITE1(h);
+    write_index_header(*ivfrabitq, f);
+    WRITE1(ivfrabitq->nlist);
+    WRITE1(ivfrabitq->nprobe);
+    WRITEVECTOR(ivfrabitq->centroids);
+    const uint8_t by_residual = ivfrabitq->by_residual;
+    WRITE1(by_residual);
+    const uint64_t random_seed = ivfrabitq->rabitq->Seed();
+    const int rotation_rounds = ivfrabitq->rabitq->RotationRounds();
+    WRITE1(random_seed);
+    WRITE1(rotation_rounds);
+
+    for (size_t list_no = 0; list_no < static_cast<size_t>(ivfrabitq->nlist);
+         ++list_no) {
+      const size_t list_size = ivfrabitq->invlists->list_size(list_no);
+      WRITE1(list_size);
+      if (list_size == 0) {
+        continue;
+      }
+      InvertedLists::ScopedIds ids(ivfrabitq->invlists, list_no);
+      InvertedLists::ScopedCodes codes(ivfrabitq->invlists, list_no);
+      WRITEANDCHECK(ids.get(), list_size);
+      const size_t code_bytes =
+          mul_no_overflow(list_size, ivfrabitq->rabitq->CodeSize(),
+                          "IndexIVFRaBitQ list codes");
+      WRITEANDCHECK(codes.get(), code_bytes);
     }
     return;
   }

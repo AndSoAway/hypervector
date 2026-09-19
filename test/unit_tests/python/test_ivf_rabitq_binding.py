@@ -56,6 +56,27 @@ def test_ivf_rabitq_alias_and_id_map_use_the_common_binding_path():
     assert len(distances[0]) == 2
 
 
+def test_ivf_rabitq_id_map_persistence_roundtrip(tmp_path):
+    database = training_data()
+    index = make_index(use_id_map=True)
+    index.build(database)
+    expected_distances, expected_labels = index.search_with_params(
+        database[:3], 4, {"nprobe": 4}
+    )
+
+    path = tmp_path / "ivf-rabitq.index"
+    hypervec.write_index(index, str(path))
+    restored = hypervec.read_index(str(path))
+    actual_distances, actual_labels = restored.search_with_params(
+        database[:3], 4, {"nprobe": 4}
+    )
+
+    np.testing.assert_array_equal(actual_labels, expected_labels)
+    np.testing.assert_allclose(
+        actual_distances, expected_distances, rtol=0, atol=0
+    )
+
+
 def test_ivf_rabitq_rejects_invalid_construction_and_search_parameters():
     with pytest.raises(RuntimeError, match="kMetricL2"):
         hypervec.create_index(

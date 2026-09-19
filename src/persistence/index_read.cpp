@@ -12,6 +12,7 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -25,14 +26,17 @@
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
 #include <utils/log/assert.h>
+#include <utils/structures/maybe_owned_vector.h>
 
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -115,11 +119,64 @@ size_t ValidateIvfMetadata(const IndexIVF& index) {
                             "IndexIVF deserialize: nlist must be > 0");
   HYPERVEC_THROW_IF_NOT_MSG(index.nprobe > 0,
                             "IndexIVF deserialize: nprobe must be > 0");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 ||
+          static_cast<size_t>(index.nlist) <= deserialization_loop_limit_,
+      "IndexIVF deserialize: nlist exceeds loop limit (%" PRId64 " > %zu)",
+      static_cast<int64_t>(index.nlist), deserialization_loop_limit_);
   const size_t centroid_count =
       mul_no_overflow(static_cast<size_t>(index.nlist),
                       static_cast<size_t>(index.d), "IndexIVF centroids");
   ValidateElementCount<float>(centroid_count, "IndexIVF centroids");
   return centroid_count;
+}
+
+void ReadInvertedLists(IndexIVF& index, size_t code_size, IOReader* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(code_size > 0,
+                            "IndexIVF deserialize: code size must be positive");
+  const uint64_t expected_total_u64 = static_cast<uint64_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      expected_total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexIVF deserialize: n_total does not fit in size_t");
+  const size_t expected_total = static_cast<size_t>(expected_total_u64);
+  const size_t nlist = static_cast<size_t>(index.nlist);
+  auto loaded = std::make_unique<ArrayInvertedLists>(nlist, code_size);
+
+  size_t actual_total = 0;
+  for (size_t list_no = 0; list_no < nlist; ++list_no) {
+    size_t list_size;
+    READ1(list_size);
+    actual_total =
+        add_no_overflow(actual_total, list_size, "IndexIVF entry count");
+    HYPERVEC_THROW_IF_NOT_FMT(
+        actual_total <= expected_total,
+        "IndexIVF deserialize: list entries exceed n_total (%zu > %zu)",
+        actual_total, expected_total);
+    if (list_size == 0) {
+      continue;
+    }
+
+    ValidateElementCount<idx_t>(list_size, "IndexIVF list ids");
+    const size_t code_count =
+        mul_no_overflow(list_size, code_size, "IndexIVF list codes");
+    ValidateElementCount<uint8_t>(code_count, "IndexIVF list codes");
+    std::vector<idx_t> ids(list_size);
+    std::vector<uint8_t> codes(code_count);
+    READANDCHECK(ids.data(), list_size);
+    READANDCHECK(codes.data(), code_count);
+    loaded->ids[list_no] = MaybeOwnedVector<idx_t>(std::move(ids));
+    loaded->codes[list_no] = MaybeOwnedVector<uint8_t>(std::move(codes));
+  }
+
+  HYPERVEC_THROW_IF_NOT_FMT(
+      actual_total == expected_total,
+      "IndexIVF deserialize: list entries do not match n_total (%zu != %zu)",
+      actual_total, expected_total);
+  if (index.own_invlists) {
+    delete index.invlists;
+  }
+  index.invlists = loaded.release();
+  index.own_invlists = true;
 }
 }  // namespace
 
@@ -287,27 +344,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
                     "IndexIVFFlat centroids");
 
     const size_t code_size = static_cast<size_t>(idx->d) * sizeof(float);
-    delete idx->invlists;
-    idx->invlists =
-        new ArrayInvertedLists(static_cast<size_t>(idx->nlist), code_size);
-    idx->own_invlists = true;
-
-    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
-         list_no++) {
-      size_t sz;
-      READ1(sz);
-      if (sz == 0) {
-        continue;
-      }
-      const size_t byte_limit = get_deserialization_vector_byte_limit();
-      HYPERVEC_THROW_IF_NOT(sz < byte_limit / sizeof(idx_t));
-      HYPERVEC_THROW_IF_NOT(code_size > 0 && sz < byte_limit / code_size);
-      std::vector<idx_t> ids(sz);
-      std::vector<uint8_t> codes(sz * code_size);
-      READANDCHECK(ids.data(), sz);
-      READANDCHECK(codes.data(), sz * code_size);
-      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
-    }
+    ReadInvertedLists(*idx, code_size, f);
     return idx.release();
   }
 
@@ -391,26 +428,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     ReadVectorExact(idx->precomputed_table, precomputed_count, f,
                     "IndexIVFPQ precomputed table");
 
-    delete idx->invlists;
-    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
-                                           idx->pq.code_size);
-    idx->own_invlists = true;
-
-    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
-         list_no++) {
-      size_t sz;
-      READ1(sz);
-      if (sz == 0) {
-        continue;
-      }
-      HYPERVEC_THROW_IF_NOT(
-          sz < (get_deserialization_vector_byte_limit() / sizeof(idx_t)));
-      std::vector<idx_t> ids(sz);
-      std::vector<uint8_t> codes(sz * idx->pq.code_size);
-      READANDCHECK(ids.data(), sz);
-      READANDCHECK(codes.data(), sz * idx->pq.code_size);
-      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
-    }
+    ReadInvertedLists(*idx, idx->pq.code_size, f);
     return idx.release();
   }
 
@@ -437,26 +455,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
         "IndexIVFLVQ deserialize: only kMetricL2 is supported");
     idx->lvq.is_trained = idx->is_trained;
 
-    delete idx->invlists;
-    idx->invlists = new ArrayInvertedLists(static_cast<size_t>(idx->nlist),
-                                           idx->lvq.code_size);
-    idx->own_invlists = true;
-
-    for (size_t list_no = 0; list_no < static_cast<size_t>(idx->nlist);
-         list_no++) {
-      size_t sz;
-      READ1(sz);
-      if (sz == 0) {
-        continue;
-      }
-      HYPERVEC_THROW_IF_NOT(
-          sz < (get_deserialization_vector_byte_limit() / sizeof(idx_t)));
-      std::vector<idx_t> ids(sz);
-      std::vector<uint8_t> codes(sz * idx->lvq.code_size);
-      READANDCHECK(ids.data(), sz);
-      READANDCHECK(codes.data(), sz * idx->lvq.code_size);
-      idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
-    }
+    ReadInvertedLists(*idx, idx->lvq.code_size, f);
     return idx.release();
   }
 

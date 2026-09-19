@@ -59,6 +59,46 @@ void WritePq(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
   WriteVector(writer, centroids);
 }
 
+void WriteIvfFlatPrefix(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
+                        hypervec::idx_t n_total, hypervec::idx_t nlist) {
+  const uint32_t tag = hypervec::fourcc("IVFf");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, d, n_total, true);
+  const hypervec::idx_t nprobe = 1;
+  WriteOne(writer, nlist);
+  WriteOne(writer, nprobe);
+  WriteVector(writer, std::vector<float>(static_cast<size_t>(d * nlist), 0.0f));
+}
+
+void WriteIvfFlatList(hypervec::VectorIOWriter* writer,
+                      const std::vector<hypervec::idx_t>& ids,
+                      hypervec::idx_t d) {
+  const size_t list_size = ids.size();
+  WriteOne(writer, list_size);
+  ASSERT_EQ((*writer)(ids.data(), sizeof(hypervec::idx_t), ids.size()),
+            ids.size());
+  const std::vector<uint8_t> codes(list_size * static_cast<size_t>(d) *
+                                   sizeof(float));
+  ASSERT_EQ((*writer)(codes.data(), sizeof(uint8_t), codes.size()),
+            codes.size());
+}
+
+class DeserializationLimitsGuard {
+ public:
+  DeserializationLimitsGuard()
+      : loop_limit_(hypervec::get_deserialization_loop_limit()),
+        vector_byte_limit_(hypervec::get_deserialization_vector_byte_limit()) {}
+
+  ~DeserializationLimitsGuard() {
+    hypervec::set_deserialization_loop_limit(loop_limit_);
+    hypervec::set_deserialization_vector_byte_limit(vector_byte_limit_);
+  }
+
+ private:
+  size_t loop_limit_;
+  size_t vector_byte_limit_;
+};
+
 TEST(PersistenceValidation, RejectsFlatCodeCountMismatch) {
   hypervec::VectorIOWriter writer;
   const uint32_t tag = hypervec::fourcc("IFlm");
@@ -117,6 +157,59 @@ TEST(PersistenceValidation, RejectsIvfCentroidCountMismatch) {
   WriteOne(&writer, nlist);
   WriteOne(&writer, nprobe);
   WriteVector(&writer, std::vector<float>(3));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsIvfListTotalBelowHeaderCount) {
+  hypervec::VectorIOWriter writer;
+  WriteIvfFlatPrefix(&writer, 2, 2, 1);
+  WriteIvfFlatList(&writer, {7}, 2);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsIvfListTotalAboveHeaderCountEarly) {
+  hypervec::VectorIOWriter writer;
+  WriteIvfFlatPrefix(&writer, 2, 1, 1);
+  const size_t invalid_list_size = 2;
+  WriteOne(&writer, invalid_list_size);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, EnforcesIvfLoopLimitBeforeReadingCentroids) {
+  DeserializationLimitsGuard guard;
+  hypervec::set_deserialization_loop_limit(1);
+
+  hypervec::VectorIOWriter writer;
+  const uint32_t tag = hypervec::fourcc("IVFf");
+  WriteOne(&writer, tag);
+  WriteIndexHeader(&writer, 2, 0, true);
+  const hypervec::idx_t nlist = 2;
+  const hypervec::idx_t nprobe = 1;
+  WriteOne(&writer, nlist);
+  WriteOne(&writer, nprobe);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, EnforcesByteLimitForIvfListIds) {
+  DeserializationLimitsGuard guard;
+  hypervec::set_deserialization_vector_byte_limit(12);
+
+  hypervec::VectorIOWriter writer;
+  WriteIvfFlatPrefix(&writer, 1, 2, 1);
+  const size_t list_size = 2;
+  WriteOne(&writer, list_size);
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

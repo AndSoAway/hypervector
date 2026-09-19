@@ -7,6 +7,7 @@
 
 set(HYPERVEC_SRC
   index/index.cpp
+  index/index_factory.cpp
   index/ivf/index_ivf.cpp
   index/ivf/index_ivf_flat.cpp
   index/flat/index_flat.cpp

@@ -13,6 +13,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -183,6 +184,35 @@ std::unique_ptr<Index> MakeNSWFlat(const IndexConfig& config) {
                                         options, config.metric_arg);
 }
 
+std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
+  NSGIndexOptions options;
+  options.knn_degree =
+      static_cast<size_t>(PositiveIntParameter(config, "knn_degree", 64));
+  options.nn_descent_iterations = static_cast<size_t>(
+      PositiveIntParameter(config, "nn_descent_iterations", 10));
+  options.nn_descent_convergence_threshold =
+      config.GetDouble("nn_descent_convergence_threshold", 0.001);
+  if (config.HasParameter("random_seed")) {
+    const int64_t random_seed = config.GetInteger("random_seed", 0);
+    HYPERVEC_THROW_IF_NOT_MSG(random_seed >= 0,
+                              "index parameter 'random_seed' must be "
+                              "non-negative");
+    options.random_seed = static_cast<uint64_t>(random_seed);
+  }
+  options.max_degree =
+      static_cast<size_t>(PositiveIntParameter(config, "max_degree", 32));
+  options.build_search_width = static_cast<size_t>(
+      PositiveIntParameter(config, "build_search_width", 40));
+  options.candidate_pool_size = static_cast<size_t>(
+      PositiveIntParameter(config, "candidate_pool_size", 200));
+  options.ef_search =
+      static_cast<size_t>(PositiveIntParameter(config, "ef_search", 40));
+  options.check_relative_distance =
+      config.GetBoolean("check_relative_distance", true);
+  return std::make_unique<IndexNSGFlat>(config.dimension, config.metric_type,
+                                        options, config.metric_arg);
+}
+
 std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
   RequireL2(config, "hnsw_pq");
   const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
@@ -236,6 +266,14 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"max_degree", "ef_construction", "ef_search",
                        "check_relative_distance", "fill_to_max_degree"}},
                      MakeNSWFlat);
+  registry->Register(
+      {"nsg_flat",
+       {"nsg", "nsgflat", "IndexNSGFlat"},
+       {"knn_degree", "nn_descent_iterations",
+        "nn_descent_convergence_threshold", "random_seed", "max_degree",
+        "build_search_width", "candidate_pool_size", "ef_search",
+        "check_relative_distance"}},
+      MakeNSGFlat);
 }
 
 }  // namespace

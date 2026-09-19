@@ -19,6 +19,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -103,6 +104,21 @@ void index_add(hypervec::Index* index, PyObject* obj) {
   read_float32_matrix(obj, index->d, &data, &n, &d, &view);
   try {
     call_without_python_gil([&] { index->Add(n, data); });
+  } catch (...) {
+    PyBuffer_Release(&view);
+    throw;
+  }
+  PyBuffer_Release(&view);
+}
+
+void index_build(hypervec::Index* index, PyObject* obj) {
+  const float* data = nullptr;
+  hypervec::idx_t n = 0;
+  hypervec::idx_t d = 0;
+  Py_buffer view;
+  read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  try {
+    call_without_python_gil([&] { index->Build(n, data); });
   } catch (...) {
     PyBuffer_Release(&view);
     throw;
@@ -527,6 +543,10 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
     index_add($self, x);
   }
 
+  void build(PyObject* x) {
+    index_build($self, x);
+  }
+
   PyObject* search(PyObject* x, hypervec::idx_t k) {
     return index_search_with_params($self, x, k, nullptr);
   }
@@ -546,6 +566,19 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
     if (const auto* nsw = dynamic_cast<const hypervec::IndexNSW*>($self)) {
       (void)nsw;
       hypervec::SearchParametersNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = read_positive_size(val, "ef_search");
+      val = PyDict_GetItemString(py_params, "check_relative_distance");
+      if (val) {
+        params.check_relative_distance =
+            read_python_bool(val, "check_relative_distance");
+      }
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* nsg = dynamic_cast<const hypervec::IndexNSG*>($self)) {
+      (void)nsg;
+      hypervec::SearchParametersNSG params;
       PyObject* val = PyDict_GetItemString(py_params, "ef_search");
       if (!val) val = PyDict_GetItemString(py_params, "ef");
       if (val) params.ef_search = read_positive_size(val, "ef_search");

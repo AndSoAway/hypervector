@@ -7,12 +7,40 @@
  */
 
 #include <gtest/gtest.h>
+#include <quantization/lvq/lvq_quantizer_adapter.h>
+#include <quantization/pq/pq_quantizer_adapter.h>
 #include <quantization/quantizer.h>
 #include <utils/log/exception.h>
 
 #include <cstdint>
 #include <memory>
 #include <vector>
+
+namespace {
+
+std::vector<float> TrainingVectors(hypervec::idx_t count,
+                                   hypervec::idx_t dimension) {
+  std::vector<float> vectors(static_cast<size_t>(count * dimension));
+  for (hypervec::idx_t i = 0; i < count; ++i) {
+    for (hypervec::idx_t j = 0; j < dimension; ++j) {
+      vectors[static_cast<size_t>(i * dimension + j)] =
+          0.25F * static_cast<float>(i) +
+          0.1F * static_cast<float>((i + 3 * j) % 7);
+    }
+  }
+  return vectors;
+}
+
+float L2Squared(const float* lhs, const float* rhs, hypervec::idx_t dimension) {
+  float distance = 0.0F;
+  for (hypervec::idx_t i = 0; i < dimension; ++i) {
+    const float difference = lhs[i] - rhs[i];
+    distance += difference * difference;
+  }
+  return distance;
+}
+
+}  // namespace
 
 TEST(InMemoryCodeStore, AppendsViewsAndResets) {
   hypervec::InMemoryCodeStore store(2);
@@ -122,4 +150,109 @@ TEST(QuantizerProtocol, ValidatesInputsAndCodeWidth) {
   EXPECT_THROW(
       quantizer.CreateDistanceComputer(hypervec::EncodedVectorView(code, 1, 1)),
       hypervec::HypervecException);
+}
+
+TEST(ProductQuantizerAdapter, MatchesExistingCodecAndAdc) {
+  constexpr hypervec::idx_t kDimension = 4;
+  constexpr hypervec::idx_t kCount = 32;
+  const std::vector<float> vectors = TrainingVectors(kCount, kDimension);
+
+  hypervec::ProductQuantizer model(kDimension, 2, 2);
+  hypervec::PQParameters parameters;
+  parameters.niter = 5;
+  hypervec::ProductQuantizerAdapter quantizer(model, parameters);
+  quantizer.Train(kCount, vectors.data());
+
+  EXPECT_TRUE(model.is_trained);
+  EXPECT_TRUE(quantizer.IsTrained());
+  EXPECT_EQ(quantizer.CodeSize(), model.code_size);
+
+  std::vector<uint8_t> adapter_codes(static_cast<size_t>(kCount) *
+                                     model.code_size);
+  std::vector<uint8_t> direct_codes(adapter_codes.size());
+  quantizer.Encode(kCount, vectors.data(), adapter_codes.data());
+  model.ComputeCodes(kCount, vectors.data(), direct_codes.data());
+  EXPECT_EQ(adapter_codes, direct_codes);
+
+  std::vector<float> adapter_decoded(static_cast<size_t>(kCount * kDimension));
+  std::vector<float> direct_decoded(adapter_decoded.size());
+  quantizer.Decode(kCount, adapter_codes.data(), adapter_decoded.data());
+  model.DecodeBatch(kCount, direct_codes.data(), direct_decoded.data());
+  EXPECT_EQ(adapter_decoded, direct_decoded);
+
+  const hypervec::EncodedVectorView view(adapter_codes.data(), kCount,
+                                         model.code_size);
+  auto distance = quantizer.CreateDistanceComputer(view);
+  distance->SetQuery(vectors.data() + 3 * kDimension);
+
+  std::vector<float> table(static_cast<size_t>(model.M * model.ksub));
+  model.ComputeDistanceTable(vectors.data() + 3 * kDimension, table.data());
+  for (hypervec::idx_t i = 0; i < kCount; ++i) {
+    const float expected = model.ApplyDistanceTable(
+        table.data(), direct_codes.data() + i * model.code_size);
+    EXPECT_FLOAT_EQ((*distance)(i), expected);
+  }
+}
+
+TEST(LocalVectorQuantizerAdapter, MatchesExistingCodecAndAdc) {
+  constexpr hypervec::idx_t kDimension = 4;
+  constexpr hypervec::idx_t kCount = 32;
+  const std::vector<float> vectors = TrainingVectors(kCount, kDimension);
+
+  hypervec::LocalVectorQuantizer model(kDimension, 2, 2);
+  hypervec::LVQParameters parameters;
+  parameters.niter = 5;
+  hypervec::LocalVectorQuantizerAdapter quantizer(model, parameters);
+  quantizer.Train(kCount, vectors.data());
+
+  EXPECT_TRUE(model.is_trained);
+  EXPECT_TRUE(quantizer.IsTrained());
+  EXPECT_EQ(quantizer.CodeSize(), model.code_size);
+
+  std::vector<uint8_t> adapter_codes(static_cast<size_t>(kCount) *
+                                     model.code_size);
+  std::vector<uint8_t> direct_codes(adapter_codes.size());
+  quantizer.Encode(kCount, vectors.data(), adapter_codes.data());
+  model.ComputeCodes(kCount, vectors.data(), direct_codes.data());
+  EXPECT_EQ(adapter_codes, direct_codes);
+
+  std::vector<float> adapter_decoded(static_cast<size_t>(kCount * kDimension));
+  std::vector<float> direct_decoded(adapter_decoded.size());
+  quantizer.Decode(kCount, adapter_codes.data(), adapter_decoded.data());
+  model.DecodeBatch(kCount, direct_codes.data(), direct_decoded.data());
+  EXPECT_EQ(adapter_decoded, direct_decoded);
+
+  const hypervec::EncodedVectorView view(adapter_codes.data(), kCount,
+                                         model.code_size);
+  auto distance = quantizer.CreateDistanceComputer(view);
+  distance->SetQuery(vectors.data() + 3 * kDimension);
+
+  std::vector<float> table(static_cast<size_t>(model.nlocal * model.ksub));
+  model.ComputeDistanceTable(vectors.data() + 3 * kDimension, table.data());
+  for (hypervec::idx_t i = 0; i < kCount; ++i) {
+    const float expected = model.ApplyDistanceTable(
+        table.data(), direct_codes.data() + i * model.code_size);
+    EXPECT_FLOAT_EQ((*distance)(i), expected);
+  }
+
+  std::vector<float> lhs(kDimension);
+  std::vector<float> rhs(kDimension);
+  model.Decode(direct_codes.data(), lhs.data());
+  model.Decode(direct_codes.data() + model.code_size, rhs.data());
+  EXPECT_FLOAT_EQ(distance->symmetric_dis(0, 1),
+                  L2Squared(lhs.data(), rhs.data(), kDimension));
+}
+
+TEST(QuantizerAdapter, ReadOnlyModelCannotBeTrained) {
+  const hypervec::ProductQuantizer model(4, 2, 2);
+  hypervec::ProductQuantizerAdapter quantizer(model);
+  const std::vector<float> vectors = TrainingVectors(4, 4);
+  std::vector<uint8_t> code(model.code_size);
+
+  EXPECT_THROW(quantizer.Encode(1, vectors.data(), code.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(quantizer.CreateDistanceComputer(hypervec::EncodedVectorView(
+                   code.data(), 1, model.code_size)),
+               hypervec::HypervecException);
+  EXPECT_THROW(quantizer.Train(4, vectors.data()), hypervec::HypervecException);
 }

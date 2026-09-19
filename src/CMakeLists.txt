@@ -37,10 +37,12 @@ set(HYPERVEC_SRC
   utils/algo/kmeans/kmeans.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
+  quantization/pq/pq_quantizer_adapter.cpp
   quantization/pq/index_pq.cpp
   quantization/pq/index_ivfpq.cpp
   quantization/lvq/lvq.cpp
   quantization/lvq/lvq_distance_computer.cpp
+  quantization/lvq/lvq_quantizer_adapter.cpp
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   quantization/quantizer.cpp

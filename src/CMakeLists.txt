@@ -15,6 +15,7 @@ set(HYPERVEC_SRC
   index/flat/index_flat_codes.cpp
   index/diskann/diskann_searcher.cpp
   index/diskann/diskann_storage.cpp
+  index/diskann/index_diskann.cpp
   index/graph/graph_searcher.cpp
   index/graph/graph_storage.cpp
   index/graph/graph_validation.cpp

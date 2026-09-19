@@ -7,6 +7,7 @@ set(HYPERVEC_TEST_SRC
   test_heap.cpp
   test_diskann_searcher.cpp
   test_diskann_storage.cpp
+  test_index_diskann.cpp
   test_graph_pruning_validation.cpp
   test_graph_searcher.cpp
   test_graph_storage.cpp

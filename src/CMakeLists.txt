@@ -30,6 +30,7 @@ set(HYPERVEC_SRC
   index/lsh/index_lsh.cpp
   index/nsg/index_nsg.cpp
   index/nsw/index_nsw.cpp
+  index/vamana/index_vamana.cpp
   index/pretransform/index_pre_transform.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp

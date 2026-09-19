@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <random>
 #include <utility>
 #include <vector>
@@ -137,6 +138,126 @@ void InsertReciprocal(MutableBoundedGraph* graph, GraphId source,
   }
 }
 
+struct Reachability {
+  std::vector<bool> reachable;
+  std::vector<GraphId> parent;
+  size_t count = 0;
+};
+
+Reachability FindReachable(const GraphStorage& graph, GraphId entry_point) {
+  Reachability result;
+  result.reachable.assign(graph.NodeCount(), false);
+  result.parent.assign(graph.NodeCount(), kInvalidGraphId);
+  std::queue<GraphId> pending;
+  result.reachable[static_cast<size_t>(entry_point)] = true;
+  pending.push(entry_point);
+  while (!pending.empty()) {
+    const GraphId source = pending.front();
+    pending.pop();
+    ++result.count;
+    for (GraphId neighbor : graph.Neighbors(source)) {
+      if (!result.reachable[static_cast<size_t>(neighbor)]) {
+        result.reachable[static_cast<size_t>(neighbor)] = true;
+        result.parent[static_cast<size_t>(neighbor)] = source;
+        pending.push(neighbor);
+      }
+    }
+  }
+  return result;
+}
+
+bool HasRepairCapacity(const MutableBoundedGraph& graph, GraphId source,
+                       size_t max_degree, std::span<const GraphId> parent) {
+  const GraphNeighborView neighbors = graph.Neighbors(source);
+  if (neighbors.size() < max_degree) {
+    return true;
+  }
+  return std::any_of(neighbors.begin(), neighbors.end(), [&](GraphId neighbor) {
+    return parent[static_cast<size_t>(neighbor)] != source;
+  });
+}
+
+GraphId SelectReplacement(const MutableBoundedGraph& graph, GraphId source,
+                          std::span<const GraphId> parent,
+                          DistanceComputer& distance, VamanaBuildStats* stats) {
+  GraphId replacement = kInvalidGraphId;
+  float farthest = -(std::numeric_limits<float>::infinity)();
+  for (GraphId neighbor : graph.Neighbors(source)) {
+    if (parent[static_cast<size_t>(neighbor)] == source) {
+      continue;
+    }
+    const float candidate_distance =
+        ValidateDistance(distance.symmetric_dis(source, neighbor));
+    ++stats->connectivity_distance_computations;
+    if (replacement == kInvalidGraphId || candidate_distance > farthest ||
+        (candidate_distance == farthest && neighbor > replacement)) {
+      replacement = neighbor;
+      farthest = candidate_distance;
+    }
+  }
+  return replacement;
+}
+
+void RepairConnectivity(MutableBoundedGraph* graph, GraphId entry_point,
+                        size_t max_degree, DistanceComputer& distance,
+                        VamanaBuildStats* stats) {
+  Reachability reachability = FindReachable(*graph, entry_point);
+  while (reachability.count < graph->NodeCount()) {
+    const auto target_position = std::find(reachability.reachable.begin(),
+                                           reachability.reachable.end(), false);
+    const GraphId target =
+        static_cast<GraphId>(target_position - reachability.reachable.begin());
+    GraphId best_source = kInvalidGraphId;
+    float best_distance = (std::numeric_limits<float>::infinity)();
+    const auto consider_source = [&](GraphId source) {
+      if (!reachability.reachable[static_cast<size_t>(source)] ||
+          !HasRepairCapacity(*graph, source, max_degree, reachability.parent)) {
+        return;
+      }
+      const float candidate_distance =
+          ValidateDistance(distance.symmetric_dis(source, target));
+      ++stats->connectivity_distance_computations;
+      if (best_source == kInvalidGraphId ||
+          candidate_distance < best_distance ||
+          (candidate_distance == best_distance && source < best_source)) {
+        best_source = source;
+        best_distance = candidate_distance;
+      }
+    };
+    for (GraphId source : graph->Neighbors(target)) {
+      consider_source(source);
+    }
+    if (best_source == kInvalidGraphId) {
+      for (size_t source = 0; source < graph->NodeCount(); ++source) {
+        if (!reachability.reachable[source]) {
+          continue;
+        }
+        consider_source(static_cast<GraphId>(source));
+      }
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        best_source != kInvalidGraphId,
+        "VamanaBuilder: no bounded edge is available for connectivity repair");
+
+    if (graph->Neighbors(best_source).size() == max_degree) {
+      const GraphId replacement = SelectReplacement(
+          *graph, best_source, reachability.parent, distance, stats);
+      HYPERVEC_THROW_IF_NOT_MSG(
+          replacement != kInvalidGraphId,
+          "VamanaBuilder: connectivity repair would remove a tree edge");
+      HYPERVEC_THROW_IF_NOT_MSG(
+          graph->RemoveNeighbor(best_source, replacement),
+          "VamanaBuilder: connectivity replacement edge disappeared");
+      ++stats->connectivity_edges_replaced;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        graph->AddNeighbor(best_source, target),
+        "VamanaBuilder: connectivity edge already exists");
+    ++stats->connectivity_edges_added;
+    reachability = FindReachable(*graph, entry_point);
+  }
+}
+
 }  // namespace
 
 void VamanaBuildStats::Reset() noexcept { *this = {}; }
@@ -148,6 +269,10 @@ void VamanaBuildStats::Combine(const VamanaBuildStats& other) noexcept {
   reciprocal_edges_added += other.reciprocal_edges_added;
   reciprocal_edges_repruned += other.reciprocal_edges_repruned;
   reciprocal_edges_rejected += other.reciprocal_edges_rejected;
+  connectivity_distance_computations +=
+      other.connectivity_distance_computations;
+  connectivity_edges_added += other.connectivity_edges_added;
+  connectivity_edges_replaced += other.connectivity_edges_replaced;
   search.Combine(other.search);
   pruning.Combine(other.pruning);
 }
@@ -233,6 +358,7 @@ MutableBoundedGraph VamanaBuilder::Build(DistanceComputer& distance,
     }
     ++local_stats.passes_completed;
   }
+  RepairConnectivity(&graph, navigation_point, degree, distance, &local_stats);
 
   if (stats != nullptr) {
     stats->Combine(local_stats);

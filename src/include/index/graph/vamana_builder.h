@@ -34,6 +34,9 @@ struct VamanaBuildStats {
   size_t reciprocal_edges_added = 0;
   size_t reciprocal_edges_repruned = 0;
   size_t reciprocal_edges_rejected = 0;
+  size_t connectivity_distance_computations = 0;
+  size_t connectivity_edges_added = 0;
+  size_t connectivity_edges_replaced = 0;
   GraphSearchStats search;
   GraphPruneStats pruning;
 
@@ -47,7 +50,9 @@ struct VamanaBuildStats {
  * deterministic shuffled order, searches the graph built so far, robustly
  * prunes outgoing candidates, and proposes reciprocal edges. When multiple
  * passes are requested, the first uses alpha=1 and later passes use the
- * configured alpha. A single pass uses the configured alpha directly.
+ * configured alpha. A single pass uses the configured alpha directly. A
+ * final bounded repair preserves a directed path from the navigation point to
+ * every node, including datasets with duplicate vectors.
  *
  * DistanceComputer must provide symmetric_dis(), with smaller values meaning
  * closer neighbors.

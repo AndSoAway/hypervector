@@ -159,6 +159,24 @@ TEST(VamanaBuilder, BuildsDeterministicBoundedGraph) {
   }
 }
 
+TEST(VamanaBuilder, RepairsDuplicateVectorReachabilityWithinDegree) {
+  constexpr size_t kCount = 20;
+  std::vector<float> values(kCount, 0.0F);
+  ScalarDistanceComputer distance(values);
+  const hypervec::VamanaBuilder builder(
+      hypervec::VamanaBuildOptions{4, 8, 12, 1.2F, 2, 42});
+  hypervec::VamanaBuildStats stats;
+
+  const auto graph = builder.Build(distance, values.size(), 0, &stats);
+
+  const auto report = hypervec::ValidateGraph(graph, 0);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, values.size());
+  EXPECT_EQ(graph.MaxDegree(), 4U);
+  EXPECT_GT(stats.connectivity_edges_added, 0U);
+  EXPECT_GT(stats.connectivity_edges_replaced, 0U);
+}
+
 TEST(VamanaBuilder, HandlesEmptyAndSingletonGraphs) {
   const hypervec::VamanaBuilder builder;
   ScalarDistanceComputer distance({1.0F});
@@ -214,8 +232,11 @@ TEST(VamanaBuildStats, ResetAndCombineAccumulateBuilds) {
   update.reciprocal_edges_added = 4;
   update.reciprocal_edges_repruned = 5;
   update.reciprocal_edges_rejected = 6;
-  update.search.queries = 7;
-  update.pruning.accepted = 8;
+  update.connectivity_distance_computations = 7;
+  update.connectivity_edges_added = 8;
+  update.connectivity_edges_replaced = 9;
+  update.search.queries = 10;
+  update.pruning.accepted = 11;
 
   aggregate.Combine(update);
   EXPECT_EQ(aggregate.passes_completed, 1U);
@@ -224,8 +245,11 @@ TEST(VamanaBuildStats, ResetAndCombineAccumulateBuilds) {
   EXPECT_EQ(aggregate.reciprocal_edges_added, 4U);
   EXPECT_EQ(aggregate.reciprocal_edges_repruned, 5U);
   EXPECT_EQ(aggregate.reciprocal_edges_rejected, 6U);
-  EXPECT_EQ(aggregate.search.queries, 7U);
-  EXPECT_EQ(aggregate.pruning.accepted, 8U);
+  EXPECT_EQ(aggregate.connectivity_distance_computations, 7U);
+  EXPECT_EQ(aggregate.connectivity_edges_added, 8U);
+  EXPECT_EQ(aggregate.connectivity_edges_replaced, 9U);
+  EXPECT_EQ(aggregate.search.queries, 10U);
+  EXPECT_EQ(aggregate.pruning.accepted, 11U);
 
   aggregate.Reset();
   EXPECT_EQ(aggregate.nodes_processed, 0U);

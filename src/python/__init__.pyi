@@ -3600,6 +3600,15 @@ def range_search_inner_product(
 ) -> None: ...
 
 # Index factory functions
+def create_index(
+    index_type: str,
+    dimension: int,
+    metric_type: MetricType,
+    params: dict[str, int | float | bool | str],
+    use_id_map: bool = False,
+    metric_arg: float = 0.0,
+) -> Index: ...
+
 def IndexFactory(
     d: int, description: str, metric: MetricType = kMetricL2, own_invlists: bool = True
 ) -> Index: ...

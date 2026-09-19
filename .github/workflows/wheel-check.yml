@@ -58,5 +58,7 @@ jobs:
           import hypervec
           import hypervec.hypervec_server_engine
           import hypervec.hypervec_http_server
+          index = hypervec.create_index("flat", 2, hypervec.kMetricL2, {})
+          assert index.d == 2
           print("import-ok")
           PY

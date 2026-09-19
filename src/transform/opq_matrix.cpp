@@ -156,6 +156,8 @@ OPQMatrix::OPQMatrix(idx_t dimension, idx_t subquantizer_count, int nbits)
                             HYPERVEC_PQ_MAX_NBITS);
 }
 
+bool OPQMatrix::RequiresTraining() const { return true; }
+
 void OPQMatrix::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(parameters.iterations > 0,
                             "OPQMatrix::Train: iterations must be positive");

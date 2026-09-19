@@ -36,6 +36,8 @@ struct OPQMatrix : LinearTransform {
 
   OPQMatrix(idx_t dimension, idx_t subquantizer_count, int nbits = 8);
 
+  bool RequiresTraining() const override;
+
   /** Learn a square orthonormal rotation from n finite vectors.
    *
    * New state is committed only after every iteration succeeds. A failed

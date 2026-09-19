@@ -66,6 +66,10 @@ VectorTransform::VectorTransform(idx_t d_in, idx_t d_out)
       d_out);
 }
 
+bool VectorTransform::RequiresTraining() const { return false; }
+
+bool VectorTransform::IsReversible() const { return false; }
+
 void VectorTransform::Train(idx_t, const float*) {
   HYPERVEC_THROW_MSG("VectorTransform::Train: transform is not trainable");
 }
@@ -209,5 +213,7 @@ void LinearTransform::ReverseTransform(idx_t n, const float* x,
     }
   }
 }
+
+bool LinearTransform::IsReversible() const { return is_orthonormal; }
 
 }  // namespace hypervec

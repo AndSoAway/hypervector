@@ -17,7 +17,10 @@ namespace {
 
 TEST(VectorTransform, IdentitySupportsAllocatedAndInPlaceBatches) {
   hypervec::LinearTransform linear(3, 3);
+  EXPECT_FALSE(linear.RequiresTraining());
+  EXPECT_FALSE(linear.IsReversible());
   linear.SetIdentity();
+  EXPECT_TRUE(linear.IsReversible());
   const std::vector<float> input = {1.0F, 2.0F, 3.0F, -4.0F, 5.0F, 6.0F};
 
   EXPECT_EQ(linear.Apply(2, input.data()), input);

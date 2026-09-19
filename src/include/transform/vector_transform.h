@@ -27,6 +27,12 @@ struct VectorTransform {
   VectorTransform(idx_t d_in, idx_t d_out);
   virtual ~VectorTransform() = default;
 
+  /** Whether this transform type learns state from representative vectors. */
+  virtual bool RequiresTraining() const;
+
+  /** Whether the current state supports an exact reverse transform. */
+  virtual bool IsReversible() const;
+
   /** Train the transform from n input vectors.
    *
    * Fixed transforms keep the default implementation, which rejects the
@@ -80,6 +86,7 @@ struct LinearTransform : VectorTransform {
 
   void Apply(idx_t n, const float* x, float* output) const override;
   void ReverseTransform(idx_t n, const float* x, float* output) const override;
+  bool IsReversible() const override;
 
  private:
   void ValidateBatch(idx_t n, const float* x, const float* output,

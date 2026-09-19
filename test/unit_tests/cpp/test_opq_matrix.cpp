@@ -73,12 +73,15 @@ TEST(OPQMatrix, LearnsDeterministicOrthonormalRotation) {
   second.parameters = first.parameters;
   first.parameters.pq_parameters.niter = 12;
   second.parameters.pq_parameters = first.parameters.pq_parameters;
+  EXPECT_TRUE(first.RequiresTraining());
+  EXPECT_FALSE(first.IsReversible());
 
   first.Train(n, data.data());
   second.Train(n, data.data());
 
   EXPECT_TRUE(first.is_trained);
   EXPECT_TRUE(first.is_orthonormal);
+  EXPECT_TRUE(first.IsReversible());
   ASSERT_EQ(first.matrix.size(), second.matrix.size());
   for (size_t i = 0; i < first.matrix.size(); ++i) {
     EXPECT_NEAR(first.matrix[i], second.matrix[i], 1e-6F);

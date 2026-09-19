@@ -19,6 +19,7 @@ set(HYPERVEC_TEST_SRC
   test_index_capabilities.cpp
   test_index_factory.cpp
   test_index_lsh.cpp
+  test_index_pre_transform.cpp
   test_index_hnsw_correctness.cpp
   test_index_id_map_correctness.cpp
   test_persistence_validation.cpp

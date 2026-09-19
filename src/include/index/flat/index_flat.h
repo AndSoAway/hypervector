@@ -22,23 +22,6 @@ struct IndexFlat : IndexFlatCodes {
   explicit IndexFlat(idx_t d,  ///< dimensionality of the input vectors
                      MetricType metric = kMetricL2);
 
-  std::string_view TypeName() const noexcept override { return "flat"; }
-
-  IndexCapabilities Capabilities() const noexcept override {
-    IndexCapabilities capabilities =
-        IndexCapability::BatchBuild | IndexCapability::IncrementalAdd |
-        IndexCapability::KnnSearch | IndexCapability::RangeSearch |
-        IndexCapability::Filter | IndexCapability::ConcurrentSearch;
-    if (metric_type != kMetricL2 && metric_type != kMetricInnerProduct) {
-      capabilities &= ~IndexCapability::RangeSearch;
-    }
-    // clone_index currently copies the metric kind but not metric_arg.
-    if (metric_type != kMetricLp) {
-      capabilities |= IndexCapability::Clone;
-    }
-    return capabilities;
-  }
-
   void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
 
@@ -80,10 +63,6 @@ struct IndexFlat : IndexFlatCodes {
 struct IndexFlatIP : IndexFlat {
   explicit IndexFlatIP(idx_t d) : IndexFlat(d, kMetricInnerProduct) {}
   IndexFlatIP() {}
-
-  IndexCapabilities Capabilities() const noexcept override {
-    return IndexFlat::Capabilities() | IndexCapability::Serialize;
-  }
 };
 
 struct IndexFlatL2 : IndexFlat {
@@ -98,10 +77,6 @@ struct IndexFlatL2 : IndexFlat {
    */
   explicit IndexFlatL2(idx_t d) : IndexFlat(d, kMetricL2) {}
   IndexFlatL2() {}
-
-  IndexCapabilities Capabilities() const noexcept override {
-    return IndexFlat::Capabilities() | IndexCapability::Serialize;
-  }
 
   // override for l2 norms cache.
   FlatCodesDistanceComputer* GetFlatCodesDistanceComputer() const override;
@@ -119,14 +94,6 @@ struct IndexFlat1D : IndexFlatL2 {
   std::vector<idx_t> perm;  ///< sorted database indices
 
   explicit IndexFlat1D(bool continuous_update = true);
-
-  std::string_view TypeName() const noexcept override { return "flat_1d"; }
-
-  IndexCapabilities Capabilities() const noexcept override {
-    return IndexCapability::BatchBuild | IndexCapability::IncrementalAdd |
-           IndexCapability::KnnSearch | IndexCapability::RangeSearch |
-           IndexCapability::Filter | IndexCapability::ConcurrentSearch;
-  }
 
   /// if not continuous_update, call this between the last Add and
   /// the first Search

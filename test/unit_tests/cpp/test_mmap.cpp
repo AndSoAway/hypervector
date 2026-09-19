@@ -62,12 +62,6 @@ TEST(TestMmap, MmapFlatcodes) {
 #ifdef _AIX
     GTEST_SKIP() << "Skipping test on AIX.";
 #endif
-    // TODO(persistence): remove this skip once ReadIndex honors
-    // IO_FLAG_MMAP_IFC by constructing a MappedFileIOReader.
-    GTEST_SKIP()
-        << "IO_FLAG_MMAP_IFC is declared but the current ReadIndex entry "
-           "point does not create a memory-mapped reader yet.";
-
     // generate data
     const size_t nt = 1000;
     const size_t nq = 10;
@@ -168,8 +162,7 @@ TEST(TestMmap, MmapFlatcodes) {
     ASSERT_EQ(ref_dis_1, cand_dis_3);
 }
 
-// IndexBinaryFlat is not included in the current CMake build.
+// IndexBinaryFlat is not included in the HNSW-only build.
 TEST(TestMmap, MmapBinaryFlatcodes) {
-  GTEST_SKIP()
-      << "IndexBinaryFlat is not available in the current CMake build.";
+    GTEST_SKIP() << "IndexBinaryFlat not available in HNSW-only build.";
 }

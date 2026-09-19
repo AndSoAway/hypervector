@@ -7,23 +7,13 @@ cmake_minimum_required(VERSION 3.10)
 
 project(hypervec VERSION 1.0.0)
 
-# CPU core sources: indexes, quantizers, persistence, and shared utilities.
+# =============================================================================
+# Minimal HNSW-only HyperVec Build Configuration
+# =============================================================================
 
 set(HYPERVEC_SRC
-  factory/name_utils.cpp
-  factory/index_config.cpp
-  factory/index_registry.cpp
-  factory/builtin_index_creators.cpp
-  factory/engine.cpp
   index/index.cpp
-  index/graph/graph_storage.cpp
-  index/graph/graph_searcher.cpp
-  index/graph/graph_validation.cpp
-  index/graph/neighbor_pruner.cpp
-  index/graph/nsw_builder.cpp
-  index/graph/visited_table.cpp
   index/ivf/index_ivf.cpp
-  index/ivf/inverted_list_scanner.cpp
   index/ivf/index_ivf_flat.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
@@ -31,12 +21,10 @@ set(HYPERVEC_SRC
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/hnsw.cpp
-  index/hnsw/hnsw_graph_adapter.cpp
-  index/nsw/index_nsw.cpp
+  index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
-  persistence/index_metadata.cpp
   utils/common/interrupt_callback.cpp
   utils/common/buffer_list.cpp
   utils/common/range_search_result.cpp
@@ -50,15 +38,12 @@ set(HYPERVEC_SRC
   utils/structures/sorting.cpp
   utils/structures/partitioning.cpp
   utils/algo/kmeans/kmeans.cpp
-  quantization/quantizer.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
-  quantization/pq/pq_quantizer_adapter.cpp
   quantization/pq/index_pq.cpp
   quantization/pq/index_ivfpq.cpp
   quantization/lvq/lvq.cpp
   quantization/lvq/lvq_distance_computer.cpp
-  quantization/lvq/lvq_quantizer_adapter.cpp
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   utils/utils.cpp
@@ -71,19 +56,8 @@ set(HYPERVEC_SRC
 )
 
 set(HYPERVEC_HEADERS
-  include/factory/index_config.h
-  include/factory/index_descriptor.h
-  include/factory/index_registry.h
-  include/factory/engine.h
   include/index/index.h
-  include/index/graph/graph_storage.h
-  include/index/graph/graph_searcher.h
-  include/index/graph/graph_validation.h
-  include/index/graph/neighbor_pruner.h
-  include/index/graph/nsw_builder.h
-  include/index/graph/visited_table.h
   include/index/ivf/index_ivf.h
-  include/index/ivf/inverted_list_scanner.h
   include/index/ivf/index_ivf_flat.h
   include/utils/distances/metric_type.h
   include/utils/log/assert.h
@@ -97,12 +71,9 @@ set(HYPERVEC_HEADERS
   include/index/hnsw/index_hnsw_pq.h
   include/index/hnsw/index_hnsw_lvq.h
   include/index/hnsw/hnsw.h
-  include/index/hnsw/hnsw_graph_adapter.h
   include/index/hnsw/visited_table.h
-  include/index/nsw/index_nsw.h
   include/index/idmap/index_id_map.h
   include/persistence/index_clone.h
-  include/persistence/index_io.h
   include/utils/common/interrupt_callback.h
   include/utils/common/buffer_list.h
   include/utils/common/range_search_result.h
@@ -114,15 +85,12 @@ set(HYPERVEC_HEADERS
   include/utils/structures/random.h
   include/utils/structures/sorting.h
   include/utils/algo/kmeans/kmeans.h
-  include/quantization/quantizer.h
   include/quantization/pq/pq.h
   include/quantization/pq/pq_distance_computer.h
-  include/quantization/pq/pq_quantizer_adapter.h
   include/quantization/pq/index_pq.h
   include/quantization/pq/index_ivfpq.h
   include/quantization/lvq/lvq.h
   include/quantization/lvq/lvq_distance_computer.h
-  include/quantization/lvq/lvq_quantizer_adapter.h
   include/quantization/lvq/index_lvq.h
   include/quantization/lvq/index_ivflvq.h
   include/utils/distances/distances.h
@@ -135,9 +103,7 @@ set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
 add_library(hypervec ${HYPERVEC_SRC})
 
 target_include_directories(hypervec PUBLIC
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-  PRIVATE
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>)
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 
 set_target_properties(hypervec PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -175,8 +141,7 @@ install(TARGETS hypervec
 )
 
 foreach(header ${HYPERVEC_HEADERS})
-  string(REGEX REPLACE "^include/" "" install_header "${header}")
-  get_filename_component(dir "${install_header}" DIRECTORY)
+  get_filename_component(dir ${header} DIRECTORY )
   install(FILES ${header}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${dir}
   )

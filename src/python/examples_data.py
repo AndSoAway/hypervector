@@ -105,31 +105,6 @@ INDEX_EXAMPLES: tuple[dict[str, Any], ...] = (
         "metric_types": ["L2"],
     },
     {
-        "index_type": "IndexNSWFlat",
-        "name": "NSWFlat",
-        "aliases": ["NSW", "IndexNSW", "IndexNSWFlat"],
-        "cpp_classes": ["IndexNSWFlat"],
-        "cpp_class": "hypervec.IndexNSWFlat",
-        "full_name": "Navigable Small World with Flat Vectors",
-        "description": "基于单层小世界图的近似最近邻索引；采用增量 NSW 构图并保存原始浮点向量。",
-        "use_case": ["中等规模向量检索", "增量写入", "图算法实验基线"],
-        "advantages": ["无需训练", "支持增量写入", "结构比 HNSW 简单"],
-        "limitations": ["只有单层图", "大规模查询通常弱于 HNSW", "索引内存占用较高"],
-        "parameters": [
-            {"name": "m_nsw", "type": "int", "default": 32, "required": False, "description": "新节点的目标连接数"},
-            {"name": "ef_construction", "type": "int", "default": 40, "required": False, "description": "构图候选搜索宽度"},
-            {"name": "ef_search", "type": "int", "default": 16, "required": False, "scope": "search", "description": "查询搜索宽度"},
-        ],
-        "example_code": {
-            "Python": {
-                "create": _create("NSWFlat", {"m_nsw": 32, "ef_construction": 80}),
-                "search": _search("demo_nsw_flat", {"ef_search": 64}),
-            }
-        },
-        "performance_tips": ["提高 ef_search 可提升召回但增加延迟", "提高 ef_construction 可改善图质量但增加构建时间"],
-        "metric_types": ["L2", "IP", "COSINE"],
-    },
-    {
         "index_type": "IndexHNSWFlat",
         "name": "HNSWFlat",
         "aliases": ["HNSW", "AutoIndex", "IndexHNSWFlat"],

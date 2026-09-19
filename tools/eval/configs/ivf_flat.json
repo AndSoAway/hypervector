@@ -1,8 +1,0 @@
-{
-  "type": "ivf_flat",
-  "dimension": 128,
-  "metric": "l2",
-  "build": {
-    "nlist": 1024
-  }
-}

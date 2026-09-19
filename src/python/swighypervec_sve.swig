@@ -19,6 +19,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -28,6 +29,7 @@
 #include <utils/structures/term_dictionary.h>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -115,6 +117,30 @@ std::string read_python_string(PyObject* value, const char* context) {
     throw std::runtime_error(std::string(context) + " must be a string");
   }
   return text;
+}
+
+size_t read_positive_size(PyObject* value, const char* context) {
+  if (!PyLong_Check(value) || PyBool_Check(value)) {
+    throw std::runtime_error(std::string(context) + " must be an integer");
+  }
+  const unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+  if (PyErr_Occurred()) {
+    PyErr_Clear();
+    throw std::runtime_error(std::string(context) +
+                             " must be a positive integer");
+  }
+  if (parsed == 0 || parsed > std::numeric_limits<size_t>::max()) {
+    throw std::runtime_error(std::string(context) +
+                             " must be a positive integer");
+  }
+  return static_cast<size_t>(parsed);
+}
+
+bool read_python_bool(PyObject* value, const char* context) {
+  if (!PyBool_Check(value)) {
+    throw std::runtime_error(std::string(context) + " must be a bool");
+  }
+  return value == Py_True;
 }
 
 void set_index_parameters(hypervec::IndexConfig* config, PyObject* params) {
@@ -515,6 +541,19 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
       PyObject* val = PyDict_GetItemString(py_params, "ef_search");
       if (!val) val = PyDict_GetItemString(py_params, "ef");
       if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* nsw = dynamic_cast<const hypervec::IndexNSW*>($self)) {
+      (void)nsw;
+      hypervec::SearchParametersNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = read_positive_size(val, "ef_search");
+      val = PyDict_GetItemString(py_params, "check_relative_distance");
+      if (val) {
+        params.check_relative_distance =
+            read_python_bool(val, "check_relative_distance");
+      }
       return index_search_with_params($self, x, k, &params);
     }
     if (const auto* ivf = dynamic_cast<const hypervec::IndexIVF*>($self)) {

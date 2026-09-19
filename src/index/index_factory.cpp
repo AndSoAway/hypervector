@@ -13,6 +13,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -167,6 +168,21 @@ std::unique_ptr<Index> MakeHNSWFlat(const IndexConfig& config) {
   return index;
 }
 
+std::unique_ptr<Index> MakeNSWFlat(const IndexConfig& config) {
+  NSWIndexOptions options;
+  options.max_degree =
+      static_cast<size_t>(PositiveIntParameter(config, "max_degree", 32));
+  options.ef_construction =
+      static_cast<size_t>(PositiveIntParameter(config, "ef_construction", 64));
+  options.ef_search =
+      static_cast<size_t>(PositiveIntParameter(config, "ef_search", 16));
+  options.check_relative_distance =
+      config.GetBoolean("check_relative_distance", true);
+  options.fill_to_max_degree = config.GetBoolean("fill_to_max_degree", true);
+  return std::make_unique<IndexNSWFlat>(config.dimension, config.metric_type,
+                                        options, config.metric_arg);
+}
+
 std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
   RequireL2(config, "hnsw_pq");
   const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
@@ -215,6 +231,11 @@ void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register(
       {"hnsw_lvq", {"hnswlvq", "IndexHNSWLVQ"}, {"nlocal", "nbits", "m_hnsw"}},
       MakeHNSWLVQ);
+  registry->Register({"nsw_flat",
+                      {"nsw", "nswflat", "IndexNSWFlat"},
+                      {"max_degree", "ef_construction", "ef_search",
+                       "check_relative_distance", "fill_to_max_degree"}},
+                     MakeNSWFlat);
 }
 
 }  // namespace

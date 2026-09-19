@@ -26,6 +26,7 @@ set(HYPERVEC_TEST_SRC
   test_simdlib.cpp
   test_kmeans.cpp
   test_pq.cpp
+  test_quantizer_protocol.cpp
   test_index_pq.cpp
   test_index_ivf_flat.cpp
   test_index_ivf_correctness.cpp

@@ -42,6 +42,7 @@ set(HYPERVEC_SRC
   persistence/index_write.cpp
   persistence/io.cpp
   persistence/mapped_io.cpp
+  persistence/page_cache.cpp
   persistence/random_access_io.cpp
   utils/structures/heap.cpp
   utils/structures/random.cpp

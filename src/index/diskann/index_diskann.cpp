@@ -97,7 +97,11 @@ void IndexDiskANN::Train(idx_t n, const float* x) {
       is_trained, "IndexDiskANN::Train: quantizer did not become trained");
 }
 
-void IndexDiskANN::Build(idx_t n, const float* x) { BuildImpl(n, x, nullptr); }
+void IndexDiskANN::Build(idx_t n, const float* x) {
+  const std::string* filename =
+      options_.node_data_path.empty() ? nullptr : &options_.node_data_path;
+  BuildImpl(n, x, filename);
+}
 
 void IndexDiskANN::BuildToFile(idx_t n, const float* x,
                                const std::string& filename) {

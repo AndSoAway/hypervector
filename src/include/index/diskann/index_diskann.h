@@ -42,6 +42,7 @@ struct DiskAnnIndexOptions {
   bool check_relative_distance = true;
   size_t page_size = 4096;
   size_t cache_capacity_pages = 1024;
+  std::string node_data_path;
 };
 
 /** Static DiskANN index composed from Vamana, paged storage, and reranking.

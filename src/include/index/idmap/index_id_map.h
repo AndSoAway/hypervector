@@ -48,6 +48,11 @@ struct IndexIDMap : Index {
   void Train(idx_t n, const float* x, idx_t n_train_q,
              const float* xq_train) override;
 
+  void Build(idx_t n, const float* x) override;
+
+  void Build(idx_t n, const float* x, idx_t n_train_q,
+             const float* xq_train) override;
+
   void Add(idx_t n, const float* x) override;
 
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;

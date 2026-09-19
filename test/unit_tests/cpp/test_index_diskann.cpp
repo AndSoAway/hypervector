@@ -218,10 +218,11 @@ TEST(IndexDiskANN, BuildsFileBackingAndRestoresColdValidatedState) {
     output.write(reinterpret_cast<const char*>(old_data.data()),
                  static_cast<std::streamsize>(old_data.size()));
   }
-  hypervec::IndexDiskANNFlat source(1, hypervec::kMetricL2,
-                                    ExhaustiveOptions());
+  hypervec::DiskAnnIndexOptions file_options = ExhaustiveOptions();
+  file_options.node_data_path = node_file.Path().string();
+  hypervec::IndexDiskANNFlat source(1, hypervec::kMetricL2, file_options);
 
-  source.BuildToFile(6, database.data(), node_file.Path().string());
+  source.Build(6, database.data());
 
   ASSERT_NE(source.Layout(), nullptr);
   EXPECT_TRUE(std::filesystem::exists(node_file.Path()));

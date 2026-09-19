@@ -84,6 +84,23 @@ def test_nsg_runtime_parameters_reject_invalid_types_and_values():
         )
 
 
+def test_nsg_persistence_roundtrip_remains_searchable(tmp_path):
+    index = make_index()
+    database = np.array([[0], [2], [5], [9], [14], [20]], dtype=np.float32)
+    index.build(database)
+    path = tmp_path / "index.nsg"
+    hypervec.write_index(index, str(path))
+
+    restored = hypervec.read_index(str(path))
+    distances, labels = restored.search_with_params(
+        np.array([[4]], dtype=np.float32), 3, {"ef_search": 8}
+    )
+    assert labels == [[2, 1, 0]]
+    assert distances == [[1.0, 4.0, 16.0]]
+    with pytest.raises(RuntimeError, match="incremental insertion"):
+        restored.add(np.array([[25]], dtype=np.float32))
+
+
 def test_common_build_binding_validates_matrix_shape_and_dtype():
     index = make_index()
     with pytest.raises(RuntimeError, match="float32"):

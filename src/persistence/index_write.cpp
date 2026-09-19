@@ -15,6 +15,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -131,6 +132,53 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     WRITE1(code_bytes);
     WRITEANDCHECK(nswflat->CodeStore().Data(), code_bytes);
     const CsrGraph graph(nswflat->Graph());
+    WRITEVECTOR(graph.Offsets());
+    WRITEVECTOR(graph.Edges());
+    return;
+  }
+
+  const auto* nsgflat = dynamic_cast<const IndexNSGFlat*>(index);
+  if (nsgflat) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        nsgflat->CodeStore().Size() == nsgflat->n_total &&
+            nsgflat->Graph().NodeCount() ==
+                static_cast<size_t>(nsgflat->n_total),
+        "IndexNSGFlat serialize: stored counts do not match n_total");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        nsgflat->QuantizerModel().Dimension() == nsgflat->d &&
+            nsgflat->QuantizerModel().Metric() == nsgflat->metric_type &&
+            nsgflat->QuantizerModel().IsTrained() == nsgflat->is_trained,
+        "IndexNSGFlat serialize: quantizer metadata does not match the index");
+    const GraphValidationReport report =
+        ValidateGraph(nsgflat->Graph(), nsgflat->EntryPoint());
+    HYPERVEC_THROW_IF_NOT_MSG(
+        report.IsStructurallyValid() &&
+            report.reachable_nodes == static_cast<size_t>(nsgflat->n_total),
+        "IndexNSGFlat serialize: graph is invalid or unreachable");
+
+    uint32_t h = fourcc("INGf");
+    WRITE1(h);
+    write_index_header(*nsgflat, f);
+    const NSGIndexOptions& options = nsgflat->Options();
+    WRITE1(options.knn_degree);
+    WRITE1(options.nn_descent_iterations);
+    WRITE1(options.nn_descent_convergence_threshold);
+    WRITE1(options.random_seed);
+    WRITE1(options.max_degree);
+    WRITE1(options.build_search_width);
+    WRITE1(options.candidate_pool_size);
+    WRITE1(options.ef_search);
+    const uint8_t check_relative_distance = options.check_relative_distance;
+    WRITE1(check_relative_distance);
+    const GraphId entry_point = nsgflat->EntryPoint();
+    WRITE1(entry_point);
+
+    const size_t code_bytes =
+        mul_no_overflow(static_cast<size_t>(nsgflat->n_total),
+                        nsgflat->CodeStore().CodeSize(), "IndexNSGFlat codes");
+    WRITE1(code_bytes);
+    WRITEANDCHECK(nsgflat->CodeStore().Data(), code_bytes);
+    const CsrGraph graph(nsgflat->Graph());
     WRITEVECTOR(graph.Offsets());
     WRITEVECTOR(graph.Edges());
     return;

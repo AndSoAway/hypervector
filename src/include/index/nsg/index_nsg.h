@@ -74,6 +74,15 @@ class IndexNSG : public Index {
   void Reconstruct(idx_t key, float* recons) const override;
   DistanceComputer* GetDistanceComputer() const override;
 
+  /** Replace the stored vectors and graph after external decoding.
+   *
+   * All inputs are validated before the live index state is changed. This is
+   * intended for persistence adapters and other trusted state loaders.
+   * Diagnostic build counters restart at zero.
+   */
+  void RestoreState(InMemoryCodeStore code_store, MutableBoundedGraph graph,
+                    GraphId entry_point);
+
   const NSGIndexOptions& Options() const noexcept { return options_; }
   const Quantizer& QuantizerModel() const noexcept { return *quantizer_; }
   const InMemoryCodeStore& CodeStore() const noexcept { return code_store_; }

@@ -318,6 +318,37 @@ DistanceComputer* IndexNSG::GetDistanceComputer() const {
   return quantizer_->CreateDistanceComputer(code_store_.View()).release();
 }
 
+void IndexNSG::RestoreState(InMemoryCodeStore code_store,
+                            MutableBoundedGraph graph, GraphId entry_point) {
+  const idx_t restored_total = code_store.Size();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_store.CodeSize() == quantizer_->CodeSize(),
+      "IndexNSG::RestoreState: code size does not match the quantizer");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      graph.MaxDegree() == options_.max_degree,
+      "IndexNSG::RestoreState: graph max degree does not match the options");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      graph.NodeCount() == static_cast<size_t>(restored_total),
+      "IndexNSG::RestoreState: graph and code counts do not match");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      (restored_total == 0 && entry_point == kInvalidGraphId) ||
+          (restored_total > 0 && entry_point >= 0 &&
+           entry_point < restored_total),
+      "IndexNSG::RestoreState: entry point is inconsistent with the index");
+  const GraphValidationReport report = ValidateGraph(graph, entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid() &&
+          report.reachable_nodes == static_cast<size_t>(restored_total),
+      "IndexNSG::RestoreState: graph is invalid or unreachable");
+
+  code_store_ = std::move(code_store);
+  graph_ = std::move(graph);
+  entry_point_ = entry_point;
+  build_stats_.Reset();
+  n_total = restored_total;
+  ValidateAlignedState();
+}
+
 void IndexNSG::ValidateAlignedState() const {
   HYPERVEC_THROW_IF_NOT_MSG(
       n_total >= 0 && code_store_.Size() == n_total &&

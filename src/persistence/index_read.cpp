@@ -15,6 +15,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -438,7 +439,7 @@ static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
   RebuildHnswLevelProbabilities(hnsw);
 }
 
-static bool read_nsw_bool(IOReader* f, const char* context) {
+static bool read_graph_bool(IOReader* f, const char* context) {
   uint8_t value;
   READ1(value);
   HYPERVEC_THROW_IF_NOT_FMT(value <= 1, "%s must be encoded as 0 or 1",
@@ -468,9 +469,9 @@ static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
   READ1(options.ef_construction);
   READ1(options.ef_search);
   options.check_relative_distance =
-      read_nsw_bool(f, "IndexNSWFlat check_relative_distance");
+      read_graph_bool(f, "IndexNSWFlat check_relative_distance");
   options.fill_to_max_degree =
-      read_nsw_bool(f, "IndexNSWFlat fill_to_max_degree");
+      read_graph_bool(f, "IndexNSWFlat fill_to_max_degree");
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -523,6 +524,86 @@ static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
   return index;
 }
 
+static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
+    const IndexHeaderData& header, IOReader* f) {
+  constexpr size_t kGraphCapacity =
+      static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexNSGFlat deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total <= kGraphCapacity,
+      "IndexNSGFlat deserialize: n_total exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexNSGFlat deserialize: n_total exceeds loop limit (%zu > %zu)", total,
+      deserialization_loop_limit_);
+
+  NSGIndexOptions options;
+  READ1(options.knn_degree);
+  READ1(options.nn_descent_iterations);
+  READ1(options.nn_descent_convergence_threshold);
+  READ1(options.random_seed);
+  READ1(options.max_degree);
+  READ1(options.build_search_width);
+  READ1(options.candidate_pool_size);
+  READ1(options.ef_search);
+  options.check_relative_distance =
+      read_graph_bool(f, "IndexNSGFlat check_relative_distance");
+  GraphId entry_point;
+  READ1(entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      (total == 0 && entry_point == kInvalidGraphId) ||
+          (total > 0 && entry_point >= 0 &&
+           static_cast<size_t>(entry_point) < total),
+      "IndexNSGFlat deserialize: entry point is inconsistent with n_total");
+
+  auto index = std::make_unique<IndexNSGFlat>(header.d, header.metric_type,
+                                              options, header.metric_arg);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained,
+      "IndexNSGFlat deserialize: training state does not match flat storage");
+
+  const size_t code_count = mul_no_overflow(
+      total, index->CodeStore().CodeSize(), "IndexNSGFlat codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexNSGFlat codes");
+
+  const size_t offset_count = add_no_overflow(total, 1, "IndexNSGFlat offsets");
+  std::vector<size_t> offsets;
+  ReadVectorExact(offsets, offset_count, f, "IndexNSGFlat offsets");
+  HYPERVEC_THROW_IF_NOT_MSG(offsets.front() == 0,
+                            "IndexNSGFlat offsets must start at zero");
+  for (size_t node = 0; node < total; ++node) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        offsets[node] <= offsets[node + 1] &&
+            offsets[node + 1] - offsets[node] <= options.max_degree,
+        "IndexNSGFlat offsets contain an invalid neighbor span");
+  }
+  const size_t max_edges = mul_no_overflow(total, options.max_degree,
+                                           "IndexNSGFlat maximum edge count");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      offsets.back() <= max_edges,
+      "IndexNSGFlat edge count exceeds the configured degree bound");
+  std::vector<GraphId> edges;
+  ReadVectorExact(edges, offsets.back(), f, "IndexNSGFlat edges");
+
+  MutableBoundedGraph graph(total, options.max_degree);
+  for (size_t node = 0; node < total; ++node) {
+    const size_t degree = offsets[node + 1] - offsets[node];
+    const GraphId* neighbors =
+        degree == 0 ? nullptr : edges.data() + offsets[node];
+    graph.SetNeighbors(static_cast<GraphId>(node),
+                       GraphNeighborView(neighbors, degree));
+  }
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  index->RestoreState(std::move(code_store), std::move(graph), entry_point);
+  return index;
+}
+
 Index* ReadIndex(IOReader* f, int io_flags) {
   (void)io_flags;
 
@@ -532,6 +613,11 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("INSf")) {
     const IndexHeaderData header = read_index_header_data(f);
     return read_nsw_flat(header, f).release();
+  }
+
+  if (h == fourcc("INGf")) {
+    const IndexHeaderData header = read_index_header_data(f);
+    return read_nsg_flat(header, f).release();
   }
 
   if (h == fourcc("IxMp")) {

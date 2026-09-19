@@ -10,6 +10,8 @@
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_validation.h>
 #include <index/nsg/index_nsg.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
@@ -100,6 +102,88 @@ TEST(IndexNSG, SimilaritySearchRestoresExternalDistanceDirection) {
       index.GetDistanceComputer());
   distance->SetQuery(queries.data());
   EXPECT_FLOAT_EQ((*distance)(5), 8.0F);
+}
+
+TEST(IndexNSG, PersistenceRoundtripPreservesStaticState) {
+  hypervec::NSGIndexOptions options = ExhaustiveOptions();
+  options.knn_degree = 5;
+  options.nn_descent_iterations = 7;
+  options.nn_descent_convergence_threshold = 0.125;
+  options.random_seed = 123456789;
+  options.max_degree = 4;
+  options.build_search_width = 6;
+  options.candidate_pool_size = 9;
+  options.ef_search = 7;
+  options.check_relative_distance = false;
+  const std::vector<float> database = {
+      1.0F, 0.0F, 0.0F, 2.0F, 2.0F, 1.0F, 3.0F, 4.0F, 1.0F, 3.0F, 6.0F, 2.0F,
+  };
+  const std::vector<float> queries = {1.0F, 1.0F, 2.0F, 0.5F};
+  hypervec::IndexNSGFlat source(2, hypervec::kMetricInnerProduct, options);
+  source.Build(6, database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexNSGFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->d, source.d);
+  EXPECT_EQ(restored->n_total, source.n_total);
+  EXPECT_EQ(restored->metric_type, source.metric_type);
+  EXPECT_EQ(restored->EntryPoint(), source.EntryPoint());
+  EXPECT_EQ(restored->Options().knn_degree, options.knn_degree);
+  EXPECT_EQ(restored->Options().nn_descent_iterations,
+            options.nn_descent_iterations);
+  EXPECT_DOUBLE_EQ(restored->Options().nn_descent_convergence_threshold,
+                   options.nn_descent_convergence_threshold);
+  EXPECT_EQ(restored->Options().random_seed, options.random_seed);
+  EXPECT_EQ(restored->Options().max_degree, options.max_degree);
+  EXPECT_EQ(restored->Options().build_search_width, options.build_search_width);
+  EXPECT_EQ(restored->Options().candidate_pool_size,
+            options.candidate_pool_size);
+  EXPECT_EQ(restored->Options().ef_search, options.ef_search);
+  EXPECT_EQ(restored->Options().check_relative_distance,
+            options.check_relative_distance);
+  ASSERT_EQ(restored->Graph().NodeCount(), source.Graph().NodeCount());
+  for (size_t node = 0; node < source.Graph().NodeCount(); ++node) {
+    const auto source_neighbors =
+        source.Graph().Neighbors(static_cast<hypervec::GraphId>(node));
+    const auto restored_neighbors =
+        restored->Graph().Neighbors(static_cast<hypervec::GraphId>(node));
+    EXPECT_TRUE(std::equal(source_neighbors.begin(), source_neighbors.end(),
+                           restored_neighbors.begin(),
+                           restored_neighbors.end()));
+  }
+  EXPECT_EQ(restored->BuildStats().candidate_graph.iterations, 0U);
+  EXPECT_EQ(restored->BuildStats().nsg.pruned_nodes, 0U);
+  ExpectSameSearch(source, *restored, queries, 3);
+  EXPECT_THROW(restored->Add(1, database.data()), hypervec::HypervecException);
+}
+
+TEST(IndexNSG, PersistenceRoundtripPreservesEmptyLpState) {
+  hypervec::IndexNSGFlat source(2, hypervec::kMetricLp, ExhaustiveOptions(),
+                                3.0F);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexNSGFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->EntryPoint(), hypervec::kInvalidGraphId);
+  EXPECT_EQ(restored->Graph().NodeCount(), 0U);
+  EXPECT_EQ(restored->metric_type, hypervec::kMetricLp);
+  EXPECT_FLOAT_EQ(restored->metric_arg, 3.0F);
+
+  const std::array<float, 4> database = {1.0F, 2.0F, 3.0F, 4.0F};
+  restored->Build(2, database.data());
+  EXPECT_EQ(restored->n_total, 2);
 }
 
 TEST(IndexNSG, ApproximatePipelineRetainsHighRecall) {

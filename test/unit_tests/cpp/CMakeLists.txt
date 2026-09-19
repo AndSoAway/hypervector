@@ -9,6 +9,7 @@ set(HYPERVEC_TEST_SRC
   test_graph_searcher.cpp
   test_graph_storage.cpp
   test_nn_descent_builder.cpp
+  test_nsg_builder.cpp
   test_nsw_builder.cpp
   test_index_nsw.cpp
   test_hnsw.cpp

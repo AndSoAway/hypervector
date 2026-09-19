@@ -16,10 +16,12 @@
 #include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <transform/opq_matrix.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
@@ -127,6 +129,18 @@ std::unique_ptr<Index> MakePQ(const IndexConfig& config) {
   const int nbits = PositiveIntParameter(config, "nbits", 8);
   return std::make_unique<IndexPQ>(config.dimension, m_pq, nbits,
                                    config.metric_type);
+}
+
+std::unique_ptr<Index> MakeOPQPQ(const IndexConfig& config) {
+  RequireL2(config, "opq_pq");
+  const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
+  const int nbits = PositiveIntParameter(config, "nbits", 8);
+  const int opq_iterations = PositiveIntParameter(config, "opq_iterations", 8);
+  auto opq = std::make_unique<OPQMatrix>(config.dimension, m_pq, nbits);
+  opq->parameters.iterations = opq_iterations;
+  auto pq = std::make_unique<IndexPQ>(config.dimension, m_pq, nbits,
+                                      config.metric_type);
+  return std::make_unique<IndexPreTransform>(std::move(opq), std::move(pq));
 }
 
 std::unique_ptr<Index> MakeLVQ(const IndexConfig& config) {
@@ -271,6 +285,9 @@ std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
 void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register({"flat", {"IndexFlat"}, {}}, MakeFlat);
   registry->Register({"pq", {"IndexPQ"}, {"m_pq", "nbits"}}, MakePQ);
+  registry->Register(
+      {"opq_pq", {"opqpq", "IndexOPQPQ"}, {"m_pq", "nbits", "opq_iterations"}},
+      MakeOPQPQ);
   registry->Register({"lvq", {"IndexLVQ"}, {"nlocal", "nbits"}}, MakeLVQ);
   registry->Register(
       {"ivf_flat", {"ivf", "ivfflat", "IndexIVFFlat"}, {"nlist"}}, MakeIVFFlat);

@@ -28,7 +28,9 @@
 #include <utils/log/assert.h>
 #include <utils/structures/maybe_owned_vector.h>
 
+#include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -178,6 +180,128 @@ void ReadInvertedLists(IndexIVF& index, size_t code_size, IOReader* f) {
   index.invlists = loaded.release();
   index.own_invlists = true;
 }
+
+void ValidateHnswGraph(const Index& index, const HNSW& hnsw,
+                       int level0_capacity, int serialized_last_level) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total <= std::numeric_limits<HNSW::storage_idx_t>::max(),
+      "IndexHNSW deserialize: n_total exceeds graph ID capacity");
+  const size_t total = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      level0_capacity > 0,
+      "IndexHNSW deserialize: level-0 capacity must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.ef_construction > 0,
+      "IndexHNSW deserialize: ef_construction must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.cum_nneighbor_per_level.size() >= 2 &&
+          hnsw.cum_nneighbor_per_level.front() == 0 &&
+          hnsw.cum_nneighbor_per_level[1] == level0_capacity,
+      "IndexHNSW deserialize: invalid neighbor-capacity table");
+  for (size_t i = 1; i < hnsw.cum_nneighbor_per_level.size(); ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.cum_nneighbor_per_level[i] > hnsw.cum_nneighbor_per_level[i - 1],
+        "IndexHNSW deserialize: neighbor capacities must increase");
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.levels.size() == total && hnsw.offsets.size() == total + 1,
+      "IndexHNSW deserialize: graph arrays do not match n_total");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !hnsw.offsets.empty() && hnsw.offsets.front() == 0,
+      "IndexHNSW deserialize: offsets must start at zero");
+
+  if (total == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.max_level == -1 && hnsw.entry_point == -1 &&
+            serialized_last_level == 0 && hnsw.offsets.back() == 0 &&
+            hnsw.neighbors.size() == 0,
+        "IndexHNSW deserialize: invalid empty graph metadata");
+    return;
+  }
+
+  HYPERVEC_THROW_IF_NOT_MSG(hnsw.max_level >= 0 && hnsw.entry_point >= 0 &&
+                                static_cast<size_t>(hnsw.entry_point) < total,
+                            "IndexHNSW deserialize: invalid graph entry point");
+  int observed_levels = 0;
+  for (size_t node = 0; node < total; ++node) {
+    const int node_levels = hnsw.levels[node];
+    HYPERVEC_THROW_IF_NOT_MSG(
+        node_levels > 0 && static_cast<size_t>(node_levels) <
+                               hnsw.cum_nneighbor_per_level.size(),
+        "IndexHNSW deserialize: invalid node level");
+    observed_levels = std::max(observed_levels, node_levels);
+    const size_t expected_span = static_cast<size_t>(
+        hnsw.cum_nneighbor_per_level[static_cast<size_t>(node_levels)]);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.offsets[node + 1] >= hnsw.offsets[node] &&
+            hnsw.offsets[node + 1] - hnsw.offsets[node] == expected_span,
+        "IndexHNSW deserialize: node offsets do not match its levels");
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.max_level == observed_levels - 1 &&
+          hnsw.levels[static_cast<size_t>(hnsw.entry_point)] ==
+              observed_levels &&
+          serialized_last_level == hnsw.levels.back(),
+      "IndexHNSW deserialize: inconsistent maximum-level metadata");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.offsets.back() == hnsw.neighbors.size(),
+      "IndexHNSW deserialize: offsets do not match neighbor storage");
+
+  for (size_t node = 0; node < total; ++node) {
+    for (int level = 0; level < hnsw.levels[node]; ++level) {
+      const size_t begin =
+          hnsw.offsets[node] +
+          static_cast<size_t>(
+              hnsw.cum_nneighbor_per_level[static_cast<size_t>(level)]);
+      const size_t end =
+          hnsw.offsets[node] +
+          static_cast<size_t>(
+              hnsw.cum_nneighbor_per_level[static_cast<size_t>(level + 1)]);
+      bool reached_padding = false;
+      for (size_t position = begin; position < end; ++position) {
+        const HNSW::storage_idx_t neighbor = hnsw.neighbors[position];
+        if (neighbor == -1) {
+          reached_padding = true;
+          continue;
+        }
+        HYPERVEC_THROW_IF_NOT_MSG(
+            !reached_padding && neighbor >= 0 &&
+                static_cast<size_t>(neighbor) < total &&
+                static_cast<size_t>(neighbor) != node &&
+                hnsw.levels[static_cast<size_t>(neighbor)] > level,
+            "IndexHNSW deserialize: invalid neighbor entry");
+      }
+    }
+  }
+}
+
+void RebuildHnswLevelProbabilities(HNSW& hnsw) {
+  int base_capacity = hnsw.cum_nneighbor_per_level[1] / 2;
+  if (hnsw.cum_nneighbor_per_level.size() >= 3) {
+    base_capacity =
+        hnsw.cum_nneighbor_per_level[2] - hnsw.cum_nneighbor_per_level[1];
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      base_capacity > 1,
+      "IndexHNSW deserialize: invalid upper-level neighbor capacity");
+  auto neighbor_capacities = std::move(hnsw.cum_nneighbor_per_level);
+  hnsw.assign_probas.clear();
+  hnsw.cum_nneighbor_per_level.clear();
+  hnsw.SetDefaultProbas(base_capacity,
+                        static_cast<float>(1.0 / std::log(base_capacity)));
+  hnsw.cum_nneighbor_per_level = std::move(neighbor_capacities);
+}
+
+void ValidateHnswStorage(const IndexHNSW& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
+                            "IndexHNSW deserialize: storage is missing");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->d == index.d && index.storage->n_total == index.n_total &&
+          index.storage->metric_type == index.metric_type &&
+          index.storage->metric_arg == index.metric_arg &&
+          index.storage->is_trained == index.is_trained,
+      "IndexHNSW deserialize: storage metadata does not match the graph");
+}
 }  // namespace
 
 size_t get_deserialization_loop_limit() { return deserialization_loop_limit_; }
@@ -244,20 +368,26 @@ static void read_lvq(LocalVectorQuantizer& lvq, IOReader* f) {
   lvq.is_trained = true;
 }
 
-static void read_HNSW(HNSW& hnsw, IOReader* f) {
-  int M;
-  READ1(M);
-  hnsw.SetDefaultProbas(M, 1.0f / log(M));
+static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total <= std::numeric_limits<HNSW::storage_idx_t>::max(),
+      "IndexHNSW deserialize: n_total exceeds graph ID capacity");
+  int level0_capacity;
+  READ1(level0_capacity);
   READ1(hnsw.ef_construction);
   READ1(hnsw.max_level);
   READ1(hnsw.entry_point);
-  int nb_levels;
-  READ1(nb_levels);
-  (void)nb_levels;
+  int serialized_last_level;
+  READ1(serialized_last_level);
   READVECTOR(hnsw.cum_nneighbor_per_level);
-  READVECTOR(hnsw.levels);
+  ReadVectorExact(hnsw.levels, static_cast<size_t>(index.n_total), f,
+                  "IndexHNSW levels");
   READVECTOR(hnsw.neighbors);
-  READVECTOR(hnsw.offsets);
+  const size_t offset_count = add_no_overflow(
+      static_cast<size_t>(index.n_total), 1, "IndexHNSW offsets");
+  ReadVectorExact(hnsw.offsets, offset_count, f, "IndexHNSW offsets");
+  ValidateHnswGraph(index, hnsw, level0_capacity, serialized_last_level);
+  RebuildHnswLevelProbabilities(hnsw);
 }
 
 Index* ReadIndex(IOReader* f, int io_flags) {
@@ -269,46 +399,39 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("IHNf")) {
     auto idxhnsw = std::make_unique<IndexHNSWFlat>();
     read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, f);
+    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
+    idxhnsw->own_fields = true;
     HYPERVEC_THROW_IF_NOT_MSG(
         dynamic_cast<IndexFlat*>(idxhnsw->storage) != nullptr,
         "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idxhnsw->storage->is_trained,
-        "IndexHNSWFlat deserialize: inner IndexFlat is not trained");
-    idxhnsw->own_fields = true;
-    idxhnsw->is_trained = true;
+    ValidateHnswStorage(*idxhnsw);
     return idxhnsw.release();
   }
 
   if (h == fourcc("IHNp")) {
     auto idxhnsw = std::make_unique<IndexHNSWPQ>();
     read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, f);
+    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
+    idxhnsw->own_fields = true;
     HYPERVEC_THROW_IF_NOT_MSG(
         dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
         "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idxhnsw->storage->is_trained,
-        "IndexHNSWPQ deserialize: inner IndexPQ is not trained");
-    idxhnsw->own_fields = true;
+    ValidateHnswStorage(*idxhnsw);
     return idxhnsw.release();
   }
 
   if (h == fourcc("IHNl")) {
     auto idxhnsw = std::make_unique<IndexHNSWLVQ>();
     read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, f);
+    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
     idxhnsw->storage = ReadIndex(f, 0);
+    idxhnsw->own_fields = true;
     HYPERVEC_THROW_IF_NOT_MSG(
         dynamic_cast<IndexLVQ*>(idxhnsw->storage) != nullptr,
         "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idxhnsw->storage->is_trained,
-        "IndexHNSWLVQ deserialize: inner IndexLVQ is not trained");
-    idxhnsw->own_fields = true;
+    ValidateHnswStorage(*idxhnsw);
     return idxhnsw.release();
   }
 

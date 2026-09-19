@@ -7,12 +7,15 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
 #include <utils/log/exception.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -274,6 +277,84 @@ TEST(PersistenceValidation, PreservesUntrainedPqState) {
   EXPECT_FALSE(restored->is_trained);
   EXPECT_FALSE(restored->pq.is_trained);
   EXPECT_EQ(restored->n_total, 0);
+}
+
+TEST(PersistenceValidation, RebuildsOneHnswProbabilityTableAndAllowsAdd) {
+  hypervec::IndexHNSWFlat source(2, 8);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f,
+                                      2.0f, 2.0f, 3.0f, 3.0f};
+  source.Add(4, vectors.data());
+  const auto expected_probabilities = source.hnsw.assign_probas;
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexHNSWFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->hnsw.assign_probas, expected_probabilities);
+  EXPECT_EQ(restored->hnsw.cum_nneighbor_per_level,
+            source.hnsw.cum_nneighbor_per_level);
+
+  const std::vector<float> appended = {4.0f, 4.0f};
+  restored->Add(1, appended.data());
+  EXPECT_EQ(restored->n_total, 5);
+  EXPECT_EQ(restored->storage->n_total, 5);
+  EXPECT_EQ(restored->hnsw.levels.size(), 5);
+  EXPECT_EQ(restored->hnsw.offsets.size(), 6);
+}
+
+TEST(PersistenceValidation, RejectsHnswOffsetMismatch) {
+  hypervec::IndexHNSWFlat source(2, 8);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f,
+                                      2.0f, 2.0f, 3.0f, 3.0f};
+  source.Add(4, vectors.data());
+  source.hnsw.offsets.back() += 1;
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsHnswOutOfRangeNeighbor) {
+  hypervec::IndexHNSWFlat source(2, 8);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f,
+                                      2.0f, 2.0f, 3.0f, 3.0f};
+  source.Add(4, vectors.data());
+  auto neighbor = std::find_if(
+      source.hnsw.neighbors.begin(), source.hnsw.neighbors.end(),
+      [](hypervec::HNSW::storage_idx_t value) { return value >= 0; });
+  ASSERT_NE(neighbor, source.hnsw.neighbors.end());
+  *neighbor = 100;
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
+  hypervec::IndexHNSWPQ source(4, 2, 1, 8);
+  ASSERT_FALSE(source.is_trained);
+  ASSERT_FALSE(source.storage->is_trained);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexHNSWPQ*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_FALSE(restored->is_trained);
+  EXPECT_FALSE(restored->storage->is_trained);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->hnsw.offsets, (std::vector<size_t>{0}));
 }
 
 }  // namespace

@@ -57,6 +57,7 @@ set(HYPERVEC_SRC
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   quantization/quantizer.cpp
+  transform/opq_matrix.cpp
   transform/vector_transform.cpp
   utils/utils.cpp
   utils/distances/distances.cpp

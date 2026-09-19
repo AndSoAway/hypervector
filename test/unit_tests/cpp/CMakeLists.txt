@@ -34,6 +34,7 @@ set(HYPERVEC_TEST_SRC
   test_kmeans.cpp
   test_pq.cpp
   test_quantizer_protocol.cpp
+  test_opq_matrix.cpp
   test_vector_transform.cpp
   test_index_pq.cpp
   test_index_ivf_flat.cpp

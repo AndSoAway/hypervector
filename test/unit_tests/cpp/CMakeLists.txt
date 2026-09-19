@@ -28,6 +28,7 @@ set(HYPERVEC_TEST_SRC
   test_callback.cpp
   test_utils.cpp
   test_mmap.cpp
+  test_random_access_io.cpp
   test_factory_tools.cpp
   test_distances_simd.cpp
   test_omp_threads.cpp

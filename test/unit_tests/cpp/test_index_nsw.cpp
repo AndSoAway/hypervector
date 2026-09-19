@@ -10,12 +10,15 @@
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_validation.h>
 #include <index/nsw/index_nsw.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <quantization/quantizer.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -151,6 +154,78 @@ TEST(IndexNSW, SimilaritySearchRestoresExternalDistanceDirection) {
       index.GetDistanceComputer());
   distance->SetQuery(queries.data());
   EXPECT_FLOAT_EQ((*distance)(5), 8.0F);
+}
+
+TEST(IndexNSW, PersistenceRoundtripPreservesStateAndAllowsAppend) {
+  const hypervec::NSWIndexOptions options = {3, 7, 5, false, false};
+  const std::vector<float> database = {
+      1.0F, 0.0F, 0.0F, 2.0F, 2.0F, 1.0F, 3.0F, 4.0F, 1.0F, 3.0F, 6.0F, 2.0F,
+  };
+  const std::vector<float> queries = {1.0F, 1.0F, 2.0F, 0.5F};
+  hypervec::IndexNSWFlat source(2, hypervec::kMetricInnerProduct, options);
+  source.Add(6, database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexNSWFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->d, source.d);
+  EXPECT_EQ(restored->n_total, source.n_total);
+  EXPECT_EQ(restored->metric_type, source.metric_type);
+  EXPECT_EQ(restored->EntryPoint(), source.EntryPoint());
+  EXPECT_EQ(restored->Options().max_degree, options.max_degree);
+  EXPECT_EQ(restored->Options().ef_construction, options.ef_construction);
+  EXPECT_EQ(restored->Options().ef_search, options.ef_search);
+  EXPECT_EQ(restored->Options().check_relative_distance,
+            options.check_relative_distance);
+  EXPECT_EQ(restored->Options().fill_to_max_degree, options.fill_to_max_degree);
+  ASSERT_EQ(restored->Graph().NodeCount(), source.Graph().NodeCount());
+  for (size_t node = 0; node < source.Graph().NodeCount(); ++node) {
+    const auto source_neighbors =
+        source.Graph().Neighbors(static_cast<hypervec::GraphId>(node));
+    const auto restored_neighbors =
+        restored->Graph().Neighbors(static_cast<hypervec::GraphId>(node));
+    EXPECT_TRUE(std::equal(source_neighbors.begin(), source_neighbors.end(),
+                           restored_neighbors.begin(),
+                           restored_neighbors.end()));
+  }
+  EXPECT_EQ(restored->BuildStats().inserted_nodes, 0U);
+  ExpectSameSearch(source, *restored, queries, 3);
+
+  const std::array<float, 2> appended = {7.0F, 1.0F};
+  restored->Add(1, appended.data());
+  EXPECT_EQ(restored->n_total, 7);
+  EXPECT_EQ(restored->CodeStore().Size(), 7);
+  EXPECT_EQ(restored->Graph().NodeCount(), 7U);
+  EXPECT_EQ(restored->BuildStats().inserted_nodes, 1U);
+}
+
+TEST(IndexNSW, PersistenceRoundtripPreservesEmptyLpState) {
+  const hypervec::NSWIndexOptions options = {4, 6, 3, true, true};
+  hypervec::IndexNSWFlat source(2, hypervec::kMetricLp, options, 3.0F);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexNSWFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->EntryPoint(), hypervec::kInvalidGraphId);
+  EXPECT_EQ(restored->Graph().NodeCount(), 0U);
+  EXPECT_EQ(restored->metric_type, hypervec::kMetricLp);
+  EXPECT_FLOAT_EQ(restored->metric_arg, 3.0F);
+
+  const std::array<float, 2> vector = {1.0F, 2.0F};
+  restored->Add(1, vector.data());
+  EXPECT_EQ(restored->n_total, 1);
+  EXPECT_EQ(restored->EntryPoint(), 0);
 }
 
 TEST(IndexNSW, SelectorFiltersResultsWithoutBlockingTraversal) {

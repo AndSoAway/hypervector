@@ -9,11 +9,13 @@
  */
 
 #include <index/flat/index_flat.h>
+#include <index/graph/graph_validation.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -88,6 +90,49 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*id_map, f);
     WRITEVECTOR(id_map->rev_map);
     WriteIndex(id_map->index, f, 0);
+    return;
+  }
+
+  const auto* nswflat = dynamic_cast<const IndexNSWFlat*>(index);
+  if (nswflat) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        nswflat->CodeStore().Size() == nswflat->n_total &&
+            nswflat->Graph().NodeCount() ==
+                static_cast<size_t>(nswflat->n_total),
+        "IndexNSWFlat serialize: stored counts do not match n_total");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        nswflat->QuantizerModel().Dimension() == nswflat->d &&
+            nswflat->QuantizerModel().Metric() == nswflat->metric_type &&
+            nswflat->QuantizerModel().IsTrained() == nswflat->is_trained,
+        "IndexNSWFlat serialize: quantizer metadata does not match the index");
+    const GraphValidationReport report =
+        ValidateGraph(nswflat->Graph(), nswflat->EntryPoint());
+    HYPERVEC_THROW_IF_NOT_MSG(
+        report.IsStructurallyValid(),
+        "IndexNSWFlat serialize: graph structure is invalid");
+
+    uint32_t h = fourcc("INSf");
+    WRITE1(h);
+    write_index_header(*nswflat, f);
+    const NSWIndexOptions& options = nswflat->Options();
+    WRITE1(options.max_degree);
+    WRITE1(options.ef_construction);
+    WRITE1(options.ef_search);
+    const uint8_t check_relative_distance = options.check_relative_distance;
+    const uint8_t fill_to_max_degree = options.fill_to_max_degree;
+    WRITE1(check_relative_distance);
+    WRITE1(fill_to_max_degree);
+    const GraphId entry_point = nswflat->EntryPoint();
+    WRITE1(entry_point);
+
+    const size_t code_bytes =
+        mul_no_overflow(static_cast<size_t>(nswflat->n_total),
+                        nswflat->CodeStore().CodeSize(), "IndexNSWFlat codes");
+    WRITE1(code_bytes);
+    WRITEANDCHECK(nswflat->CodeStore().Data(), code_bytes);
+    const CsrGraph graph(nswflat->Graph());
+    WRITEVECTOR(graph.Offsets());
+    WRITEVECTOR(graph.Edges());
     return;
   }
 

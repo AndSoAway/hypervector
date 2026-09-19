@@ -69,3 +69,21 @@ def test_nsw_runtime_parameters_reject_invalid_types_and_values():
         index.search_with_params(
             database[:1], 1, {"check_relative_distance": "yes"}
         )
+
+
+def test_nsw_persistence_roundtrip_remains_searchable(tmp_path):
+    index = make_index()
+    database = np.array([[0], [2], [5], [9], [14], [20]], dtype=np.float32)
+    index.add(database)
+    path = tmp_path / "index.nsw"
+    hypervec.write_index(index, str(path))
+
+    restored = hypervec.read_index(str(path))
+    distances, labels = restored.search_with_params(
+        np.array([[4]], dtype=np.float32), 3, {"ef_search": 8}
+    )
+    assert labels == [[2, 1, 0]]
+    assert distances == [[1.0, 4.0, 16.0]]
+
+    restored.add(np.array([[25]], dtype=np.float32))
+    assert restored.n_total == 7

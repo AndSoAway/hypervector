@@ -15,6 +15,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -346,13 +347,22 @@ void set_deserialization_vector_byte_limit(size_t value) {
   deserialization_vector_byte_limit_ = value;
 }
 
-static void read_index_header(Index& idx, IOReader* f) {
-  READ1(idx.d);
-  READ1(idx.n_total);
-  HYPERVEC_CHECK_RANGE(idx.d, 0, (1 << 20) + 1);
-  HYPERVEC_THROW_IF_NOT_FMT(idx.n_total >= 0,
+struct IndexHeaderData {
+  int d = 0;
+  idx_t n_total = 0;
+  bool is_trained = false;
+  MetricType metric_type = kMetricL2;
+  float metric_arg = 0.0F;
+};
+
+static IndexHeaderData read_index_header_data(IOReader* f) {
+  IndexHeaderData header;
+  READ1(header.d);
+  READ1(header.n_total);
+  HYPERVEC_CHECK_RANGE(header.d, 0, (1 << 20) + 1);
+  HYPERVEC_THROW_IF_NOT_FMT(header.n_total >= 0,
                             "invalid n_total %" PRId64 " read from index",
-                            (int64_t)idx.n_total);
+                            (int64_t)header.n_total);
   idx_t dummy;
   READ1(dummy);
   READ1(dummy);
@@ -361,13 +371,23 @@ static void read_index_header(Index& idx, IOReader* f) {
   HYPERVEC_THROW_IF_NOT_MSG(
       is_trained_raw <= 1,
       "index deserialize: is_trained must be encoded as 0 or 1");
-  idx.is_trained = is_trained_raw != 0;
+  header.is_trained = is_trained_raw != 0;
   int metric_type_int;
   READ1(metric_type_int);
-  idx.metric_type = MetricTypeFromInt(metric_type_int);
-  if (idx.metric_type > 1) {
-    READ1(idx.metric_arg);
+  header.metric_type = MetricTypeFromInt(metric_type_int);
+  if (header.metric_type > 1) {
+    READ1(header.metric_arg);
   }
+  return header;
+}
+
+static void read_index_header(Index& idx, IOReader* f) {
+  const IndexHeaderData header = read_index_header_data(f);
+  idx.d = header.d;
+  idx.n_total = header.n_total;
+  idx.is_trained = header.is_trained;
+  idx.metric_type = header.metric_type;
+  idx.metric_arg = header.metric_arg;
   idx.verbose = false;
 }
 
@@ -418,11 +438,101 @@ static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
   RebuildHnswLevelProbabilities(hnsw);
 }
 
+static bool read_nsw_bool(IOReader* f, const char* context) {
+  uint8_t value;
+  READ1(value);
+  HYPERVEC_THROW_IF_NOT_FMT(value <= 1, "%s must be encoded as 0 or 1",
+                            context);
+  return value != 0;
+}
+
+static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
+    const IndexHeaderData& header, IOReader* f) {
+  constexpr size_t kGraphCapacity =
+      static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexNSWFlat deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total <= kGraphCapacity,
+      "IndexNSWFlat deserialize: n_total exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexNSWFlat deserialize: n_total exceeds loop limit (%zu > %zu)", total,
+      deserialization_loop_limit_);
+
+  NSWIndexOptions options;
+  READ1(options.max_degree);
+  READ1(options.ef_construction);
+  READ1(options.ef_search);
+  options.check_relative_distance =
+      read_nsw_bool(f, "IndexNSWFlat check_relative_distance");
+  options.fill_to_max_degree =
+      read_nsw_bool(f, "IndexNSWFlat fill_to_max_degree");
+  GraphId entry_point;
+  READ1(entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      (total == 0 && entry_point == kInvalidGraphId) ||
+          (total > 0 && entry_point >= 0 &&
+           static_cast<size_t>(entry_point) < total),
+      "IndexNSWFlat deserialize: entry point is inconsistent with n_total");
+
+  auto index = std::make_unique<IndexNSWFlat>(header.d, header.metric_type,
+                                              options, header.metric_arg);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained,
+      "IndexNSWFlat deserialize: training state does not match flat storage");
+
+  const size_t code_count = mul_no_overflow(
+      total, index->CodeStore().CodeSize(), "IndexNSWFlat codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexNSWFlat codes");
+
+  const size_t offset_count = add_no_overflow(total, 1, "IndexNSWFlat offsets");
+  std::vector<size_t> offsets;
+  ReadVectorExact(offsets, offset_count, f, "IndexNSWFlat offsets");
+  HYPERVEC_THROW_IF_NOT_MSG(offsets.front() == 0,
+                            "IndexNSWFlat offsets must start at zero");
+  for (size_t node = 0; node < total; ++node) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        offsets[node] <= offsets[node + 1] &&
+            offsets[node + 1] - offsets[node] <= options.max_degree,
+        "IndexNSWFlat offsets contain an invalid neighbor span");
+  }
+  const size_t max_edges = mul_no_overflow(total, options.max_degree,
+                                           "IndexNSWFlat maximum edge count");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      offsets.back() <= max_edges,
+      "IndexNSWFlat edge count exceeds the configured degree bound");
+  std::vector<GraphId> edges;
+  ReadVectorExact(edges, offsets.back(), f, "IndexNSWFlat edges");
+
+  MutableBoundedGraph graph(total, options.max_degree);
+  for (size_t node = 0; node < total; ++node) {
+    const size_t degree = offsets[node + 1] - offsets[node];
+    const GraphId* neighbors =
+        degree == 0 ? nullptr : edges.data() + offsets[node];
+    graph.SetNeighbors(static_cast<GraphId>(node),
+                       GraphNeighborView(neighbors, degree));
+  }
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  index->RestoreState(std::move(code_store), std::move(graph), entry_point);
+  return index;
+}
+
 Index* ReadIndex(IOReader* f, int io_flags) {
   (void)io_flags;
 
   uint32_t h;
   READ1(h);
+
+  if (h == fourcc("INSf")) {
+    const IndexHeaderData header = read_index_header_data(f);
+    return read_nsw_flat(header, f).release();
+  }
 
   if (h == fourcc("IxMp")) {
     auto idx = std::make_unique<IndexIDMap>();

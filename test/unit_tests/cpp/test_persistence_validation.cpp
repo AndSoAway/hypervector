@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <index/graph/graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
@@ -86,6 +87,30 @@ void WriteIvfFlatList(hypervec::VectorIOWriter* writer,
                                    sizeof(float));
   ASSERT_EQ((*writer)(codes.data(), sizeof(uint8_t), codes.size()),
             codes.size());
+}
+
+void WriteNswFlatPayload(hypervec::VectorIOWriter* writer,
+                         hypervec::idx_t n_total,
+                         const std::vector<uint8_t>& codes,
+                         const std::vector<size_t>& offsets,
+                         const std::vector<hypervec::GraphId>& edges,
+                         hypervec::GraphId entry_point = 0) {
+  const uint32_t tag = hypervec::fourcc("INSf");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 1, n_total, true);
+  const size_t max_degree = 2;
+  const size_t ef_construction = 4;
+  const size_t ef_search = 4;
+  const uint8_t enabled = 1;
+  WriteOne(writer, max_degree);
+  WriteOne(writer, ef_construction);
+  WriteOne(writer, ef_search);
+  WriteOne(writer, enabled);
+  WriteOne(writer, enabled);
+  WriteOne(writer, entry_point);
+  WriteVector(writer, codes);
+  WriteVector(writer, offsets);
+  WriteVector(writer, edges);
 }
 
 class DeserializationLimitsGuard {
@@ -215,6 +240,40 @@ TEST(PersistenceValidation, EnforcesByteLimitForIvfListIds) {
   WriteIvfFlatPrefix(&writer, 1, 2, 1);
   const size_t list_size = 2;
   WriteOne(&writer, list_size);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNswCodeCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WriteNswFlatPayload(&writer, 2, std::vector<uint8_t>(sizeof(float)),
+                      {0, 1, 2}, {1, 0});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNswOutOfRangeNeighbor) {
+  hypervec::VectorIOWriter writer;
+  WriteNswFlatPayload(&writer, 2, std::vector<uint8_t>(2 * sizeof(float)),
+                      {0, 1, 2}, {2, 0});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, EnforcesNswLoopLimitBeforeOptions) {
+  DeserializationLimitsGuard guard;
+  hypervec::set_deserialization_loop_limit(1);
+
+  hypervec::VectorIOWriter writer;
+  const uint32_t tag = hypervec::fourcc("INSf");
+  WriteOne(&writer, tag);
+  WriteIndexHeader(&writer, 1, 2, true);
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

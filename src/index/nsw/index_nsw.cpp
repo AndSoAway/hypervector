@@ -7,6 +7,7 @@
  */
 
 #include <index/graph/graph_searcher.h>
+#include <index/graph/graph_validation.h>
 #include <index/graph/visited_table.h>
 #include <index/nsw/index_nsw.h>
 #include <utils/distances/distance_computer.h>
@@ -238,6 +239,36 @@ void IndexNSW::Reconstruct(idx_t key, float* recons) const {
 
 DistanceComputer* IndexNSW::GetDistanceComputer() const {
   return quantizer_->CreateDistanceComputer(code_store_.View()).release();
+}
+
+void IndexNSW::RestoreState(InMemoryCodeStore code_store,
+                            MutableBoundedGraph graph, GraphId entry_point) {
+  const idx_t restored_total = code_store.Size();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_store.CodeSize() == quantizer_->CodeSize(),
+      "IndexNSW::RestoreState: code size does not match the quantizer");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      graph.MaxDegree() == options_.max_degree,
+      "IndexNSW::RestoreState: graph max degree does not match the options");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      graph.NodeCount() == static_cast<size_t>(restored_total),
+      "IndexNSW::RestoreState: graph and code counts do not match");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      (restored_total == 0 && entry_point == kInvalidGraphId) ||
+          (restored_total > 0 && entry_point >= 0 &&
+           entry_point < restored_total),
+      "IndexNSW::RestoreState: entry point is inconsistent with the index");
+  const GraphValidationReport report = ValidateGraph(graph, entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid(),
+      "IndexNSW::RestoreState: graph structure is invalid");
+
+  code_store_ = std::move(code_store);
+  graph_ = std::move(graph);
+  entry_point_ = entry_point;
+  build_stats_.Reset();
+  n_total = restored_total;
+  ValidateAlignedState();
 }
 
 void IndexNSW::ValidateAlignedState() const {

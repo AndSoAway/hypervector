@@ -18,6 +18,9 @@ namespace hypervec {
 
 /** Index that translates Search results to ids */
 struct IndexIDMap : Index {
+  /// Whether this wrapper owns the underlying index.
+  bool own_fields = false;
+
   /// translates the IDs to internal ids
   std::unordered_map<idx_t, idx_t> id_map;
 
@@ -28,7 +31,11 @@ struct IndexIDMap : Index {
   /// current writes always maintain rev_map.
   bool maintain_rev_map = true;
 
+  IndexIDMap() = default;
+
   explicit IndexIDMap(Index* index);
+
+  ~IndexIDMap() override;
 
   idx_t to_internal(idx_t id) const;
 
@@ -70,7 +77,7 @@ struct IndexIDMap : Index {
   }
 
   /// Pointer to the underlying index
-  Index* index;
+  Index* index = nullptr;
 };
 
 }  // namespace hypervec

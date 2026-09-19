@@ -11,11 +11,13 @@
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <persistence/index_clone.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -340,4 +342,16 @@ TEST(IndexIDMapCorrectness, RebuildsAndValidatesReverseMappings) {
   const auto previous_rev_map = index.rev_map;
   EXPECT_THROW(index.construct_rev_map(), hypervec::HypervecException);
   EXPECT_EQ(index.rev_map, previous_rev_map);
+}
+
+TEST(IndexIDMapCorrectness, CloneOwnsDistinctStorage) {
+  hypervec::IndexFlatL2 storage(2);
+  hypervec::IndexIDMap source(&storage);
+
+  std::unique_ptr<hypervec::Index> clone_base(hypervec::clone_index(&source));
+  auto* clone = dynamic_cast<hypervec::IndexIDMap*>(clone_base.get());
+  ASSERT_NE(clone, nullptr);
+  EXPECT_TRUE(clone->own_fields);
+  EXPECT_NE(clone->index, source.index);
+  clone->check_consistency();
 }

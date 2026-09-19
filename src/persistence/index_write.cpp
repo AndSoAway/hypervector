@@ -8,11 +8,11 @@
  * HNSW-only index write implementation
  */
 
-#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -24,6 +24,7 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <utils/log/assert.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -78,6 +79,17 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
 
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   (void)io_flags;
+
+  const auto* id_map = dynamic_cast<const IndexIDMap*>(index);
+  if (id_map) {
+    id_map->check_consistency();
+    uint32_t h = fourcc("IxMp");
+    WRITE1(h);
+    write_index_header(*id_map, f);
+    WRITEVECTOR(id_map->rev_map);
+    WriteIndex(id_map->index, f, 0);
+    return;
+  }
 
   const IndexHNSWFlat* hnswflat = dynamic_cast<const IndexHNSWFlat*>(index);
   if (hnswflat) {

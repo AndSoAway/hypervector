@@ -12,6 +12,7 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <invlists/inverted_lists.h>
@@ -302,6 +303,33 @@ void ValidateHnswStorage(const IndexHNSW& index) {
           index.storage->is_trained == index.is_trained,
       "IndexHNSW deserialize: storage metadata does not match the graph");
 }
+
+void RestoreIdMap(IndexIDMap& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.index != nullptr,
+                            "IndexIDMap deserialize: storage is missing");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.index->d == index.d && index.index->n_total == index.n_total &&
+          index.index->metric_type == index.metric_type &&
+          index.index->metric_arg == index.metric_arg &&
+          index.index->is_trained == index.is_trained,
+      "IndexIDMap deserialize: storage metadata does not match the wrapper");
+
+  index.id_map.reserve(index.rev_map.size());
+  for (size_t internal_id = 0; internal_id < index.rev_map.size();
+       ++internal_id) {
+    const idx_t external_id = index.rev_map[internal_id];
+    HYPERVEC_THROW_IF_NOT_MSG(
+        external_id >= 0,
+        "IndexIDMap deserialize: external IDs must be non-negative");
+    const bool inserted =
+        index.id_map.emplace(external_id, static_cast<idx_t>(internal_id))
+            .second;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        inserted, "IndexIDMap deserialize: external IDs must be unique");
+  }
+  index.maintain_rev_map = true;
+  index.check_consistency();
+}
 }  // namespace
 
 size_t get_deserialization_loop_limit() { return deserialization_loop_limit_; }
@@ -395,6 +423,17 @@ Index* ReadIndex(IOReader* f, int io_flags) {
 
   uint32_t h;
   READ1(h);
+
+  if (h == fourcc("IxMp")) {
+    auto idx = std::make_unique<IndexIDMap>();
+    read_index_header(*idx, f);
+    ReadVectorExact(idx->rev_map, static_cast<size_t>(idx->n_total), f,
+                    "IndexIDMap external IDs");
+    idx->index = ReadIndex(f, 0);
+    idx->own_fields = true;
+    RestoreIdMap(*idx);
+    return idx.release();
+  }
 
   if (h == fourcc("IHNf")) {
     auto idxhnsw = std::make_unique<IndexHNSWFlat>();

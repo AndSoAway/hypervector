@@ -7,8 +7,10 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <quantization/pq/index_pq.h>
@@ -355,6 +357,102 @@ TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
   EXPECT_FALSE(restored->storage->is_trained);
   EXPECT_EQ(restored->n_total, 0);
   EXPECT_EQ(restored->hnsw.offsets, (std::vector<size_t>{0}));
+}
+
+TEST(PersistenceValidation, RoundtripsIdMapWithExternalIds) {
+  hypervec::IndexFlatL2 storage(2);
+  hypervec::IndexIDMap source(&storage);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f, 2.0f, 2.0f};
+  const std::vector<hypervec::idx_t> external_ids = {101, 205, 999};
+  source.AddWithIds(3, vectors.data(), external_ids.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexIDMap*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->own_fields);
+  EXPECT_EQ(restored->rev_map, external_ids);
+  EXPECT_EQ(restored->to_internal(205), 1);
+  EXPECT_EQ(restored->from_internal(2), 999);
+
+  float distance = -1.0f;
+  hypervec::idx_t label = -1;
+  restored->Search(1, vectors.data() + 2, 1, &distance, &label);
+  EXPECT_FLOAT_EQ(distance, 0.0f);
+  EXPECT_EQ(label, 205);
+
+  const std::vector<float> appended = {3.0f, 3.0f};
+  const hypervec::idx_t appended_id = 4001;
+  restored->AddWithIds(1, appended.data(), &appended_id);
+  EXPECT_EQ(restored->n_total, 4);
+  EXPECT_EQ(restored->to_internal(appended_id), 3);
+}
+
+TEST(PersistenceValidation, RejectsDuplicateIdMapExternalIds) {
+  hypervec::VectorIOWriter writer;
+  const uint32_t id_map_tag = hypervec::fourcc("IxMp");
+  WriteOne(&writer, id_map_tag);
+  WriteIndexHeader(&writer, 2, 2, true);
+  WriteVector(&writer, std::vector<hypervec::idx_t>{7, 7});
+
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 2, true);
+  WriteVector(&writer, std::vector<uint8_t>(4 * sizeof(float)));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNegativeIdMapExternalId) {
+  hypervec::VectorIOWriter writer;
+  const uint32_t id_map_tag = hypervec::fourcc("IxMp");
+  WriteOne(&writer, id_map_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<hypervec::idx_t>{-1});
+
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(2 * sizeof(float)));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsIdMapStorageMetadataMismatch) {
+  hypervec::VectorIOWriter writer;
+  const uint32_t id_map_tag = hypervec::fourcc("IxMp");
+  WriteOne(&writer, id_map_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<hypervec::idx_t>{7});
+
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 3, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(3 * sizeof(float)));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsIdMapExternalIdCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  const uint32_t id_map_tag = hypervec::fourcc("IxMp");
+  WriteOne(&writer, id_map_tag);
+  WriteIndexHeader(&writer, 2, 2, true);
+  WriteVector(&writer, std::vector<hypervec::idx_t>{7});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
 }
 
 }  // namespace

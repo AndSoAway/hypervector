@@ -94,8 +94,12 @@ idx_t ShiftExternalId(idx_t external_id, idx_t add_id) {
  * IndexIDMap implementation
  *******************************************************/
 
-IndexIDMap::IndexIDMap(Index* index) : Index(index->d, index->metric_type) {
+IndexIDMap::IndexIDMap(Index* index) : Index() {
+  HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
+                            "IndexIDMap: index must not be null");
   this->index = index;
+  this->d = index->d;
+  this->metric_type = index->metric_type;
   this->n_total = index->n_total;
   this->is_trained = index->is_trained;
   this->verbose = index->verbose;
@@ -106,6 +110,12 @@ IndexIDMap::IndexIDMap(Index* index) : Index(index->d, index->metric_type) {
   for (idx_t i = 0; i < n_total; ++i) {
     id_map.emplace(i, i);
     rev_map.push_back(i);
+  }
+}
+
+IndexIDMap::~IndexIDMap() {
+  if (own_fields) {
+    delete index;
   }
 }
 
@@ -243,9 +253,11 @@ void IndexIDMap::Reconstruct(idx_t key, float* recons) const {
 }
 
 void IndexIDMap::check_consistency() const {
-  if (n_total != index->n_total || id_map.size() != rev_map.size() ||
+  if (index == nullptr || n_total != index->n_total || d != index->d ||
+      metric_type != index->metric_type || metric_arg != index->metric_arg ||
+      is_trained != index->is_trained || id_map.size() != rev_map.size() ||
       rev_map.size() != static_cast<size_t>(n_total)) {
-    HYPERVEC_THROW_MSG("inconsistency between id_map and rev_map");
+    HYPERVEC_THROW_MSG("inconsistency between IndexIDMap and its storage");
   }
   for (const auto& p : id_map) {
     if (p.first < 0 || p.second < 0 || p.second >= n_total ||

@@ -10,6 +10,7 @@ set(HYPERVEC_SRC
   index/index_factory.cpp
   index/ivf/index_ivf.cpp
   index/ivf/index_ivf_flat.cpp
+  index/ivf/inverted_list_scanner.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp

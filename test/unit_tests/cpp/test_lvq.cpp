@@ -7,12 +7,12 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <persistence/index_io.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/lvq.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
@@ -103,6 +103,24 @@ TEST(IndexLVQ, TrainAddSearchSmoke) {
   }
 }
 
+TEST(IndexLVQ, InvalidAddDoesNotMutateCodes) {
+  const auto x = RandomVectors(32, 4, 23);
+  hypervec::IndexLVQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  const auto original_codes = index.codes.owned_data;
+
+  EXPECT_THROW(index.Add(-1, x.data()), hypervec::HypervecException);
+  EXPECT_THROW(index.Add(1, nullptr), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 1);
+  EXPECT_EQ(index.codes.owned_data, original_codes);
+
+  std::unique_ptr<hypervec::DistanceComputer> distance(
+      index.GetDistanceComputer());
+  distance->SetQuery(x.data());
+  EXPECT_THROW((*distance)(1), hypervec::HypervecException);
+}
+
 TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   const hypervec::idx_t d = 12, nb = 1000, nq = 20, k = 5;
   const auto base = RandomVectors(nb, d, 31, 4.0f);
@@ -151,8 +169,7 @@ TEST(IndexLVQ, PersistenceRoundtrip) {
 
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexLVQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);

@@ -36,6 +36,23 @@ class ThrowingAddIndex final : public hypervec::Index {
   void Reset() final { n_total = 0; }
 };
 
+class ThrowingRemoveIndex final : public hypervec::Index {
+ public:
+  ThrowingRemoveIndex() : Index(2, hypervec::kMetricL2) {}
+
+  void Add(hypervec::idx_t n, const float*) final { n_total += n; }
+
+  void Search(hypervec::idx_t, const float*, hypervec::idx_t, float*,
+              hypervec::idx_t*, const hypervec::SearchParameters*) const final {
+  }
+
+  size_t RemoveIds(const hypervec::IDSelector&) final {
+    throw std::runtime_error("injected remove failure");
+  }
+
+  void Reset() final { n_total = 0; }
+};
+
 class RecordingIndex final : public hypervec::Index {
  public:
   RecordingIndex() : Index(2, hypervec::kMetricL2) {}
@@ -206,4 +223,121 @@ TEST(IndexIDMapCorrectness, WrapsExistingEntriesWithIdentityIds) {
   EXPECT_EQ(index.to_internal(1), 1);
   EXPECT_EQ(index.from_internal(0), 0);
   EXPECT_EQ(index.from_internal(1), 1);
+}
+
+TEST(IndexIDMapCorrectness, RemovesExternalIdsAndCompactsInternalMappings) {
+  hypervec::IndexFlatL2 flat(2);
+  hypervec::IndexIDMap index(&flat);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f,
+                                      2.0f, 2.0f, 3.0f, 3.0f};
+  const std::vector<hypervec::idx_t> ids = {10, 20, 30, 40};
+  index.AddWithIds(4, vectors.data(), ids.data());
+
+  const std::vector<hypervec::idx_t> removed_ids = {20, 40};
+  hypervec::IDSelectorBatch selector(removed_ids.size(), removed_ids.data());
+  EXPECT_EQ(index.RemoveIds(selector), 2);
+  index.check_consistency();
+
+  EXPECT_EQ(index.n_total, 2);
+  EXPECT_EQ(flat.n_total, 2);
+  EXPECT_EQ(index.to_internal(10), 0);
+  EXPECT_EQ(index.to_internal(30), 1);
+  EXPECT_EQ(index.to_internal(20), -1);
+  EXPECT_EQ(index.from_internal(1), 30);
+
+  const std::vector<float> query = {2.0f, 2.0f};
+  float distance = -1.0f;
+  hypervec::idx_t label = -1;
+  index.Search(1, query.data(), 1, &distance, &label);
+  EXPECT_EQ(label, 30);
+  std::vector<float> reconstructed(2);
+  index.Reconstruct(30, reconstructed.data());
+  EXPECT_EQ(reconstructed, query);
+}
+
+TEST(IndexIDMapCorrectness, FailedRemoveDoesNotPublishCompactedMappings) {
+  ThrowingRemoveIndex throwing;
+  hypervec::IndexIDMap index(&throwing);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f};
+  const std::vector<hypervec::idx_t> ids = {10, 20};
+  index.AddWithIds(2, vectors.data(), ids.data());
+  hypervec::IDSelectorRange selector(10, 11);
+
+  EXPECT_THROW(index.RemoveIds(selector), std::runtime_error);
+  EXPECT_EQ(index.n_total, 2);
+  EXPECT_EQ(index.to_internal(10), 0);
+  EXPECT_EQ(index.to_internal(20), 1);
+  index.check_consistency();
+}
+
+TEST(IndexIDMapCorrectness, MergesMappingsAndShiftsOnlyExternalIds) {
+  hypervec::IndexFlatL2 destination_flat(2);
+  hypervec::IndexFlatL2 source_flat(2);
+  hypervec::IndexIDMap destination(&destination_flat);
+  hypervec::IndexIDMap source(&source_flat);
+  const std::vector<float> destination_vectors = {0.0f, 0.0f, 1.0f, 1.0f};
+  const std::vector<float> source_vectors = {10.0f, 10.0f, 11.0f, 11.0f};
+  const std::vector<hypervec::idx_t> destination_ids = {10, 20};
+  const std::vector<hypervec::idx_t> source_ids = {30, 40};
+  destination.AddWithIds(2, destination_vectors.data(), destination_ids.data());
+  source.AddWithIds(2, source_vectors.data(), source_ids.data());
+
+  destination.MergeFrom(source, 100);
+  destination.check_consistency();
+  source.check_consistency();
+
+  EXPECT_EQ(destination.n_total, 4);
+  EXPECT_EQ(destination.to_internal(130), 2);
+  EXPECT_EQ(destination.to_internal(140), 3);
+  EXPECT_EQ(source.n_total, 0);
+  EXPECT_TRUE(source.id_map.empty());
+  EXPECT_TRUE(source.rev_map.empty());
+
+  float distance = -1.0f;
+  hypervec::idx_t label = -1;
+  destination.Search(1, source_vectors.data(), 1, &distance, &label);
+  EXPECT_EQ(label, 130);
+  std::vector<float> reconstructed(2);
+  destination.Reconstruct(140, reconstructed.data());
+  EXPECT_EQ(reconstructed, (std::vector<float>{11.0f, 11.0f}));
+}
+
+TEST(IndexIDMapCorrectness, RejectsMergeConflictsBeforeMutatingEitherIndex) {
+  hypervec::IndexFlatL2 destination_flat(2);
+  hypervec::IndexFlatL2 source_flat(2);
+  hypervec::IndexIDMap destination(&destination_flat);
+  hypervec::IndexIDMap source(&source_flat);
+  const std::vector<float> vector = {1.0f, 1.0f};
+  const hypervec::idx_t destination_id = 130;
+  const hypervec::idx_t source_id = 30;
+  destination.AddWithIds(1, vector.data(), &destination_id);
+  source.AddWithIds(1, vector.data(), &source_id);
+
+  EXPECT_THROW(destination.MergeFrom(source, 100), hypervec::HypervecException);
+  EXPECT_EQ(destination.n_total, 1);
+  EXPECT_EQ(source.n_total, 1);
+  EXPECT_EQ(destination.to_internal(destination_id), 0);
+  EXPECT_EQ(source.to_internal(source_id), 0);
+  destination.check_consistency();
+  source.check_consistency();
+}
+
+TEST(IndexIDMapCorrectness, RebuildsAndValidatesReverseMappings) {
+  hypervec::IndexFlatL2 flat(2);
+  hypervec::IndexIDMap index(&flat);
+  const std::vector<float> vectors = {0.0f, 0.0f, 1.0f, 1.0f};
+  const std::vector<hypervec::idx_t> ids = {10, 20};
+  index.AddWithIds(2, vectors.data(), ids.data());
+
+  index.rev_map.clear();
+  index.maintain_rev_map = false;
+  index.construct_rev_map();
+  EXPECT_TRUE(index.maintain_rev_map);
+  EXPECT_EQ(index.rev_map, ids);
+  index.check_consistency();
+
+  index.id_map[10] = 2;
+  const auto previous_rev_map = index.rev_map;
+  EXPECT_THROW(index.construct_rev_map(), hypervec::HypervecException);
+  EXPECT_EQ(index.rev_map, previous_rev_map);
 }

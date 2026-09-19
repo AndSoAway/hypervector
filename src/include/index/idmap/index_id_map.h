@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include <utils/selector/id_selector.h>
 #include <index/index.h>
+#include <utils/selector/id_selector.h>
 
 #include <unordered_map>
 #include <vector>
@@ -47,14 +47,16 @@ struct IndexIDMap : Index {
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   void Reset() override;
 
   void Reconstruct(idx_t key, float* recons) const override;
 
   void check_consistency() const;
+
+  void CheckCompatibleForMerge(const Index& otherIndex) const override;
 
   void MergeFrom(Index& otherIndex, idx_t add_id) override;
 

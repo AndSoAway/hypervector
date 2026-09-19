@@ -5,9 +5,7 @@
 
 set(HYPERVEC_TEST_SRC
   test_heap.cpp
-  test_sparse_row.cpp
-  test_term_dictionary.cpp
-  test_sparse_inverted_index.cpp
+  test_graph_searcher.cpp
   test_graph_storage.cpp
   test_hnsw.cpp
   test_inverted_list_scanner.cpp
@@ -35,6 +33,9 @@ set(HYPERVEC_TEST_SRC
   test_index_ivfpq.cpp
   test_index_hnsw_pq.cpp
   test_lvq.cpp
+  test_sparse_row.cpp
+  test_term_dictionary.cpp
+  test_sparse_inverted_index.cpp
 )
 
 add_executable(hypervec_test ${HYPERVEC_TEST_SRC})

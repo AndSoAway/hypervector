@@ -78,14 +78,17 @@ TEST(IndexCapabilities, IvfVariantsDistinguishRangeSearchSupport) {
   EXPECT_TRUE(flat_capabilities.supports_range_search);
   EXPECT_TRUE(flat_capabilities.supports_reconstruct);
 
-  for (const hypervec::Index* index : {static_cast<hypervec::Index*>(&pq),
-                                       static_cast<hypervec::Index*>(&lvq)}) {
-    const auto capabilities = index->GetCapabilities();
-    EXPECT_TRUE(capabilities.requires_training);
-    EXPECT_TRUE(capabilities.supports_add_with_ids);
-    EXPECT_FALSE(capabilities.supports_range_search);
-    EXPECT_TRUE(capabilities.supports_reconstruct);
-  }
+  const auto pq_capabilities = pq.GetCapabilities();
+  EXPECT_TRUE(pq_capabilities.requires_training);
+  EXPECT_TRUE(pq_capabilities.supports_add_with_ids);
+  EXPECT_FALSE(pq_capabilities.supports_range_search);
+  EXPECT_TRUE(pq_capabilities.supports_reconstruct);
+
+  const auto lvq_capabilities = lvq.GetCapabilities();
+  EXPECT_TRUE(lvq_capabilities.requires_training);
+  EXPECT_TRUE(lvq_capabilities.supports_add_with_ids);
+  EXPECT_TRUE(lvq_capabilities.supports_range_search);
+  EXPECT_TRUE(lvq_capabilities.supports_reconstruct);
 }
 
 TEST(IndexCapabilities, HnswComposesStorageRequirements) {

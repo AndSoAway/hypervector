@@ -12,12 +12,15 @@
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/lvq.h>
+#include <utils/common/range_search_result.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -136,6 +139,85 @@ TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(nq) * k);
   idx.Search(nq, query.data(), k, distances.data(), labels.data());
   ExpectSortedValid(distances, labels, nq, k, nb);
+}
+
+TEST(IndexIVFLVQ, ScannerRangeSearchSupportsResidualAndRawCodes) {
+  constexpr hypervec::idx_t kDimension = 4;
+  constexpr hypervec::idx_t kCount = 32;
+  constexpr hypervec::idx_t kTarget = 7;
+  const auto base = RandomVectors(kCount, kDimension, 35, 4.0F);
+  std::vector<hypervec::idx_t> ids(static_cast<size_t>(kCount));
+  for (hypervec::idx_t i = 0; i < kCount; ++i) {
+    ids[static_cast<size_t>(i)] = 1000 + i;
+  }
+
+  for (const bool by_residual : {true, false}) {
+    hypervec::IndexIVFLVQ index(kDimension, 2, 2, 2);
+    index.by_residual = by_residual;
+    index.Train(kCount, base.data());
+    index.AddWithIds(kCount, base.data(), ids.data());
+
+    hypervec::IDSelectorRange selector(ids[kTarget], ids[kTarget] + 1);
+    hypervec::IVFSearchParameters params;
+    params.nprobe = 2;
+    params.sel = &selector;
+    hypervec::RangeSearchResult result(1);
+    const float* query = base.data() + kTarget * kDimension;
+    index.RangeSearch(1, query, (std::numeric_limits<float>::infinity)(),
+                      &result, &params);
+
+    ASSERT_EQ(result.lims[1] - result.lims[0], 1U) << by_residual;
+    EXPECT_EQ(result.labels[0], ids[kTarget]) << by_residual;
+
+    std::vector<float> distances(static_cast<size_t>(kCount));
+    std::vector<hypervec::idx_t> labels(static_cast<size_t>(kCount));
+    params.sel = nullptr;
+    index.Search(1, query, kCount, distances.data(), labels.data(), &params);
+    bool found = false;
+    for (hypervec::idx_t i = 0; i < kCount; ++i) {
+      if (labels[static_cast<size_t>(i)] == ids[kTarget]) {
+        EXPECT_FLOAT_EQ(result.distances[0], distances[static_cast<size_t>(i)])
+            << by_residual;
+        found = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found) << by_residual;
+  }
+}
+
+TEST(IndexIVFLVQ, PersistenceRoundtripUsesScanner) {
+  constexpr hypervec::idx_t kDimension = 8;
+  constexpr hypervec::idx_t kBaseCount = 256;
+  constexpr hypervec::idx_t kQueryCount = 6;
+  constexpr hypervec::idx_t kNeighbors = 4;
+  const auto base = RandomVectors(kBaseCount, kDimension, 36, 4.0F);
+  const auto queries = RandomVectors(kQueryCount, kDimension, 37, 4.0F);
+
+  hypervec::IndexIVFLVQ source(kDimension, 8, 4, 3);
+  source.nprobe = 3;
+  source.Train(kBaseCount, base.data());
+  source.Add(kBaseCount, base.data());
+
+  TempFile file;
+  hypervec::WriteIndex(&source, file.path.c_str());
+  std::unique_ptr<hypervec::Index> loaded(
+      hypervec::ReadIndex(file.path.c_str()));
+  auto* restored = dynamic_cast<hypervec::IndexIVFLVQ*>(loaded.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->GetCapabilities().supports_range_search);
+
+  std::vector<float> source_distances(
+      static_cast<size_t>(kQueryCount * kNeighbors));
+  std::vector<float> restored_distances(source_distances.size());
+  std::vector<hypervec::idx_t> source_labels(source_distances.size());
+  std::vector<hypervec::idx_t> restored_labels(source_distances.size());
+  source.Search(kQueryCount, queries.data(), kNeighbors,
+                source_distances.data(), source_labels.data());
+  restored->Search(kQueryCount, queries.data(), kNeighbors,
+                   restored_distances.data(), restored_labels.data());
+  EXPECT_EQ(restored_distances, source_distances);
+  EXPECT_EQ(restored_labels, source_labels);
 }
 
 TEST(IndexHNSWLVQ, TrainAddSearchSmoke) {

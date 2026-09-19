@@ -13,6 +13,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -213,6 +214,34 @@ std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
                                         options, config.metric_arg);
 }
 
+std::unique_ptr<Index> MakeLSH(const IndexConfig& config) {
+  HYPERVEC_THROW_IF_NOT_MSG(config.metric_type == kMetricInnerProduct,
+                            "lsh supports kMetricInnerProduct only");
+  LSHIndexOptions options;
+  options.table_count =
+      static_cast<size_t>(PositiveIntParameter(config, "table_count", 8));
+  options.bits_per_table =
+      static_cast<size_t>(PositiveIntParameter(config, "bits_per_table", 16));
+  options.probe_count =
+      static_cast<size_t>(PositiveIntParameter(config, "probe_count", 4));
+  const int64_t candidate_limit = config.GetInteger("candidate_limit", 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      candidate_limit >= 0 && static_cast<uint64_t>(candidate_limit) <=
+                                  std::numeric_limits<size_t>::max(),
+      "index parameter 'candidate_limit' must be non-negative and fit in "
+      "size_t");
+  options.candidate_limit = static_cast<size_t>(candidate_limit);
+  if (config.HasParameter("random_seed")) {
+    const int64_t random_seed = config.GetInteger("random_seed", 0);
+    HYPERVEC_THROW_IF_NOT_MSG(random_seed >= 0,
+                              "index parameter 'random_seed' must be "
+                              "non-negative");
+    options.random_seed = static_cast<uint64_t>(random_seed);
+  }
+  return std::make_unique<IndexLSH>(config.dimension, config.metric_type,
+                                    options);
+}
+
 std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
   RequireL2(config, "hnsw_pq");
   const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
@@ -274,6 +303,11 @@ void RegisterBuiltins(IndexRegistry* registry) {
         "build_search_width", "candidate_pool_size", "ef_search",
         "check_relative_distance"}},
       MakeNSGFlat);
+  registry->Register({"lsh",
+                      {"IndexLSH"},
+                      {"table_count", "bits_per_table", "probe_count",
+                       "candidate_limit", "random_seed"}},
+                     MakeLSH);
 }
 
 }  // namespace

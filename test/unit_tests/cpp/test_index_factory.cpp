@@ -14,6 +14,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -31,13 +32,18 @@
 namespace {
 
 template <typename IndexType>
-void ExpectBuiltIn(std::string name) {
-  hypervec::IndexConfig config(std::move(name), 4);
+void ExpectBuiltIn(std::string name,
+                   hypervec::MetricType metric = hypervec::kMetricL2) {
+  hypervec::IndexConfig config(std::move(name), 4, metric);
   config.SetInteger("nlist", 2)
       .SetInteger("m_pq", 2)
       .SetInteger("nlocal", 2)
       .SetInteger("nbits", 2)
       .SetInteger("m_hnsw", 4)
+      .SetInteger("table_count", 3)
+      .SetInteger("bits_per_table", 4)
+      .SetInteger("probe_count", 3)
+      .SetInteger("candidate_limit", 8)
       .SetInteger("knn_degree", 4)
       .SetInteger("nn_descent_iterations", 3)
       .SetDouble("nn_descent_convergence_threshold", 0.01)
@@ -57,7 +63,8 @@ void ExpectBuiltIn(std::string name) {
                                  });
   ASSERT_NE(type, allowed.end());
 
-  hypervec::IndexConfig filtered(config.index_type, config.dimension);
+  hypervec::IndexConfig filtered(config.index_type, config.dimension,
+                                 config.metric_type);
   for (const std::string& parameter : type->parameter_names) {
     if (parameter == "check_relative_distance" ||
         parameter == "fill_to_max_degree") {
@@ -108,10 +115,10 @@ TEST(IndexRegistry, ListsAllBuiltInIndexesDeterministically) {
     names.push_back(descriptor.name);
   }
 
-  EXPECT_EQ(names,
-            (std::vector<std::string>{
-                "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
-                "ivf_lvq", "ivf_pq", "lvq", "nsg_flat", "nsw_flat", "pq"}));
+  EXPECT_EQ(names, (std::vector<std::string>{"flat", "hnsw_flat", "hnsw_lvq",
+                                             "hnsw_pq", "ivf_flat", "ivf_lvq",
+                                             "ivf_pq", "lsh", "lvq", "nsg_flat",
+                                             "nsw_flat", "pq"}));
 }
 
 TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
@@ -124,6 +131,7 @@ TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
   ExpectBuiltIn<hypervec::IndexHNSWFlat>("hnsw_flat");
   ExpectBuiltIn<hypervec::IndexHNSWPQ>("hnsw_pq");
   ExpectBuiltIn<hypervec::IndexHNSWLVQ>("hnsw_lvq");
+  ExpectBuiltIn<hypervec::IndexLSH>("lsh", hypervec::kMetricInnerProduct);
   ExpectBuiltIn<hypervec::IndexNSGFlat>("nsg_flat");
   ExpectBuiltIn<hypervec::IndexNSWFlat>("nsw_flat");
 }
@@ -185,6 +193,21 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(nsg->Options().candidate_pool_size, 13U);
   EXPECT_EQ(nsg->Options().ef_search, 15U);
   EXPECT_FALSE(nsg->Options().check_relative_distance);
+
+  hypervec::IndexConfig lsh_config("lsh", 12, hypervec::kMetricInnerProduct);
+  lsh_config.SetInteger("table_count", 7)
+      .SetInteger("bits_per_table", 9)
+      .SetInteger("probe_count", 5)
+      .SetInteger("candidate_limit", 17)
+      .SetInteger("random_seed", 23);
+  auto lsh_base = hypervec::CreateIndex(lsh_config);
+  auto* lsh = dynamic_cast<hypervec::IndexLSH*>(lsh_base.get());
+  ASSERT_NE(lsh, nullptr);
+  EXPECT_EQ(lsh->Options().table_count, 7U);
+  EXPECT_EQ(lsh->Options().bits_per_table, 9U);
+  EXPECT_EQ(lsh->Options().probe_count, 5U);
+  EXPECT_EQ(lsh->Options().candidate_limit, 17U);
+  EXPECT_EQ(lsh->Options().random_seed, 23U);
 }
 
 TEST(IndexRegistry, AppliesMetricArgumentsToCompositeStorage) {
@@ -223,6 +246,11 @@ TEST(IndexRegistry, ResolvesAliasesCaseInsensitively) {
       .SetInteger("candidate_pool_size", 8);
   auto nsg = hypervec::CreateIndex(nsg_config);
   EXPECT_NE(dynamic_cast<hypervec::IndexNSGFlat*>(nsg.get()), nullptr);
+
+  hypervec::IndexConfig lsh_config("InDeXlSh", 4,
+                                   hypervec::kMetricInnerProduct);
+  auto lsh = hypervec::CreateIndex(lsh_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexLSH*>(lsh.get()), nullptr);
 }
 
 TEST(IndexRegistry, CanComposeAnOwningIdMap) {
@@ -263,6 +291,15 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_nsg("nsg_flat", 4);
   bad_nsg.SetDouble("nn_descent_convergence_threshold", 2.0);
   EXPECT_THROW(hypervec::CreateIndex(bad_nsg), hypervec::HypervecException);
+
+  EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig("lsh", 4)),
+               hypervec::HypervecException);
+  hypervec::IndexConfig bad_lsh("lsh", 4, hypervec::kMetricInnerProduct);
+  bad_lsh.SetInteger("bits_per_table", 64);
+  EXPECT_THROW(hypervec::CreateIndex(bad_lsh), hypervec::HypervecException);
+  bad_lsh = hypervec::IndexConfig("lsh", 4, hypervec::kMetricInnerProduct);
+  bad_lsh.SetInteger("candidate_limit", -1);
+  EXPECT_THROW(hypervec::CreateIndex(bad_lsh), hypervec::HypervecException);
 
   hypervec::IndexConfig bad_pq("pq", 5);
   bad_pq.SetInteger("m_pq", 2);

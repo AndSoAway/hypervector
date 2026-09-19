@@ -9,12 +9,15 @@
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
 #include <index/lsh/index_lsh.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -69,6 +72,46 @@ TEST(IndexLSH, ExhaustiveProbesPreserveInnerProductResults) {
   const auto capabilities = index.GetCapabilities();
   EXPECT_TRUE(capabilities.supports_reconstruct);
   EXPECT_FALSE(capabilities.requires_training);
+}
+
+TEST(IndexLSH, PersistenceRoundtripRebuildsBucketsAndAllowsAppend) {
+  const std::vector<float> database = {
+      1.0F, 0.0F, 0.0F, 2.0F, 2.0F, 1.0F, 3.0F, 4.0F, 1.0F, 3.0F, 6.0F, 2.0F,
+  };
+  const std::vector<float> queries = {1.0F, 1.0F, 2.0F, 0.5F};
+  hypervec::LSHIndexOptions options = ExhaustiveOptions();
+  options.random_seed = 987654321;
+  hypervec::IndexLSH source(2, hypervec::kMetricInnerProduct, options);
+  source.Add(6, database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexLSH*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->d, source.d);
+  EXPECT_EQ(restored->n_total, source.n_total);
+  EXPECT_EQ(restored->metric_type, source.metric_type);
+  EXPECT_EQ(restored->Options().table_count, options.table_count);
+  EXPECT_EQ(restored->Options().bits_per_table, options.bits_per_table);
+  EXPECT_EQ(restored->Options().probe_count, options.probe_count);
+  EXPECT_EQ(restored->Options().candidate_limit, options.candidate_limit);
+  EXPECT_EQ(restored->Options().random_seed, options.random_seed);
+  EXPECT_EQ(restored->Hyperplanes(), source.Hyperplanes());
+  ExpectSameSearch(source, *restored, queries, 3);
+
+  const std::array<float, 2> appended = {7.0F, 1.0F};
+  restored->Add(1, appended.data());
+  EXPECT_EQ(restored->n_total, 7);
+  EXPECT_EQ(restored->CodeStore().Size(), 7);
+  std::array<float, 1> distance;
+  std::array<hypervec::idx_t, 1> label;
+  restored->Search(1, appended.data(), 1, distance.data(), label.data());
+  EXPECT_EQ(label[0], 6);
+  EXPECT_FLOAT_EQ(distance[0], 50.0F);
 }
 
 TEST(IndexLSH, DeterministicHyperplanesAndAdaptiveProbes) {

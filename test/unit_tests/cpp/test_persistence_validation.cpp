@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -146,6 +148,26 @@ void WriteNsgFlatPayload(hypervec::VectorIOWriter* writer,
   WriteVector(writer, edges);
 }
 
+void WriteLshPayload(hypervec::VectorIOWriter* writer, hypervec::idx_t n_total,
+                     const std::vector<float>& hyperplanes,
+                     const std::vector<uint8_t>& codes) {
+  const uint32_t tag = hypervec::fourcc("ILSh");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 1, n_total, true, hypervec::kMetricInnerProduct);
+  const size_t table_count = 1;
+  const size_t bits_per_table = 1;
+  const size_t probe_count = 1;
+  const size_t candidate_limit = 0;
+  const uint64_t random_seed = 42;
+  WriteOne(writer, table_count);
+  WriteOne(writer, bits_per_table);
+  WriteOne(writer, probe_count);
+  WriteOne(writer, candidate_limit);
+  WriteOne(writer, random_seed);
+  WriteVector(writer, hyperplanes);
+  WriteVector(writer, codes);
+}
+
 class DeserializationLimitsGuard {
  public:
   DeserializationLimitsGuard()
@@ -207,6 +229,36 @@ TEST(PersistenceValidation, RejectsInvalidNsgConstructionOptions) {
 TEST(PersistenceValidation, RejectsInvalidNsgBooleanEncoding) {
   hypervec::VectorIOWriter writer;
   WriteNsgFlatPayload(&writer, 0, {}, {0}, {}, 0.01, 2);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsLshHyperplaneCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 0, {}, {});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteLshHyperplanes) {
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 0, {std::numeric_limits<float>::quiet_NaN()}, {});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteLshStoredVectors) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<uint8_t> codes(sizeof(float));
+  std::memcpy(codes.data(), &nan, sizeof(float));
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 1, {1.0F}, codes);
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

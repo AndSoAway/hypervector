@@ -15,6 +15,7 @@
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
@@ -604,11 +605,68 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   return index;
 }
 
+static std::unique_ptr<IndexLSH> read_lsh(const IndexHeaderData& header,
+                                          IOReader* f) {
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexLSH deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexLSH deserialize: n_total exceeds loop limit (%zu > %zu)", total,
+      deserialization_loop_limit_);
+
+  LSHIndexOptions options;
+  READ1(options.table_count);
+  READ1(options.bits_per_table);
+  READ1(options.probe_count);
+  READ1(options.candidate_limit);
+  READ1(options.random_seed);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options.table_count > 0 && options.bits_per_table > 0 &&
+          options.bits_per_table <= 63 && options.probe_count > 0 &&
+          options.probe_count <= options.bits_per_table + 1,
+      "IndexLSH deserialize: invalid hash table options");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 ||
+          options.table_count <= deserialization_loop_limit_,
+      "IndexLSH deserialize: table_count exceeds loop limit (%zu > %zu)",
+      options.table_count, deserialization_loop_limit_);
+  const size_t hyperplane_count = mul_no_overflow(
+      mul_no_overflow(options.table_count, options.bits_per_table,
+                      "IndexLSH hyperplane count"),
+      static_cast<size_t>(header.d), "IndexLSH hyperplane elements");
+  ValidateElementCount<float>(hyperplane_count, "IndexLSH hyperplanes");
+  auto index =
+      std::make_unique<IndexLSH>(header.d, header.metric_type, options);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained,
+      "IndexLSH deserialize: training state does not match flat storage");
+
+  std::vector<float> hyperplanes;
+  ReadVectorExact(hyperplanes, hyperplane_count, f, "IndexLSH hyperplanes");
+  const size_t code_count =
+      mul_no_overflow(total, index->CodeStore().CodeSize(), "IndexLSH codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexLSH codes");
+
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  index->RestoreState(std::move(code_store), std::move(hyperplanes));
+  return index;
+}
+
 Index* ReadIndex(IOReader* f, int io_flags) {
   (void)io_flags;
 
   uint32_t h;
   READ1(h);
+
+  if (h == fourcc("ILSh")) {
+    const IndexHeaderData header = read_index_header_data(f);
+    return read_lsh(header, f).release();
+  }
 
   if (h == fourcc("INSf")) {
     const IndexHeaderData header = read_index_header_data(f);

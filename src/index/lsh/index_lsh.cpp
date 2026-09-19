@@ -124,6 +124,12 @@ void IndexLSH::ValidateVector(const float* vector,
 uint64_t IndexLSH::Signature(
     const float* vector, size_t table,
     std::vector<std::pair<float, size_t>>* margins) const {
+  return SignatureWithHyperplanes(vector, table, hyperplanes_, margins);
+}
+
+uint64_t IndexLSH::SignatureWithHyperplanes(
+    const float* vector, size_t table, const std::vector<float>& hyperplanes,
+    std::vector<std::pair<float, size_t>>* margins) const {
   uint64_t signature = 0;
   if (margins != nullptr) {
     margins->clear();
@@ -135,7 +141,7 @@ uint64_t IndexLSH::Signature(
       static_cast<size_t>(d), "IndexLSH projection table offset");
   for (size_t bit = 0; bit < options_.bits_per_table; ++bit) {
     const float* hyperplane =
-        hyperplanes_.data() + table_offset + bit * static_cast<size_t>(d);
+        hyperplanes.data() + table_offset + bit * static_cast<size_t>(d);
     double projection = 0.0;
     for (int component = 0; component < d; ++component) {
       projection += static_cast<double>(vector[component]) *
@@ -346,6 +352,41 @@ void IndexLSH::Reconstruct(idx_t key, float* recons) const {
 
 DistanceComputer* IndexLSH::GetDistanceComputer() const {
   return quantizer_.CreateDistanceComputer(code_store_.View()).release();
+}
+
+void IndexLSH::RestoreState(InMemoryCodeStore code_store,
+                            std::vector<float> hyperplanes) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_store.CodeSize() == quantizer_.CodeSize(),
+      "IndexLSH::RestoreState: code size does not match the quantizer");
+  const size_t expected_hyperplanes = ProjectionCount(d, options_);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      hyperplanes.size() == expected_hyperplanes,
+      "IndexLSH::RestoreState: expected %zu hyperplane values, got %zu",
+      expected_hyperplanes, hyperplanes.size());
+  for (float weight : hyperplanes) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        std::isfinite(weight),
+        "IndexLSH::RestoreState: hyperplane values must be finite");
+  }
+
+  std::vector<HashTable> staged_tables(options_.table_count);
+  std::vector<float> decoded(static_cast<size_t>(d));
+  for (idx_t id = 0; id < code_store.Size(); ++id) {
+    quantizer_.Decode(1, code_store.Code(id), decoded.data());
+    ValidateVector(decoded.data(), "IndexLSH::RestoreState");
+    for (size_t table = 0; table < options_.table_count; ++table) {
+      const uint64_t signature =
+          SignatureWithHyperplanes(decoded.data(), table, hyperplanes, nullptr);
+      staged_tables[table][signature].push_back(id);
+    }
+  }
+
+  const idx_t restored_total = code_store.Size();
+  code_store_ = std::move(code_store);
+  hyperplanes_ = std::move(hyperplanes);
+  tables_ = std::move(staged_tables);
+  n_total = restored_total;
 }
 
 }  // namespace hypervec

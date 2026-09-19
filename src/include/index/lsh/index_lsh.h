@@ -64,6 +64,10 @@ class IndexLSH final : public Index {
   void Reconstruct(idx_t key, float* recons) const override;
   DistanceComputer* GetDistanceComputer() const override;
 
+  /** Restore validated encoded vectors and the persisted hash family. */
+  void RestoreState(InMemoryCodeStore code_store,
+                    std::vector<float> hyperplanes);
+
   const LSHIndexOptions& Options() const noexcept { return options_; }
   const std::vector<float>& Hyperplanes() const noexcept {
     return hyperplanes_;
@@ -77,6 +81,9 @@ class IndexLSH final : public Index {
   void ValidateVector(const float* vector, const char* operation) const;
   uint64_t Signature(const float* vector, size_t table,
                      std::vector<std::pair<float, size_t>>* margins) const;
+  uint64_t SignatureWithHyperplanes(
+      const float* vector, size_t table, const std::vector<float>& hyperplanes,
+      std::vector<std::pair<float, size_t>>* margins) const;
   std::vector<uint64_t> ProbeSignatures(const float* vector, size_t table,
                                         size_t probe_count) const;
 

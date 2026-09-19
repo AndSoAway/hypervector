@@ -15,6 +15,7 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
@@ -72,7 +73,7 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITE1(hnsw.max_level);
   WRITE1(hnsw.entry_point);
   int nb_levels =
-    hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
+      hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
   WRITE1(nb_levels);
   WRITEVECTOR(hnsw.cum_nneighbor_per_level);
   WRITEVECTOR(hnsw.levels);
@@ -91,6 +92,42 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*id_map, f);
     WRITEVECTOR(id_map->rev_map);
     WriteIndex(id_map->index, f, 0);
+    return;
+  }
+
+  const auto* lsh = dynamic_cast<const IndexLSH*>(index);
+  if (lsh) {
+    const size_t expected_code_size = mul_no_overflow(
+        static_cast<size_t>(lsh->d), sizeof(float), "IndexLSH code size");
+    const size_t expected_hyperplanes = mul_no_overflow(
+        mul_no_overflow(lsh->Options().table_count,
+                        lsh->Options().bits_per_table,
+                        "IndexLSH hyperplane count"),
+        static_cast<size_t>(lsh->d), "IndexLSH hyperplane elements");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        lsh->is_trained && lsh->metric_type == kMetricInnerProduct &&
+            lsh->CodeStore().CodeSize() == expected_code_size &&
+            lsh->CodeStore().Size() == lsh->n_total,
+        "IndexLSH serialize: index metadata does not match stored vectors");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        lsh->Hyperplanes().size() == expected_hyperplanes,
+        "IndexLSH serialize: hyperplane count does not match the options");
+
+    uint32_t h = fourcc("ILSh");
+    WRITE1(h);
+    write_index_header(*lsh, f);
+    const LSHIndexOptions& options = lsh->Options();
+    WRITE1(options.table_count);
+    WRITE1(options.bits_per_table);
+    WRITE1(options.probe_count);
+    WRITE1(options.candidate_limit);
+    WRITE1(options.random_seed);
+    WRITEVECTOR(lsh->Hyperplanes());
+    const size_t code_bytes =
+        mul_no_overflow(static_cast<size_t>(lsh->n_total),
+                        lsh->CodeStore().CodeSize(), "IndexLSH codes");
+    WRITE1(code_bytes);
+    WRITEANDCHECK(lsh->CodeStore().Data(), code_bytes);
     return;
   }
 

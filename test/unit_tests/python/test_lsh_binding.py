@@ -99,3 +99,19 @@ def test_lsh_runtime_parameters_reach_id_map_storage():
     )
     assert labels == [[2, 1, 0]]
     assert distances == [[3.0, 2.0, 1.0]]
+
+
+def test_lsh_persistence_roundtrip_remains_incremental(tmp_path):
+    index = make_index()
+    database = np.array([[1, 0], [2, 0], [3, 0]], dtype=np.float32)
+    index.add(database)
+    path = tmp_path / "index.lsh"
+    hypervec.write_index(index, str(path))
+
+    restored = hypervec.read_index(str(path))
+    restored.add(np.array([[4, 0]], dtype=np.float32))
+    distances, labels = restored.search_with_params(
+        database[:1], 4, {"probe_count": 2, "candidate_limit": 0}
+    )
+    assert labels == [[3, 2, 1, 0]]
+    assert distances == [[4.0, 3.0, 2.0, 1.0]]

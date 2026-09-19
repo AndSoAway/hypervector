@@ -40,6 +40,13 @@ option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
 option(HYPERVEC_ENABLE_EXTRAS "Build C++ examples" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
 
+# FindBLAS otherwise tries every installed provider and may combine HyperVec's
+# OpenMP runtime with an incompatible threaded BLAS runtime. Keep the default
+# deterministic while still allowing an explicit -DBLA_VENDOR=... override.
+if(NOT DEFINED BLA_VENDOR AND "$ENV{BLA_VENDOR}" STREQUAL "")
+  set(BLA_VENDOR "Generic" CACHE STRING "BLAS/LAPACK provider")
+endif()
+
 if(NOT HYPERVEC_OPT_LEVEL STREQUAL "generic")
   message(FATAL_ERROR
     "HYPERVEC_OPT_LEVEL='${HYPERVEC_OPT_LEVEL}' is unavailable. The current "

@@ -53,6 +53,7 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DHYPERVEC_FETCH_DEPS=OFF \
             -DHYPERVEC_OPT_LEVEL=generic
+          grep -Fqx 'BLA_VENDOR:STRING=Generic' build/core/CMakeCache.txt
           cmake --build build/core --parallel 2
 
       - name: Test installed-package consumer
@@ -83,6 +84,9 @@ jobs:
             --output-on-failure \
             --no-tests=error \
             --timeout 120
+          OMP_NUM_THREADS=4 \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter=ProductQuantizer.SearchL2RecallVsBruteForce
 
       - name: Verify unavailable target rejection
         if: matrix.name == 'GCC'

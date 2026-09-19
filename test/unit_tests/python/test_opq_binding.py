@@ -53,6 +53,21 @@ def test_opq_pq_alias_and_id_map_composition():
     assert all(0 <= label < len(database) for label in labels[0])
 
 
+def test_opq_pq_persistence_roundtrip(tmp_path):
+    index = make_index(use_id_map=True)
+    database = training_data().astype(np.float32)
+    index.build(database)
+    expected_distances, expected_labels = index.search(database[:2], 3)
+
+    path = tmp_path / "opq-pq.index"
+    hypervec.write_index(index, str(path))
+    restored = hypervec.read_index(str(path))
+    actual_distances, actual_labels = restored.search(database[:2], 3)
+
+    np.testing.assert_array_equal(actual_labels, expected_labels)
+    np.testing.assert_allclose(actual_distances, expected_distances, rtol=0, atol=0)
+
+
 def test_opq_pq_factory_rejects_invalid_configuration():
     with pytest.raises(RuntimeError, match="kMetricL2"):
         hypervec.create_index(

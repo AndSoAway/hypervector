@@ -58,6 +58,30 @@ void WriteIndexHeader(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
   }
 }
 
+void WriteLinearTransform(hypervec::VectorIOWriter* writer,
+                          hypervec::idx_t d_in, hypervec::idx_t d_out,
+                          uint8_t is_orthonormal, uint8_t has_bias,
+                          const std::vector<float>& matrix,
+                          const std::vector<float>& bias = {}) {
+  const uint32_t transform_tag = hypervec::fourcc("LiTr");
+  WriteOne(writer, transform_tag);
+  WriteOne(writer, d_in);
+  WriteOne(writer, d_out);
+  WriteOne(writer, is_orthonormal);
+  WriteOne(writer, has_bias);
+  WriteVector(writer, matrix);
+  if (has_bias == 1) {
+    WriteVector(writer, bias);
+  }
+}
+
+void WritePreTransformHeader(hypervec::VectorIOWriter* writer,
+                             hypervec::idx_t d, hypervec::idx_t n_total) {
+  const uint32_t index_tag = hypervec::fourcc("IPTr");
+  WriteOne(writer, index_tag);
+  WriteIndexHeader(writer, d, n_total, true);
+}
+
 void WritePq(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
              hypervec::idx_t m, int nbits,
              const std::vector<float>& centroids) {
@@ -621,6 +645,83 @@ TEST(PersistenceValidation, RejectsIdMapExternalIdCountMismatch) {
   WriteOne(&writer, id_map_tag);
   WriteIndexHeader(&writer, 2, 2, true);
   WriteVector(&writer, std::vector<hypervec::idx_t>{7});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsPreTransformMatrixCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  WriteLinearTransform(&writer, 2, 2, 0, 0, std::vector<float>(3, 0.0F));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidPreTransformBooleanEncoding) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  WriteLinearTransform(&writer, 2, 2, 2, 0, std::vector<float>(4, 0.0F));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidPreTransformOpqParameters) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  const uint32_t transform_tag = hypervec::fourcc("OPQt");
+  WriteOne(&writer, transform_tag);
+  const hypervec::idx_t subquantizer_count = 1;
+  const int nbits = 2;
+  const int invalid_iterations = 0;
+  const int niter = 3;
+  const int seed = 1234;
+  const int nredo = 1;
+  const uint8_t verbose = 0;
+  WriteOne(&writer, subquantizer_count);
+  WriteOne(&writer, nbits);
+  WriteOne(&writer, invalid_iterations);
+  WriteOne(&writer, niter);
+  WriteOne(&writer, seed);
+  WriteOne(&writer, nredo);
+  WriteOne(&writer, verbose);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsPreTransformWrapperMetadataMismatch) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 3, 1);
+  WriteLinearTransform(&writer, 2, 2, 1, 0, {1.0F, 0.0F, 0.0F, 1.0F});
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(2 * sizeof(float)));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, EnforcesPreTransformChainLimit) {
+  DeserializationLimitsGuard guard;
+  hypervec::set_deserialization_loop_limit(1);
+  hypervec::VectorIOWriter writer;
+  for (int depth = 0; depth < 2; ++depth) {
+    WritePreTransformHeader(&writer, 2, 1);
+    WriteLinearTransform(&writer, 2, 2, 1, 0, {1.0F, 0.0F, 0.0F, 1.0F});
+  }
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(2 * sizeof(float)));
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

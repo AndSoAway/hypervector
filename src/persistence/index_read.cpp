@@ -18,6 +18,7 @@
 #include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -29,6 +30,8 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <transform/opq_matrix.h>
+#include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 #include <utils/structures/maybe_owned_vector.h>
 
@@ -50,6 +53,22 @@ namespace hypervec {
 namespace {
 size_t deserialization_loop_limit_ = 0;
 size_t deserialization_vector_byte_limit_ = uint64_t{1} << 40;  // 1 TB
+thread_local size_t pretransform_read_depth_ = 0;
+
+class PreTransformReadGuard {
+ public:
+  PreTransformReadGuard() {
+    HYPERVEC_THROW_IF_NOT_FMT(
+        deserialization_loop_limit_ == 0 ||
+            pretransform_read_depth_ < deserialization_loop_limit_,
+        "IndexPreTransform deserialize: transform chain exceeds loop limit "
+        "(%zu)",
+        deserialization_loop_limit_);
+    ++pretransform_read_depth_;
+  }
+
+  ~PreTransformReadGuard() { --pretransform_read_depth_; }
+};
 
 template <typename T>
 void ValidateElementCount(size_t count, const char* context) {
@@ -440,12 +459,83 @@ static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
   RebuildHnswLevelProbabilities(hnsw);
 }
 
-static bool read_graph_bool(IOReader* f, const char* context) {
+static bool read_bool(IOReader* f, const char* context) {
   uint8_t value;
   READ1(value);
   HYPERVEC_THROW_IF_NOT_FMT(value <= 1, "%s must be encoded as 0 or 1",
                             context);
   return value != 0;
+}
+
+struct LinearTransformState {
+  idx_t d_in = 0;
+  idx_t d_out = 0;
+  bool is_orthonormal = false;
+  std::vector<float> matrix;
+  std::vector<float> bias;
+};
+
+static LinearTransformState read_linear_transform(IOReader* f) {
+  LinearTransformState state;
+  READ1(state.d_in);
+  READ1(state.d_out);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      state.d_in > 0 && state.d_in <= (1 << 20) && state.d_out > 0 &&
+          state.d_out <= (1 << 20),
+      "LinearTransform deserialize: dimensions are out of range");
+  state.is_orthonormal = read_bool(f, "LinearTransform is_orthonormal");
+  const bool has_bias = read_bool(f, "LinearTransform has_bias");
+  const size_t matrix_size = mul_no_overflow(static_cast<size_t>(state.d_in),
+                                             static_cast<size_t>(state.d_out),
+                                             "LinearTransform matrix");
+  ReadVectorExact(state.matrix, matrix_size, f, "LinearTransform matrix");
+  if (has_bias) {
+    ReadVectorExact(state.bias, static_cast<size_t>(state.d_out), f,
+                    "LinearTransform bias");
+  }
+  return state;
+}
+
+static std::unique_ptr<VectorTransform> read_transform(IOReader* f) {
+  uint32_t h;
+  READ1(h);
+  if (h == fourcc("LiTr")) {
+    LinearTransformState state = read_linear_transform(f);
+    auto transform = std::make_unique<LinearTransform>(state.d_in, state.d_out);
+    transform->SetTransform(std::move(state.matrix), std::move(state.bias),
+                            state.is_orthonormal);
+    return transform;
+  }
+
+  if (h == fourcc("OPQt")) {
+    idx_t subquantizer_count;
+    int nbits;
+    OPQParameters parameters;
+    READ1(subquantizer_count);
+    READ1(nbits);
+    READ1(parameters.iterations);
+    READ1(parameters.pq_parameters.niter);
+    READ1(parameters.pq_parameters.seed);
+    READ1(parameters.pq_parameters.nredo);
+    parameters.pq_parameters.verbose = read_bool(f, "OPQMatrix verbose");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        parameters.iterations > 0 && parameters.pq_parameters.niter > 0 &&
+            parameters.pq_parameters.nredo > 0,
+        "OPQMatrix deserialize: training parameters must be positive");
+
+    LinearTransformState state = read_linear_transform(f);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        state.d_in == state.d_out && state.is_orthonormal && state.bias.empty(),
+        "OPQMatrix deserialize: transform must be an unbiased orthogonal "
+        "rotation");
+    auto transform =
+        std::make_unique<OPQMatrix>(state.d_in, subquantizer_count, nbits);
+    transform->parameters = parameters;
+    transform->SetTransform(std::move(state.matrix), {}, true);
+    return transform;
+  }
+
+  HYPERVEC_THROW_MSG("unknown vector transform type");
 }
 
 static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
@@ -470,9 +560,8 @@ static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
   READ1(options.ef_construction);
   READ1(options.ef_search);
   options.check_relative_distance =
-      read_graph_bool(f, "IndexNSWFlat check_relative_distance");
-  options.fill_to_max_degree =
-      read_graph_bool(f, "IndexNSWFlat fill_to_max_degree");
+      read_bool(f, "IndexNSWFlat check_relative_distance");
+  options.fill_to_max_degree = read_bool(f, "IndexNSWFlat fill_to_max_degree");
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -552,7 +641,7 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   READ1(options.candidate_pool_size);
   READ1(options.ef_search);
   options.check_relative_distance =
-      read_graph_bool(f, "IndexNSGFlat check_relative_distance");
+      read_bool(f, "IndexNSGFlat check_relative_distance");
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -676,6 +765,23 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("INGf")) {
     const IndexHeaderData header = read_index_header_data(f);
     return read_nsg_flat(header, f).release();
+  }
+
+  if (h == fourcc("IPTr")) {
+    const PreTransformReadGuard depth_guard;
+    const IndexHeaderData header = read_index_header_data(f);
+    std::unique_ptr<VectorTransform> transform = read_transform(f);
+    std::unique_ptr<Index> inner(ReadIndex(f, 0));
+    auto index = std::make_unique<IndexPreTransform>(std::move(transform),
+                                                     std::move(inner));
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index->d == header.d && index->n_total == header.n_total &&
+            index->is_trained == header.is_trained &&
+            index->metric_type == header.metric_type &&
+            index->metric_arg == header.metric_arg,
+        "IndexPreTransform deserialize: component metadata does not match "
+        "the wrapper");
+    return index.release();
   }
 
   if (h == fourcc("IxMp")) {

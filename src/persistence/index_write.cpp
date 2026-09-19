@@ -18,6 +18,7 @@
 #include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -28,6 +29,8 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <transform/opq_matrix.h>
+#include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 
 #include <cstdio>
@@ -44,7 +47,7 @@ static void write_index_header(const Index& idx, IOWriter* f) {
   WRITE1(dummy);
   WRITE1(dummy);
   WRITE1(idx.is_trained);
-  int metric = (int)idx.metric_type;
+  int metric = static_cast<int>(idx.metric_type);
   WRITE1(metric);
   if (idx.metric_type > 1) {
     WRITE1(idx.metric_arg);
@@ -64,6 +67,77 @@ static void write_lvq(const LocalVectorQuantizer& lvq, IOWriter* f) {
   WRITE1(lvq.nbits);
   WRITEVECTOR(lvq.local_centroids);
   WRITEVECTOR(lvq.residual_codebooks);
+}
+
+static void write_linear_transform(const LinearTransform& transform,
+                                   IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.is_trained,
+      "LinearTransform serialize: transform must be trained");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.d_in > 0 && transform.d_out > 0,
+      "LinearTransform serialize: dimensions must be positive");
+  const size_t matrix_size = mul_no_overflow(
+      static_cast<size_t>(transform.d_in), static_cast<size_t>(transform.d_out),
+      "LinearTransform matrix");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.matrix.size() == matrix_size,
+      "LinearTransform serialize: matrix size does not match dimensions");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.bias.empty() ||
+          transform.bias.size() == static_cast<size_t>(transform.d_out),
+      "LinearTransform serialize: bias size does not match output dimension");
+  LinearTransform validated(transform.d_in, transform.d_out);
+  validated.SetTransform(transform.matrix, transform.bias,
+                         transform.is_orthonormal);
+
+  WRITE1(transform.d_in);
+  WRITE1(transform.d_out);
+  const uint8_t is_orthonormal = transform.is_orthonormal;
+  const uint8_t has_bias = !transform.bias.empty();
+  WRITE1(is_orthonormal);
+  WRITE1(has_bias);
+  WRITEVECTOR(transform.matrix);
+  if (has_bias) {
+    WRITEVECTOR(transform.bias);
+  }
+}
+
+static void write_transform(const VectorTransform& transform, IOWriter* f) {
+  const auto* opq = dynamic_cast<const OPQMatrix*>(&transform);
+  if (opq) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->parameters.iterations > 0 &&
+            opq->parameters.pq_parameters.niter > 0 &&
+            opq->parameters.pq_parameters.nredo > 0,
+        "OPQMatrix serialize: training parameters must be positive");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->d_in == opq->d_out && opq->is_orthonormal && opq->bias.empty(),
+        "OPQMatrix serialize: transform must be an unbiased orthogonal "
+        "rotation");
+    uint32_t h = fourcc("OPQt");
+    WRITE1(h);
+    WRITE1(opq->subquantizer_count);
+    WRITE1(opq->nbits);
+    WRITE1(opq->parameters.iterations);
+    WRITE1(opq->parameters.pq_parameters.niter);
+    WRITE1(opq->parameters.pq_parameters.seed);
+    WRITE1(opq->parameters.pq_parameters.nredo);
+    const uint8_t verbose = opq->parameters.pq_parameters.verbose;
+    WRITE1(verbose);
+    write_linear_transform(*opq, f);
+    return;
+  }
+
+  const auto* linear = dynamic_cast<const LinearTransform*>(&transform);
+  if (linear) {
+    uint32_t h = fourcc("LiTr");
+    WRITE1(h);
+    write_linear_transform(*linear, f);
+    return;
+  }
+
+  HYPERVEC_THROW_MSG("unsupported vector transform type for writing");
 }
 
 static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
@@ -92,6 +166,31 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*id_map, f);
     WRITEVECTOR(id_map->rev_map);
     WriteIndex(id_map->index, f, 0);
+    return;
+  }
+
+  const auto* pretransform = dynamic_cast<const IndexPreTransform*>(index);
+  if (pretransform) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->transform != nullptr && pretransform->index != nullptr,
+        "IndexPreTransform serialize: components must not be null");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->is_trained && pretransform->transform->is_trained &&
+            pretransform->index->is_trained,
+        "IndexPreTransform serialize: all components must be trained");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->d == pretransform->transform->d_in &&
+            pretransform->transform->d_out == pretransform->index->d &&
+            pretransform->n_total == pretransform->index->n_total &&
+            pretransform->metric_type == pretransform->index->metric_type &&
+            pretransform->metric_arg == pretransform->index->metric_arg,
+        "IndexPreTransform serialize: wrapper metadata is inconsistent");
+
+    uint32_t h = fourcc("IPTr");
+    WRITE1(h);
+    write_index_header(*pretransform, f);
+    write_transform(*pretransform->transform, f);
+    WriteIndex(pretransform->index.get(), f, 0);
     return;
   }
 

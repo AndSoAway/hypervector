@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <quantization/pq/index_pq.h>
 #include <transform/opq_matrix.h>
 #include <transform/vector_transform.h>
@@ -102,6 +104,83 @@ TEST(IndexPreTransform, OPQAndPQShareTrainAddSearchAndReconstructPipeline) {
   }
 }
 
+TEST(IndexPreTransform, OPQPersistencePreservesPipelineAndTrainingOptions) {
+  constexpr hypervec::idx_t n = 128;
+  const std::vector<float> data = TrainingData(n);
+  auto opq = std::make_unique<hypervec::OPQMatrix>(8, 4, 2);
+  opq->parameters.iterations = 2;
+  opq->parameters.pq_parameters.niter = 6;
+  opq->parameters.pq_parameters.seed = 2026;
+  opq->parameters.pq_parameters.nredo = 2;
+  auto pq = std::make_unique<hypervec::IndexPQ>(8, 4, 2);
+  hypervec::IndexPreTransform source(std::move(opq), std::move(pq));
+  source.Build(n, data.data());
+
+  float expected_distances[6] = {};
+  hypervec::idx_t expected_labels[6] = {};
+  source.Search(2, data.data(), 3, expected_distances, expected_labels);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexPreTransform*>(loaded.get());
+  ASSERT_NE(restored, nullptr);
+  auto* restored_opq =
+      dynamic_cast<hypervec::OPQMatrix*>(restored->transform.get());
+  auto* restored_pq = dynamic_cast<hypervec::IndexPQ*>(restored->index.get());
+  ASSERT_NE(restored_opq, nullptr);
+  ASSERT_NE(restored_pq, nullptr);
+  EXPECT_EQ(restored_opq->subquantizer_count, 4);
+  EXPECT_EQ(restored_opq->nbits, 2);
+  EXPECT_EQ(restored_opq->parameters.iterations, 2);
+  EXPECT_EQ(restored_opq->parameters.pq_parameters.niter, 6);
+  EXPECT_EQ(restored_opq->parameters.pq_parameters.seed, 2026);
+  EXPECT_EQ(restored_opq->parameters.pq_parameters.nredo, 2);
+  EXPECT_EQ(restored_opq->matrix,
+            dynamic_cast<hypervec::OPQMatrix*>(source.transform.get())->matrix);
+
+  float actual_distances[6] = {};
+  hypervec::idx_t actual_labels[6] = {};
+  restored->Search(2, data.data(), 3, actual_distances, actual_labels);
+  for (size_t i = 0; i < 6; ++i) {
+    EXPECT_FLOAT_EQ(actual_distances[i], expected_distances[i]);
+    EXPECT_EQ(actual_labels[i], expected_labels[i]);
+  }
+
+  const std::vector<float> appended(data.begin(), data.begin() + 8);
+  restored->Add(1, appended.data());
+  EXPECT_EQ(restored->n_total, n + 1);
+}
+
+TEST(IndexPreTransform, LinearPersistencePreservesAffineTransform) {
+  auto linear = std::make_unique<hypervec::LinearTransform>(2, 2);
+  linear->SetTransform({0.0F, -1.0F, 1.0F, 0.0F}, {2.0F, -3.0F}, true);
+  auto flat = std::make_unique<hypervec::IndexFlatL2>(2);
+  hypervec::IndexPreTransform source(std::move(linear), std::move(flat));
+  const std::vector<float> database = {0.0F, 0.0F, 1.0F, 2.0F, -3.0F, 4.0F};
+  source.Add(3, database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexPreTransform*>(loaded.get());
+  ASSERT_NE(restored, nullptr);
+  auto* restored_linear =
+      dynamic_cast<hypervec::LinearTransform*>(restored->transform.get());
+  ASSERT_NE(restored_linear, nullptr);
+  EXPECT_EQ(restored_linear->bias, (std::vector<float>{2.0F, -3.0F}));
+  EXPECT_TRUE(restored_linear->is_orthonormal);
+
+  float reconstruction[2] = {};
+  restored->Reconstruct(1, reconstruction);
+  EXPECT_NEAR(reconstruction[0], 1.0F, 1e-6F);
+  EXPECT_NEAR(reconstruction[1], 2.0F, 1e-6F);
+}
+
 TEST(IndexPreTransform, StandaloneCodecUsesBothTransformDirections) {
   auto linear = std::make_unique<hypervec::LinearTransform>(2, 2);
   linear->SetTransform({0.0F, -1.0F, 1.0F, 0.0F}, {}, true);
@@ -160,6 +239,9 @@ TEST(IndexPreTransform, ValidatesCompositionAndLifecycle) {
       std::move(opq), std::make_unique<hypervec::IndexPQ>(8, 4, 2));
   const std::vector<float> data = TrainingData(32);
   EXPECT_THROW(index.Add(1, data.data()), hypervec::HypervecException);
+  hypervec::VectorIOWriter writer;
+  EXPECT_THROW(hypervec::WriteIndex(&index, &writer),
+               hypervec::HypervecException);
   index.Build(32, data.data());
   EXPECT_THROW(index.Train(32, data.data()), hypervec::HypervecException);
   index.Reset();

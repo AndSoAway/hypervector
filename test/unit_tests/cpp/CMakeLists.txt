@@ -8,6 +8,7 @@ set(HYPERVEC_TEST_SRC
   test_sparse_row.cpp
   test_term_dictionary.cpp
   test_sparse_inverted_index.cpp
+  test_graph_storage.cpp
   test_hnsw.cpp
   test_inverted_list_scanner.cpp
   test_index_build.cpp

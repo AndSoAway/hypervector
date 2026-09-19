@@ -13,6 +13,7 @@ set(HYPERVEC_SRC
   index/ivf/inverted_list_scanner.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
+  index/graph/graph_storage.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp

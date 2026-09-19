@@ -26,6 +26,7 @@ set(HYPERVEC_SRC
   index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/hnsw.cpp
   index/idmap/index_id_map.cpp
+  index/lsh/index_lsh.cpp
   index/nsg/index_nsg.cpp
   index/nsw/index_nsw.cpp
   invlists/inverted_lists.cpp

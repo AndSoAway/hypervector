@@ -9,6 +9,7 @@ set(HYPERVEC_TEST_SRC
   test_term_dictionary.cpp
   test_sparse_inverted_index.cpp
   test_hnsw.cpp
+  test_index_hnsw_correctness.cpp
   test_callback.cpp
   test_utils.cpp
   test_mmap.cpp

@@ -59,9 +59,12 @@ set(HYPERVEC_PUBLIC_HEADERS "${HYPERVEC_PUBLIC_HEADERS}" PARENT_SCOPE)
 add_library(hypervec ${HYPERVEC_SRC})
 add_library(hypervec::hypervec ALIAS hypervec)
 
-target_include_directories(hypervec PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+target_include_directories(hypervec
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 set_target_properties(hypervec PROPERTIES

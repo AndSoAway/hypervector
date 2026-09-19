@@ -8,6 +8,7 @@ set(HYPERVEC_TEST_SRC
   test_graph_pruning_validation.cpp
   test_graph_searcher.cpp
   test_graph_storage.cpp
+  test_nsw_builder.cpp
   test_hnsw.cpp
   test_inverted_list_scanner.cpp
   test_index_build.cpp

@@ -24,6 +24,13 @@ void ValidateNodeCount(size_t node_count) {
                             "PagedGraphStorage: node count exceeds GraphId");
 }
 
+size_t GraphRecordSize(size_t max_degree) {
+  const size_t neighbor_bytes = mul_no_overflow(
+      max_degree, sizeof(GraphId), "PagedGraphStorage record size");
+  return add_no_overflow(sizeof(uint32_t), neighbor_bytes,
+                         "PagedGraphStorage record size");
+}
+
 }  // namespace
 
 PagedGraphStorage::PagedGraphStorage(std::shared_ptr<const PageCache> cache,
@@ -31,9 +38,27 @@ PagedGraphStorage::PagedGraphStorage(std::shared_ptr<const PageCache> cache,
     : cache_(std::move(cache)),
       node_count_(node_count),
       max_degree_(max_degree),
-      record_size_(0),
+      record_size_(GraphRecordSize(max_degree)),
+      degree_offset_(0),
       records_per_page_(0),
       storage_size_(0) {
+  ValidateLayout();
+}
+
+PagedGraphStorage::PagedGraphStorage(std::shared_ptr<const PageCache> cache,
+                                     size_t node_count, size_t max_degree,
+                                     size_t record_size, size_t degree_offset)
+    : cache_(std::move(cache)),
+      node_count_(node_count),
+      max_degree_(max_degree),
+      record_size_(record_size),
+      degree_offset_(degree_offset),
+      records_per_page_(0),
+      storage_size_(0) {
+  ValidateLayout();
+}
+
+void PagedGraphStorage::ValidateLayout() {
   HYPERVEC_THROW_IF_NOT_MSG(cache_ != nullptr,
                             "PagedGraphStorage: cache must not be null");
   ValidateNodeCount(node_count_);
@@ -43,10 +68,15 @@ PagedGraphStorage::PagedGraphStorage(std::shared_ptr<const PageCache> cache,
       max_degree_ <= (std::numeric_limits<uint32_t>::max)(),
       "PagedGraphStorage: max_degree exceeds degree representation");
 
-  const size_t neighbor_bytes = mul_no_overflow(
-      max_degree_, sizeof(GraphId), "PagedGraphStorage record size");
-  record_size_ = add_no_overflow(sizeof(uint32_t), neighbor_bytes,
-                                 "PagedGraphStorage record size");
+  const size_t graph_bytes = GraphRecordSize(max_degree_);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      degree_offset_ <= record_size_ &&
+          graph_bytes <= record_size_ - degree_offset_,
+      "PagedGraphStorage: degree and neighbors exceed the record");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      record_size_ % alignof(GraphId) == 0 &&
+          (degree_offset_ + sizeof(uint32_t)) % alignof(GraphId) == 0,
+      "PagedGraphStorage: record layout does not align neighbors");
   HYPERVEC_THROW_IF_NOT_MSG(
       record_size_ <= cache_->PageSize(),
       "PagedGraphStorage: one graph record must fit in a page");
@@ -88,7 +118,7 @@ GraphNeighborList PagedGraphStorage::Neighbors(GraphId node) const {
           record_size_ <= page->data.size() - location.second,
       "PagedGraphStorage: graph record exceeds its page");
 
-  const uint8_t* record = page->data.data() + location.second;
+  const uint8_t* record = page->data.data() + location.second + degree_offset_;
   uint32_t degree = 0;
   std::memcpy(&degree, record, sizeof(degree));
   HYPERVEC_THROW_IF_NOT_MSG(

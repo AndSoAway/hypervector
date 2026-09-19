@@ -7,6 +7,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
@@ -210,6 +211,63 @@ void WriteLshPayload(hypervec::VectorIOWriter* writer, hypervec::idx_t n_total,
   WriteVector(writer, codes);
 }
 
+std::vector<uint8_t> DiskAnnFlatCodes() {
+  const std::array<float, 2> vectors = {0.0F, 1.0F};
+  std::vector<uint8_t> codes(sizeof(vectors));
+  std::memcpy(codes.data(), vectors.data(), codes.size());
+  return codes;
+}
+
+std::vector<uint8_t> DiskAnnNodeData() {
+  const hypervec::DiskAnnNodeLayout layout(2, 1, 1, 64);
+  std::vector<uint8_t> data(static_cast<size_t>(layout.StorageSize()), 0);
+  for (hypervec::GraphId node = 0; node < 2; ++node) {
+    const hypervec::DiskAnnNodeLocation location = layout.Locate(node);
+    uint8_t* record =
+        data.data() + location.page_id * layout.PageSize() + location.offset;
+    const float value = static_cast<float>(node);
+    std::memcpy(record, &value, sizeof(value));
+    const uint32_t degree = 1;
+    std::memcpy(record + layout.DegreeOffset(), &degree, sizeof(degree));
+    const hypervec::GraphId neighbor = 1 - node;
+    std::memcpy(record + layout.DegreeOffset() + sizeof(degree), &neighbor,
+                sizeof(neighbor));
+  }
+  return data;
+}
+
+void WriteDiskAnnFlatPayload(hypervec::VectorIOWriter* writer,
+                             const std::vector<uint8_t>& codes,
+                             const std::vector<uint8_t>& node_data) {
+  const uint32_t tag = hypervec::fourcc("IDAf");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 1, 2, true);
+  const size_t max_degree = 1;
+  const size_t build_search_width = 2;
+  const size_t candidate_pool_size = 2;
+  const float alpha = 1.2F;
+  const size_t build_passes = 2;
+  const uint64_t random_seed = 42;
+  const size_t search_width = 2;
+  const uint8_t check_relative_distance = 1;
+  const size_t page_size = 64;
+  const size_t cache_capacity_pages = 1;
+  const hypervec::GraphId entry_point = 0;
+  WriteOne(writer, max_degree);
+  WriteOne(writer, build_search_width);
+  WriteOne(writer, candidate_pool_size);
+  WriteOne(writer, alpha);
+  WriteOne(writer, build_passes);
+  WriteOne(writer, random_seed);
+  WriteOne(writer, search_width);
+  WriteOne(writer, check_relative_distance);
+  WriteOne(writer, page_size);
+  WriteOne(writer, cache_capacity_pages);
+  WriteOne(writer, entry_point);
+  WriteVector(writer, codes);
+  WriteVector(writer, node_data);
+}
+
 class DeserializationLimitsGuard {
  public:
   DeserializationLimitsGuard()
@@ -232,6 +290,69 @@ TEST(PersistenceValidation, RejectsFlatCodeCountMismatch) {
   WriteOne(&writer, tag);
   WriteIndexHeader(&writer, 2, 2, true);
   WriteVector(&writer, std::vector<uint8_t>(3));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsDiskAnnCodeCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WriteDiskAnnFlatPayload(&writer, std::vector<uint8_t>(1), DiskAnnNodeData());
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsDiskAnnMismatchedTraversalCodes) {
+  hypervec::VectorIOWriter writer;
+  std::vector<uint8_t> codes = DiskAnnFlatCodes();
+  codes[0] = 1;
+  WriteDiskAnnFlatPayload(&writer, codes, DiskAnnNodeData());
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsDiskAnnNonFiniteRawVectors) {
+  hypervec::VectorIOWriter writer;
+  std::vector<uint8_t> codes = DiskAnnFlatCodes();
+  std::vector<uint8_t> node_data = DiskAnnNodeData();
+  const float nan = (std::numeric_limits<float>::quiet_NaN)();
+  std::memcpy(codes.data(), &nan, sizeof(nan));
+  std::memcpy(node_data.data(), &nan, sizeof(nan));
+  WriteDiskAnnFlatPayload(&writer, codes, node_data);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsDiskAnnNodePayloadSizeMismatch) {
+  hypervec::VectorIOWriter writer;
+  std::vector<uint8_t> node_data = DiskAnnNodeData();
+  node_data.pop_back();
+  WriteDiskAnnFlatPayload(&writer, DiskAnnFlatCodes(), node_data);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsDiskAnnOutOfRangeNeighbor) {
+  hypervec::VectorIOWriter writer;
+  std::vector<uint8_t> node_data = DiskAnnNodeData();
+  const hypervec::DiskAnnNodeLayout layout(2, 1, 1, 64);
+  const hypervec::DiskAnnNodeLocation location = layout.Locate(0);
+  const size_t neighbor_offset =
+      static_cast<size_t>(location.page_id) * layout.PageSize() +
+      location.offset + layout.DegreeOffset() + sizeof(uint32_t);
+  const hypervec::GraphId invalid_neighbor = 99;
+  std::memcpy(node_data.data() + neighbor_offset, &invalid_neighbor,
+              sizeof(invalid_neighbor));
+  WriteDiskAnnFlatPayload(&writer, DiskAnnFlatCodes(), node_data);
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

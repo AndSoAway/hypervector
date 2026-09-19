@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 #include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
@@ -289,4 +291,67 @@ TEST(IndexDiskANN, FailedFileBuildPreservesExistingNodeData) {
   EXPECT_EQ(contents, sentinel);
   EXPECT_FALSE(
       std::filesystem::exists(node_file.Path().string() + ".hypervec.tmp"));
+}
+
+TEST(IndexDiskANN, PersistenceRoundtripPreservesPagedStateAndStartsCold) {
+  const std::vector<float> database = {0.0F, 2.0F, 5.0F, 9.0F, 14.0F, 20.0F};
+  const std::vector<float> queries = {4.0F, 16.0F};
+  const TempPath node_file;
+  hypervec::DiskAnnIndexOptions options = ExhaustiveOptions();
+  options.alpha = 1.4F;
+  options.build_passes = 3;
+  options.node_data_path = node_file.Path().string();
+  hypervec::IndexDiskANNFlat source(1, hypervec::kMetricL2, options);
+  source.Build(6, database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored =
+      dynamic_cast<hypervec::IndexDiskANNFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->n_total, source.n_total);
+  EXPECT_EQ(restored->EntryPoint(), source.EntryPoint());
+  EXPECT_EQ(restored->Options().max_degree, options.max_degree);
+  EXPECT_EQ(restored->Options().build_search_width, options.build_search_width);
+  EXPECT_EQ(restored->Options().candidate_pool_size,
+            options.candidate_pool_size);
+  EXPECT_FLOAT_EQ(restored->Options().alpha, options.alpha);
+  EXPECT_EQ(restored->Options().build_passes, options.build_passes);
+  EXPECT_EQ(restored->Options().random_seed, options.random_seed);
+  EXPECT_EQ(restored->Options().search_width, options.search_width);
+  EXPECT_EQ(restored->Options().check_relative_distance,
+            options.check_relative_distance);
+  EXPECT_EQ(restored->Options().page_size, options.page_size);
+  EXPECT_EQ(restored->Options().cache_capacity_pages,
+            options.cache_capacity_pages);
+  EXPECT_TRUE(restored->Options().node_data_path.empty());
+  EXPECT_EQ(restored->BuildStats().nodes_processed, 0U);
+  EXPECT_EQ(restored->ReadStats().read_operations, 0U);
+  EXPECT_EQ(restored->CacheStats().pages_loaded, 0U);
+  ExpectSameSearch(source, *restored, queries, 3);
+}
+
+TEST(IndexDiskANN, PersistenceRoundtripKeepsEmptyIndexBuildable) {
+  hypervec::IndexDiskANNFlat source(1, hypervec::kMetricL2,
+                                    ExhaustiveOptions());
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored =
+      dynamic_cast<hypervec::IndexDiskANNFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->NodeReader(), nullptr);
+  EXPECT_EQ(restored->EntryPoint(), hypervec::kInvalidGraphId);
+
+  const std::array<float, 2> database = {0.0F, 1.0F};
+  restored->Build(2, database.data());
+  EXPECT_EQ(restored->n_total, 2);
 }

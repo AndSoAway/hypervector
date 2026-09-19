@@ -8,6 +8,7 @@
  * HNSW-only index read implementation
  */
 
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
@@ -642,6 +643,89 @@ static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
   return index;
 }
 
+static std::unique_ptr<IndexDiskANNFlat> read_diskann_flat(
+    const IndexHeaderData& header, IOReader* f) {
+  constexpr size_t kGraphCapacity =
+      static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexDiskANNFlat deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total <= kGraphCapacity,
+      "IndexDiskANNFlat deserialize: n_total exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexDiskANNFlat deserialize: n_total exceeds loop limit (%zu > %zu)",
+      total, deserialization_loop_limit_);
+
+  DiskAnnIndexOptions options;
+  READ1(options.max_degree);
+  READ1(options.build_search_width);
+  READ1(options.candidate_pool_size);
+  READ1(options.alpha);
+  READ1(options.build_passes);
+  READ1(options.random_seed);
+  READ1(options.search_width);
+  options.check_relative_distance =
+      read_bool(f, "IndexDiskANNFlat check_relative_distance");
+  READ1(options.page_size);
+  READ1(options.cache_capacity_pages);
+  GraphId entry_point;
+  READ1(entry_point);
+
+  auto index =
+      std::make_unique<IndexDiskANNFlat>(header.d, header.metric_type, options);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained && header.metric_arg == 0.0F,
+      "IndexDiskANNFlat deserialize: header metadata is inconsistent");
+  const size_t code_count = mul_no_overflow(
+      total, index->CodeStore().CodeSize(), "IndexDiskANNFlat codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexDiskANNFlat codes");
+
+  const DiskAnnNodeLayout layout(total, static_cast<size_t>(header.d),
+                                 options.max_degree, options.page_size);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      layout.StorageSize() <= std::numeric_limits<size_t>::max(),
+      "IndexDiskANNFlat deserialize: node payload does not fit in size_t");
+  std::vector<uint8_t> node_data;
+  ReadVectorExact(node_data, static_cast<size_t>(layout.StorageSize()), f,
+                  "IndexDiskANNFlat node data");
+  for (size_t node = 0; node < total; ++node) {
+    const DiskAnnNodeLocation location =
+        layout.Locate(static_cast<GraphId>(node));
+    const size_t page_offset =
+        mul_no_overflow(static_cast<size_t>(location.page_id),
+                        layout.PageSize(), "IndexDiskANNFlat node page offset");
+    const size_t vector_offset = add_no_overflow(
+        page_offset, location.offset, "IndexDiskANNFlat vector offset");
+    const uint8_t* vector = node_data.data() + vector_offset;
+    const uint8_t* code = codes.data() + node * index->CodeStore().CodeSize();
+    HYPERVEC_THROW_IF_NOT_MSG(
+        std::memcmp(vector, code, layout.VectorBytes()) == 0,
+        "IndexDiskANNFlat deserialize: traversal codes and raw vectors "
+        "differ");
+    for (size_t component = 0; component < layout.Dimension(); ++component) {
+      float value;
+      std::memcpy(&value, vector + component * sizeof(float), sizeof(value));
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(value),
+          "IndexDiskANNFlat deserialize: raw vectors must be finite");
+    }
+  }
+
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  std::shared_ptr<RandomAccessReader> reader;
+  if (total != 0) {
+    reader = std::make_shared<VectorRandomAccessReader>(std::move(node_data));
+  }
+  index->RestoreState(std::move(code_store), std::move(reader), entry_point);
+  return index;
+}
+
 static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
     const IndexHeaderData& header, IOReader* f) {
   constexpr size_t kGraphCapacity =
@@ -783,6 +867,11 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("ILSh")) {
     const IndexHeaderData header = read_index_header_data(f);
     return read_lsh(header, f).release();
+  }
+
+  if (h == fourcc("IDAf")) {
+    const IndexHeaderData header = read_index_header_data(f);
+    return read_diskann_flat(header, f).release();
   }
 
   if (h == fourcc("INSf")) {

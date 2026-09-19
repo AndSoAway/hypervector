@@ -89,6 +89,9 @@ class IndexDiskANN : public Index {
     return layout_ ? &*layout_ : nullptr;
   }
   const GraphStorage* Graph() const noexcept { return graph_.get(); }
+  const RandomAccessReader* NodeReader() const noexcept {
+    return reader_.get();
+  }
   GraphId EntryPoint() const noexcept { return entry_point_; }
   const VamanaBuildStats& BuildStats() const noexcept { return build_stats_; }
   PageCacheStats CacheStats() const noexcept;

@@ -24,7 +24,8 @@ struct IndexIDMap : Index {
   /// Inverse map, from internal ids to ids
   std::vector<idx_t> rev_map;
 
-  /// if the id Translator should be built
+  /// Legacy compatibility flag. Correct translation requires both maps, so
+  /// current writes always maintain rev_map.
   bool maintain_rev_map = true;
 
   explicit IndexIDMap(Index* index);
@@ -33,7 +34,14 @@ struct IndexIDMap : Index {
 
   idx_t from_internal(idx_t id) const;
 
+  void Train(idx_t n, const float* x) override;
+
+  void Train(idx_t n, const float* x, idx_t n_train_q,
+             const float* xq_train) override;
+
   void Add(idx_t n, const float* x) override;
+
+  void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
 
   void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
@@ -48,11 +56,11 @@ struct IndexIDMap : Index {
 
   void check_consistency() const;
 
-  void MergeFrom(Index& otherIndex, idx_t add_id);
+  void MergeFrom(Index& otherIndex, idx_t add_id) override;
 
   void construct_rev_map();
 
-  size_t RemoveIds(const IDSelector& sel);
+  size_t RemoveIds(const IDSelector& sel) override;
 
   template <class T>
   T* get_index() {

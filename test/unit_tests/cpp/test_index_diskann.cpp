@@ -13,13 +13,41 @@
 #include <utils/selector/id_selector.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>  // NOLINT(build/c++17): the project requires C++20.
+#include <fstream>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
+
+class TempPath {
+ public:
+  TempPath() {
+    static std::atomic<uint64_t> sequence{0};
+    const uint64_t stamp = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    path_ = std::filesystem::temp_directory_path() /
+            ("hypervec-diskann-" + std::to_string(stamp) + "-" +
+             std::to_string(sequence.fetch_add(1)));
+  }
+
+  ~TempPath() {
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+    std::filesystem::remove(path_.string() + ".hypervec.tmp", error);
+  }
+
+  const std::filesystem::path& Path() const noexcept { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
 
 hypervec::DiskAnnIndexOptions ExhaustiveOptions() {
   hypervec::DiskAnnIndexOptions options;
@@ -178,4 +206,86 @@ TEST(IndexDiskANN, FailedBuildDoesNotPublishPartialStorage) {
   EXPECT_EQ(index.Graph(), nullptr);
   EXPECT_EQ(index.EntryPoint(), hypervec::kInvalidGraphId);
   EXPECT_EQ(index.BuildStats().nodes_processed, 0U);
+}
+
+TEST(IndexDiskANN, BuildsFileBackingAndRestoresColdValidatedState) {
+  const std::vector<float> database = {0.0F, 2.0F, 5.0F, 9.0F, 14.0F, 20.0F};
+  const std::vector<float> queries = {4.0F, 16.0F};
+  const TempPath node_file;
+  {
+    const std::array<uint8_t, 3> old_data = {7, 8, 9};
+    std::ofstream output(node_file.Path(), std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(old_data.data()),
+                 static_cast<std::streamsize>(old_data.size()));
+  }
+  hypervec::IndexDiskANNFlat source(1, hypervec::kMetricL2,
+                                    ExhaustiveOptions());
+
+  source.BuildToFile(6, database.data(), node_file.Path().string());
+
+  ASSERT_NE(source.Layout(), nullptr);
+  EXPECT_TRUE(std::filesystem::exists(node_file.Path()));
+  EXPECT_EQ(std::filesystem::file_size(node_file.Path()),
+            source.Layout()->StorageSize());
+  EXPECT_EQ(source.ReadStats().read_operations, 0U);
+
+  hypervec::IndexDiskANNFlat restored(1, hypervec::kMetricL2,
+                                      ExhaustiveOptions());
+  auto reader = std::make_shared<hypervec::FileRandomAccessReader>(
+      node_file.Path().string());
+  restored.RestoreState(source.CodeStore(), reader, source.EntryPoint());
+  EXPECT_EQ(restored.ReadStats().read_operations, 0U);
+  EXPECT_EQ(restored.CacheStats().pages_loaded, 0U);
+  ExpectSameSearch(source, restored, queries, 3);
+
+  const hypervec::InMemoryCodeStore valid_codes = restored.CodeStore();
+  auto short_reader = std::make_shared<hypervec::VectorRandomAccessReader>(
+      std::vector<uint8_t>(restored.Layout()->StorageSize() - 1));
+  EXPECT_THROW(
+      restored.RestoreState(valid_codes, short_reader, restored.EntryPoint()),
+      hypervec::HypervecException);
+  ExpectSameSearch(source, restored, queries, 3);
+
+  source.Reset();
+  EXPECT_TRUE(std::filesystem::exists(node_file.Path()));
+}
+
+TEST(IndexDiskANN, FailedFileBuildPreservesExistingNodeData) {
+  const TempPath node_file;
+  const std::array<uint8_t, 4> sentinel = {1, 2, 3, 4};
+  {
+    std::ofstream output(node_file.Path(), std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(sentinel.data()),
+                 static_cast<std::streamsize>(sentinel.size()));
+  }
+  const std::array<float, 3> database = {
+      0.0F, (std::numeric_limits<float>::quiet_NaN)(), 2.0F};
+  hypervec::IndexDiskANNFlat index(1, hypervec::kMetricL2, ExhaustiveOptions());
+
+  EXPECT_THROW(index.BuildToFile(3, database.data(), node_file.Path().string()),
+               hypervec::HypervecException);
+
+  std::array<uint8_t, 4> contents{};
+  std::ifstream input(node_file.Path(), std::ios::binary);
+  input.read(reinterpret_cast<char*>(contents.data()),
+             static_cast<std::streamsize>(contents.size()));
+  EXPECT_EQ(contents, sentinel);
+  EXPECT_FALSE(
+      std::filesystem::exists(node_file.Path().string() + ".hypervec.tmp"));
+  EXPECT_EQ(index.n_total, 0);
+
+  const hypervec::DiskAnnNodeLayout layout(2, 1, 1, 64);
+  const std::array<float, 2> finite_vectors = {0.0F, 1.0F};
+  const hypervec::MutableBoundedGraph wrong_graph(1, 1);
+  EXPECT_THROW(
+      hypervec::WriteDiskAnnNodesToFile(layout, finite_vectors.data(),
+                                        wrong_graph, node_file.Path().string()),
+      hypervec::HypervecException);
+  contents = {};
+  std::ifstream second_input(node_file.Path(), std::ios::binary);
+  second_input.read(reinterpret_cast<char*>(contents.data()),
+                    static_cast<std::streamsize>(contents.size()));
+  EXPECT_EQ(contents, sentinel);
+  EXPECT_FALSE(
+      std::filesystem::exists(node_file.Path().string() + ".hypervec.tmp"));
 }

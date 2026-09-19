@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <utility>
 
 namespace hypervec {
@@ -106,5 +107,10 @@ class PagedVectorStorage {
 /** Write validated vectors and adjacency into a page-aligned node payload. */
 void WriteDiskAnnNodes(const DiskAnnNodeLayout& layout, const float* vectors,
                        const GraphStorage& graph, IOWriter* writer);
+
+/** Atomically replace a node-data file after the full write succeeds. */
+void WriteDiskAnnNodesToFile(const DiskAnnNodeLayout& layout,
+                             const float* vectors, const GraphStorage& graph,
+                             const std::string& filename);
 
 }  // namespace hypervec

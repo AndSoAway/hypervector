@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace hypervec {
 
@@ -46,9 +47,8 @@ struct DiskAnnIndexOptions {
 /** Static DiskANN index composed from Vamana, paged storage, and reranking.
  *
  * Build first validates a full-precision in-memory Vamana graph, then emits
- * page-aligned node records. This core owns an embedded random-access backing
- * store; a later storage adapter can restore the same layout from a file
- * without changing search semantics.
+ * page-aligned node records. Build owns an embedded random-access backing
+ * store; BuildToFile and RestoreState use caller-owned durable node files.
  */
 class IndexDiskANN : public Index {
  public:
@@ -64,11 +64,22 @@ class IndexDiskANN : public Index {
   void Build(idx_t n, const float* x) override;
   void Build(idx_t n, const float* x, idx_t n_train_q,
              const float* xq_train) override;
+  void BuildToFile(idx_t n, const float* x, const std::string& filename);
   void Add(idx_t n, const float* x) override;
   void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
   void Reset() override;
   void Reconstruct(idx_t key, float* recons) const override;
+
+  /** Replace live node data and traversal codes after external decoding.
+   *
+   * The reader is retained through shared ownership. Inputs are validated
+   * before live state is changed. Diagnostic I/O counters and the page cache
+   * start cold after validation.
+   */
+  void RestoreState(InMemoryCodeStore code_store,
+                    std::shared_ptr<RandomAccessReader> reader,
+                    GraphId entry_point);
 
   const DiskAnnIndexOptions& Options() const noexcept { return options_; }
   const Quantizer& QuantizerModel() const noexcept { return *quantizer_; }
@@ -84,6 +95,7 @@ class IndexDiskANN : public Index {
   void ResetIOStats() const noexcept;
 
  private:
+  void BuildImpl(idx_t n, const float* x, const std::string* filename);
   void ValidateAlignedState() const;
 
   DiskAnnIndexOptions options_;

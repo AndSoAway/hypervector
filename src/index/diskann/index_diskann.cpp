@@ -7,6 +7,7 @@
  */
 
 #include <index/diskann/index_diskann.h>
+#include <index/graph/graph_validation.h>
 #include <index/vamana/index_vamana.h>
 #include <persistence/io.h>
 #include <utils/log/assert.h>
@@ -16,6 +17,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -95,7 +97,18 @@ void IndexDiskANN::Train(idx_t n, const float* x) {
       is_trained, "IndexDiskANN::Train: quantizer did not become trained");
 }
 
-void IndexDiskANN::Build(idx_t n, const float* x) {
+void IndexDiskANN::Build(idx_t n, const float* x) { BuildImpl(n, x, nullptr); }
+
+void IndexDiskANN::BuildToFile(idx_t n, const float* x,
+                               const std::string& filename) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !filename.empty(),
+      "IndexDiskANN::BuildToFile: filename must not be empty");
+  BuildImpl(n, x, &filename);
+}
+
+void IndexDiskANN::BuildImpl(idx_t n, const float* x,
+                             const std::string* filename) {
   HYPERVEC_THROW_IF_NOT_MSG(n_total == 0,
                             "IndexDiskANN::Build: index must be empty");
   HYPERVEC_THROW_IF_NOT_FMT(
@@ -128,10 +141,16 @@ void IndexDiskANN::Build(idx_t n, const float* x) {
   DiskAnnNodeLayout staged_layout(static_cast<size_t>(n),
                                   static_cast<size_t>(d), options_.max_degree,
                                   options_.page_size);
-  VectorIOWriter writer;
-  WriteDiskAnnNodes(staged_layout, x, scaffold.Graph(), &writer);
-  auto staged_reader =
-      std::make_shared<VectorRandomAccessReader>(std::move(writer.data));
+  std::shared_ptr<RandomAccessReader> staged_reader;
+  if (filename == nullptr) {
+    VectorIOWriter writer;
+    WriteDiskAnnNodes(staged_layout, x, scaffold.Graph(), &writer);
+    staged_reader =
+        std::make_shared<VectorRandomAccessReader>(std::move(writer.data));
+  } else {
+    WriteDiskAnnNodesToFile(staged_layout, x, scaffold.Graph(), *filename);
+    staged_reader = std::make_shared<FileRandomAccessReader>(*filename);
+  }
   auto staged_cache = std::make_shared<PageCache>(
       staged_reader, options_.page_size, options_.cache_capacity_pages);
   auto staged_graph = std::make_unique<PagedGraphStorage>(
@@ -251,6 +270,69 @@ void IndexDiskANN::Reconstruct(idx_t key, float* recons) const {
   const DiskAnnVectorView vector =
       raw_vectors_->Vector(static_cast<GraphId>(key));
   std::memcpy(recons, vector.data(), vector.size() * sizeof(float));
+}
+
+void IndexDiskANN::RestoreState(InMemoryCodeStore code_store,
+                                std::shared_ptr<RandomAccessReader> reader,
+                                GraphId entry_point) {
+  const idx_t restored_total = code_store.Size();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_store.CodeSize() == quantizer_->CodeSize(),
+      "IndexDiskANN::RestoreState: code size does not match the quantizer");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      quantizer_->IsTrained(),
+      "IndexDiskANN::RestoreState: quantizer must be trained");
+  if (restored_total == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        reader == nullptr && entry_point == kInvalidGraphId,
+        "IndexDiskANN::RestoreState: empty state requires no reader or entry "
+        "point");
+    Reset();
+    code_store_ = std::move(code_store);
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      reader != nullptr,
+      "IndexDiskANN::RestoreState: node reader must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      entry_point >= 0 && entry_point < restored_total,
+      "IndexDiskANN::RestoreState: entry point is outside the index");
+
+  DiskAnnNodeLayout staged_layout(static_cast<size_t>(restored_total),
+                                  static_cast<size_t>(d), options_.max_degree,
+                                  options_.page_size);
+  auto staged_cache = std::make_shared<PageCache>(
+      reader, options_.page_size, options_.cache_capacity_pages);
+  auto staged_graph = std::make_unique<PagedGraphStorage>(
+      staged_cache, static_cast<size_t>(restored_total), options_.max_degree,
+      staged_layout.RecordSize(), staged_layout.DegreeOffset());
+  auto staged_vectors =
+      std::make_unique<PagedVectorStorage>(staged_cache, staged_layout);
+  const GraphValidationReport report =
+      ValidateGraph(*staged_graph, entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid() &&
+          report.reachable_nodes == static_cast<size_t>(restored_total),
+      "IndexDiskANN::RestoreState: graph is invalid or unreachable");
+  const DiskAnnSearcher validated_searcher(*staged_graph, *staged_vectors,
+                                           *quantizer_, code_store.View(),
+                                           entry_point);
+  (void)validated_searcher;
+  staged_cache->Clear();
+  staged_cache->ResetStats();
+  reader->ResetStats();
+
+  code_store_ = std::move(code_store);
+  reader_ = std::move(reader);
+  cache_ = std::move(staged_cache);
+  graph_ = std::move(staged_graph);
+  raw_vectors_ = std::move(staged_vectors);
+  layout_ = staged_layout;
+  entry_point_ = entry_point;
+  build_stats_.Reset();
+  n_total = restored_total;
+  is_trained = quantizer_->IsTrained();
+  ValidateAlignedState();
 }
 
 PageCacheStats IndexDiskANN::CacheStats() const noexcept {

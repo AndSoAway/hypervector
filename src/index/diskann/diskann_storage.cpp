@@ -11,12 +11,22 @@
 #include <utils/log/assert.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace hypervec {
 namespace {
@@ -67,6 +77,35 @@ void ValidateGraph(const DiskAnnNodeLayout& layout, const GraphStorage& graph) {
           "WriteDiskAnnNodes: duplicate neighbors are not allowed");
     }
   }
+}
+
+void SyncFile(FILE* file) {
+  HYPERVEC_THROW_IF_NOT_FMT(std::fflush(file) == 0,
+                            "WriteDiskAnnNodesToFile: flush failed: %s",
+                            std::strerror(errno));
+#if defined(_WIN32)
+  HYPERVEC_THROW_IF_NOT_FMT(_commit(_fileno(file)) == 0,
+                            "WriteDiskAnnNodesToFile: sync failed: %s",
+                            std::strerror(errno));
+#else
+  HYPERVEC_THROW_IF_NOT_FMT(fsync(fileno(file)) == 0,
+                            "WriteDiskAnnNodesToFile: sync failed: %s",
+                            std::strerror(errno));
+#endif
+}
+
+void ReplaceFile(const std::string& source, const std::string& target) {
+#if defined(_WIN32)
+  HYPERVEC_THROW_IF_NOT_FMT(
+      MoveFileExA(source.c_str(), target.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0,
+      "WriteDiskAnnNodesToFile: replace failed with error %u",
+      static_cast<unsigned int>(GetLastError()));
+#else
+  HYPERVEC_THROW_IF_NOT_FMT(std::rename(source.c_str(), target.c_str()) == 0,
+                            "WriteDiskAnnNodesToFile: replace failed: %s",
+                            std::strerror(errno));
+#endif
 }
 
 }  // namespace
@@ -195,6 +234,38 @@ void WriteDiskAnnNodes(const DiskAnnNodeLayout& layout, const float* vectors,
       }
     }
     WriteExact(writer, page.data(), page.size());
+  }
+}
+
+void WriteDiskAnnNodesToFile(const DiskAnnNodeLayout& layout,
+                             const float* vectors, const GraphStorage& graph,
+                             const std::string& filename) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !filename.empty(), "WriteDiskAnnNodesToFile: filename must not be empty");
+  const std::string temporary = filename + ".hypervec.tmp";
+  FILE* file = std::fopen(temporary.c_str(), "wbx");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      file != nullptr,
+      "WriteDiskAnnNodesToFile: cannot create temporary file %s: %s",
+      temporary.c_str(), std::strerror(errno));
+  try {
+    {
+      FileIOWriter writer(file);
+      WriteDiskAnnNodes(layout, vectors, graph, &writer);
+    }
+    SyncFile(file);
+    const int close_result = std::fclose(file);
+    file = nullptr;
+    HYPERVEC_THROW_IF_NOT_FMT(close_result == 0,
+                              "WriteDiskAnnNodesToFile: close failed: %s",
+                              std::strerror(errno));
+    ReplaceFile(temporary, filename);
+  } catch (...) {
+    if (file != nullptr) {
+      std::fclose(file);
+    }
+    std::remove(temporary.c_str());
+    throw;
   }
 }
 

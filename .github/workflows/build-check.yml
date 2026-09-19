@@ -55,6 +55,17 @@ jobs:
             -DHYPERVEC_OPT_LEVEL=generic
           cmake --build build/core --parallel 2
 
+      - name: Test installed-package consumer
+        run: |
+          cmake --install build/core --prefix "${PWD}/build/install"
+          cmake -S test/consumer -B build/consumer -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${PWD}/build/install"
+          cmake --build build/consumer --parallel 2
+          ctest --test-dir build/consumer \
+            --output-on-failure \
+            --no-tests=error
+
       - name: Build tests and examples
         run: |
           cmake -S . -B build/development -G Ninja \

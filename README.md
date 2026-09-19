@@ -64,6 +64,24 @@ cmake -S . -B build/examples \
 cmake --build build/examples -j
 ```
 
+### Using an installed CMake package
+
+Install HyperVec into a prefix, then point a separate CMake project at that
+prefix:
+
+```bash
+cmake --install build/release --prefix /path/to/hypervec-install
+cmake -S /path/to/consumer -B build/consumer \
+  -DCMAKE_PREFIX_PATH=/path/to/hypervec-install
+```
+
+Consumers use the namespaced target instead of copying HyperVec link flags:
+
+```cmake
+find_package(hypervec 1.14 CONFIG REQUIRED)
+target_link_libraries(my_application PRIVATE hypervec::hypervec)
+```
+
 ## How HyperVec works
 
 HyperVec is built around an index type that stores a set of vectors, and provides a function to search in them with L2 and/or dot product vector comparison. Some index types are simple baselines, such as exact search. Most of the available indexing structures correspond to various trade-offs with respect to

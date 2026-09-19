@@ -14,16 +14,12 @@
 
 #include <index/index.h>
 #include <index/index_factory.h>
-#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
-#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
-#include <index/lsh/index_lsh.h>
-#include <index/nsg/index_nsg.h>
-#include <index/nsw/index_nsw.h>
+#include <index/search_parameters_factory.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -33,7 +29,6 @@
 #include <utils/structures/term_dictionary.h>
 
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -129,11 +124,6 @@ void index_build(hypervec::Index* index, PyObject* obj) {
   PyBuffer_Release(&view);
 }
 
-const hypervec::Index* index_parameter_target(const hypervec::Index* index) {
-  const auto* mapped = dynamic_cast<const hypervec::IndexIDMap*>(index);
-  return mapped != nullptr && mapped->index != nullptr ? mapped->index : index;
-}
-
 std::string read_python_string(PyObject* value, const char* context) {
   const char* text = PyUnicode_AsUTF8(value);
   if (text == nullptr) {
@@ -141,47 +131,6 @@ std::string read_python_string(PyObject* value, const char* context) {
     throw std::runtime_error(std::string(context) + " must be a string");
   }
   return text;
-}
-
-size_t read_positive_size(PyObject* value, const char* context) {
-  if (!PyLong_Check(value) || PyBool_Check(value)) {
-    throw std::runtime_error(std::string(context) + " must be an integer");
-  }
-  const unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
-  if (PyErr_Occurred()) {
-    PyErr_Clear();
-    throw std::runtime_error(std::string(context) +
-                             " must be a positive integer");
-  }
-  if (parsed == 0 || parsed > std::numeric_limits<size_t>::max()) {
-    throw std::runtime_error(std::string(context) +
-                             " must be a positive integer");
-  }
-  return static_cast<size_t>(parsed);
-}
-
-size_t read_nonnegative_size(PyObject* value, const char* context) {
-  if (!PyLong_Check(value) || PyBool_Check(value)) {
-    throw std::runtime_error(std::string(context) + " must be an integer");
-  }
-  const unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
-  if (PyErr_Occurred()) {
-    PyErr_Clear();
-    throw std::runtime_error(std::string(context) +
-                             " must be a non-negative integer");
-  }
-  if (parsed > std::numeric_limits<size_t>::max()) {
-    throw std::runtime_error(std::string(context) +
-                             " must be a non-negative integer");
-  }
-  return static_cast<size_t>(parsed);
-}
-
-bool read_python_bool(PyObject* value, const char* context) {
-  if (!PyBool_Check(value)) {
-    throw std::runtime_error(std::string(context) + " must be a bool");
-  }
-  return value == Py_True;
 }
 
 void set_index_parameters(hypervec::IndexConfig* config, PyObject* params) {
@@ -217,6 +166,33 @@ void set_index_parameters(hypervec::IndexConfig* config, PyObject* params) {
       throw std::runtime_error(
           "index parameter values must be bool, int, float, or string: " +
           name);
+    }
+  }
+}
+
+void set_search_parameters(hypervec::SearchConfig* config, PyObject* params) {
+  if (!PyDict_Check(params)) {
+    throw std::runtime_error("search parameters must be a dict");
+  }
+
+  PyObject* key = nullptr;
+  PyObject* value = nullptr;
+  Py_ssize_t position = 0;
+  while (PyDict_Next(params, &position, &key, &value)) {
+    const std::string name = read_python_string(key, "search parameter name");
+    if (PyBool_Check(value)) {
+      config->SetBoolean(name, value == Py_True);
+    } else if (PyLong_Check(value)) {
+      const int64_t integer = static_cast<int64_t>(PyLong_AsLongLong(value));
+      if (integer == -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::runtime_error("integer search parameter is out of range: " +
+                                 name);
+      }
+      config->SetInteger(name, integer);
+    } else {
+      throw std::runtime_error(
+          "search parameter values must be bool or int: " + name);
     }
   }
 }
@@ -580,79 +556,11 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
     if (!PyDict_Check(py_params)) {
       throw std::runtime_error("search_with_params: params must be a dict");
     }
-    const hypervec::Index* parameter_target = index_parameter_target($self);
-    if (const auto* diskann =
-            dynamic_cast<const hypervec::IndexDiskANN*>(parameter_target)) {
-      (void)diskann;
-      hypervec::SearchParametersDiskANN params;
-      PyObject* val = PyDict_GetItemString(py_params, "search_width");
-      if (val) params.search_width = read_positive_size(val, "search_width");
-      val = PyDict_GetItemString(py_params, "check_relative_distance");
-      if (val) {
-        params.check_relative_distance =
-            read_python_bool(val, "check_relative_distance");
-      }
-      return index_search_with_params($self, x, k, &params);
-    }
-    if (const auto* hnsw =
-            dynamic_cast<const hypervec::IndexHNSW*>(parameter_target)) {
-      (void)hnsw;
-      hypervec::SearchParametersHNSW params;
-      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
-      if (!val) val = PyDict_GetItemString(py_params, "ef");
-      if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
-      return index_search_with_params($self, x, k, &params);
-    }
-    if (const auto* nsw =
-            dynamic_cast<const hypervec::IndexNSW*>(parameter_target)) {
-      (void)nsw;
-      hypervec::SearchParametersNSW params;
-      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
-      if (!val) val = PyDict_GetItemString(py_params, "ef");
-      if (val) params.ef_search = read_positive_size(val, "ef_search");
-      val = PyDict_GetItemString(py_params, "check_relative_distance");
-      if (val) {
-        params.check_relative_distance =
-            read_python_bool(val, "check_relative_distance");
-      }
-      return index_search_with_params($self, x, k, &params);
-    }
-    if (const auto* nsg =
-            dynamic_cast<const hypervec::IndexNSG*>(parameter_target)) {
-      (void)nsg;
-      hypervec::SearchParametersNSG params;
-      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
-      if (!val) val = PyDict_GetItemString(py_params, "ef");
-      if (val) params.ef_search = read_positive_size(val, "ef_search");
-      val = PyDict_GetItemString(py_params, "check_relative_distance");
-      if (val) {
-        params.check_relative_distance =
-            read_python_bool(val, "check_relative_distance");
-      }
-      return index_search_with_params($self, x, k, &params);
-    }
-    if (const auto* lsh =
-            dynamic_cast<const hypervec::IndexLSH*>(parameter_target)) {
-      (void)lsh;
-      hypervec::SearchParametersLSH params;
-      PyObject* val = PyDict_GetItemString(py_params, "probe_count");
-      if (val) params.probe_count = read_positive_size(val, "probe_count");
-      val = PyDict_GetItemString(py_params, "candidate_limit");
-      if (val) {
-        params.candidate_limit =
-            read_nonnegative_size(val, "candidate_limit");
-      }
-      return index_search_with_params($self, x, k, &params);
-    }
-    if (const auto* ivf =
-            dynamic_cast<const hypervec::IndexIVF*>(parameter_target)) {
-      (void)ivf;
-      hypervec::IVFSearchParameters params;
-      PyObject* val = PyDict_GetItemString(py_params, "nprobe");
-      if (val) params.nprobe = static_cast<hypervec::idx_t>(PyLong_AsLong(val));
-      return index_search_with_params($self, x, k, &params);
-    }
-    return index_search_with_params($self, x, k, nullptr);
+    hypervec::SearchConfig config;
+    set_search_parameters(&config, py_params);
+    std::unique_ptr<hypervec::SearchParameters> params =
+        hypervec::CreateSearchParameters(*$self, config);
+    return index_search_with_params($self, x, k, params.get());
   }
 }
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 
 import numpy as np
@@ -12,10 +11,6 @@ class FakeIndexFlatL2:
         self.d = d
         self.is_trained = trained
         self.vectors = np.empty((0, d), dtype=np.float32)
-
-    @property
-    def n_total(self) -> int:
-        return int(self.vectors.shape[0])
 
     def train(self, x) -> None:
         self.is_trained = True
@@ -33,11 +28,6 @@ class FakeIndexFlatL2:
     def search_with_params(self, x, k: int, params: dict):
         return self.search(x, k)
 
-    def search_with_config(
-        self, x, k: int, index_config_json: str, search_config_json: str
-    ):
-        return self.search(x, k)
-
 
 class FakeHypervec:
     kMetricL2 = 1
@@ -46,12 +36,6 @@ class FakeHypervec:
     def __init__(self) -> None:
         self.saved_index = None
         self.constructor_calls = []
-
-    def create_index(self, config_json: str):
-        config = json.loads(config_json)
-        self.constructor_calls.append(("create_index", config))
-        trained = config["type"] in {"flat", "hnsw_flat", "nsw_flat"}
-        return FakeIndexFlatL2(int(config["dimension"]), trained=trained)
 
     def IndexFlatL2(self, d: int):
         self.constructor_calls.append(("IndexFlatL2", d))
@@ -75,10 +59,6 @@ class FakeHypervec:
 
     def IndexHNSWFlat(self, d: int, m_hnsw: int, metric: int):
         self.constructor_calls.append(("IndexHNSWFlat", d, m_hnsw, metric))
-        return FakeIndexFlatL2(d)
-
-    def IndexNSWFlat(self, d: int, m_nsw: int, metric: int):
-        self.constructor_calls.append(("IndexNSWFlat", d, m_nsw, metric))
         return FakeIndexFlatL2(d)
 
     def IndexHNSWLVQ(self, d: int, nlocal: int, nbits: int, m_hnsw: int, metric: int):
@@ -190,7 +170,7 @@ def test_hypervec_server_engine_create_insert_flush_load_search(tmp_path):
     assert not engine.has_collection("demo")
 
 
-def test_hypervec_server_engine_maps_supported_index_types_to_cpp_config(tmp_path):
+def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_path):
     module = load_engine_module()
     fake = FakeHypervec()
     engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
@@ -199,76 +179,32 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_config(tmp_pat
         (
             "IndexIVFFlat",
             {"nlist": 2},
-            {
-                "type": "ivf_flat",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"nlist": 2},
-            },
+            ("IndexIVFFlat", 4, 2, fake.kMetricL2),
         ),
         (
             "IndexIVFLVQ",
             {"nlist": 2, "nlocal": 2, "nbits": 1},
-            {
-                "type": "ivf_lvq",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"nlist": 2},
-                "storage": {"nlocal": 2, "nbits": 1},
-            },
+            ("IndexIVFLVQ", 4, 2, 2, 1, fake.kMetricL2),
         ),
         (
             "IndexIVFPQ",
             {"nlist": 2, "m_pq": 2, "nbits": 1},
-            {
-                "type": "ivf_pq",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"nlist": 2},
-                "storage": {"pq_m": 2, "nbits": 1},
-            },
+            ("IndexIVFPQ", 4, 2, 2, 1, fake.kMetricL2),
         ),
         (
             "IndexHNSWFlat",
             {"m_hnsw": 8},
-            {
-                "type": "hnsw_flat",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"graph_degree": 8},
-            },
+            ("IndexHNSWFlat", 4, 8, fake.kMetricL2),
         ),
         (
             "IndexHNSWLVQ",
             {"m_hnsw": 8, "nlocal": 2, "nbits": 1},
-            {
-                "type": "hnsw_lvq",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"graph_degree": 8},
-                "storage": {"nlocal": 2, "nbits": 1},
-            },
-        ),
-        (
-            "IndexNSWFlat",
-            {"m_nsw": 8},
-            {
-                "type": "nsw_flat",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"graph_degree": 8},
-            },
+            ("IndexHNSWLVQ", 4, 2, 1, 8, fake.kMetricL2),
         ),
         (
             "IndexHNSWPQ",
             {"m_hnsw": 8, "m_pq": 2, "nbits": 1},
-            {
-                "type": "hnsw_pq",
-                "dimension": 4,
-                "metric": "l2",
-                "build": {"graph_degree": 8},
-                "storage": {"pq_m": 2, "nbits": 1},
-            },
+            ("IndexHNSWPQ", 4, 2, 1, 8, fake.kMetricL2),
         ),
     ]
 
@@ -282,7 +218,7 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_config(tmp_pat
                 "params": params,
             },
         )
-        assert fake.constructor_calls[-1] == ("create_index", expected)
+        assert fake.constructor_calls[-1] == expected
 
 
 def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
@@ -302,30 +238,9 @@ def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
                 },
             )
         except ValueError as exc:
-            assert "use explicit m_hnsw, m_nsw, or m_pq" in str(exc)
+            assert "use explicit m_hnsw or m_pq" in str(exc)
         else:
             raise AssertionError(f"expected {bad_param} to be rejected")
-
-
-def test_hypervec_server_engine_rejects_unknown_index_params(tmp_path):
-    module = load_engine_module()
-    engine = module.HypervecServerEngine(
-        str(tmp_path), hypervec_module=FakeHypervec()
-    )
-
-    try:
-        engine._make_index(
-            4,
-            {
-                "metric_type": "L2",
-                "index_type": "IndexHNSWFlat",
-                "params": {"typo_degree": 8},
-            },
-        )
-    except ValueError as exc:
-        assert "unsupported index parameter(s): typo_degree" in str(exc)
-    else:
-        raise AssertionError("expected unknown index parameter to be rejected")
 
 
 def test_hypervec_server_engine_supported_index_examples_follow_exports():
@@ -339,7 +254,6 @@ def test_hypervec_server_engine_supported_index_examples_follow_exports():
         "IndexIVFFlat",
         "IndexIVFLVQ",
         "IndexIVFPQ",
-        "IndexNSWFlat",
         "IndexHNSWFlat",
         "IndexHNSWLVQ",
         "IndexHNSWPQ",
@@ -594,18 +508,14 @@ def test_engine_export_bundle_after_purge_raises_conflict(tmp_path):
 
 
 class _SpyIndex(FakeIndexFlatL2):
-    """Records JSON passed to the registry-backed search binding."""
+    """Records params passed to search_with_params to verify delegation."""
 
     def __init__(self, d: int) -> None:
         super().__init__(d)
         self.last_params: dict | None = None
-        self.last_index_config: dict | None = None
 
-    def search_with_config(
-        self, x, k: int, index_config_json: str, search_config_json: str
-    ):
-        self.last_index_config = json.loads(index_config_json)
-        self.last_params = json.loads(search_config_json)
+    def search_with_params(self, x, k: int, params: dict):
+        self.last_params = params
         return super().search(x, k)
 
 
@@ -622,68 +532,23 @@ def _make_engine_with_spy(tmp_path):
 def test_search_index_delegates_params_dict(tmp_path):
     engine, spy, _ = _make_engine_with_spy(tmp_path)
     query = np.array([[1.0, 0.0]], dtype=np.float32)
-    index_config = {"index_type": "HNSWFlat", "metric_type": "L2", "params": {}}
 
-    engine._search_index(
-        spy,
-        query,
-        k=1,
-        search_params={"ef_search": 50},
-        index_config=index_config,
-    )
+    engine._search_index(spy, query, k=1, search_params={"ef_search": 50})
     assert spy.last_params == {"ef_search": 50}
-    assert spy.last_index_config == {
-        "type": "hnsw_flat",
-        "dimension": 2,
-        "metric": "l2",
-    }
 
-    engine._search_index(
-        spy,
-        query,
-        k=1,
-        search_params={"ef": 8},
-        index_config=index_config,
-    )
-    assert spy.last_params == {"ef_search": 8}
-
-    engine._search_index(
-        spy, query, k=1, search_params={}, index_config=index_config
-    )
-    assert spy.last_params == {}
-
-    engine._search_index(
-        spy, query, k=1, search_params=None, index_config=index_config
-    )
-    assert spy.last_params == {}
-
-
-def test_search_index_preserves_ivf_runtime_config(tmp_path):
-    engine, spy, _ = _make_engine_with_spy(tmp_path)
-    query = np.array([[1.0, 0.0]], dtype=np.float32)
-    index_config = {
-        "index_type": "IndexIVFFlat",
-        "metric_type": "L2",
-        "params": {"nlist": 16},
-    }
-    engine._search_index(
-        spy,
-        query,
-        k=1,
-        search_params={"nprobe": 8},
-        index_config=index_config,
-    )
+    engine._search_index(spy, query, k=1, search_params={"nprobe": 8})
     assert spy.last_params == {"nprobe": 8}
-    assert spy.last_index_config["type"] == "ivf_flat"
-    assert spy.last_index_config["build"] == {"nlist": 16}
+
+    engine._search_index(spy, query, k=1, search_params={})
+    assert spy.last_params == {}
+
+    engine._search_index(spy, query, k=1, search_params=None)
+    assert spy.last_params == {}
 
 
-def test_search_index_requires_config(tmp_path):
+def test_search_index_unknown_params_ignored(tmp_path):
     engine, spy, _ = _make_engine_with_spy(tmp_path)
     query = np.array([[1.0, 0.0]], dtype=np.float32)
-    try:
-        engine._search_index(spy, query, k=1, search_params={})
-    except ValueError as exc:
-        assert "index_config is required" in str(exc)
-    else:
-        raise AssertionError("expected configured search to require index_config")
+    # Unknown param key must not raise; index decides what to do with it
+    engine._search_index(spy, query, k=1, search_params={"unknown_param": 99})
+    assert spy.last_params == {"unknown_param": 99}

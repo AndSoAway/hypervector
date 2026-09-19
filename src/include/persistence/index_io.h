@@ -11,9 +11,6 @@
 #ifndef HYPERVEC_INDEX_IO_H
 #define HYPERVEC_INDEX_IO_H
 
-#include <factory/index_config.h>
-
-#include <cstdint>
 #include <cstdio>
 #include <memory>
 
@@ -38,27 +35,6 @@ struct IOWriter;
 
 const int IO_FLAG_MMAP_IFC = 1 << 9;
 
-inline constexpr uint16_t kIndexFileFormatMajor = 2;
-inline constexpr uint16_t kIndexFileFormatMinor = 0;
-inline constexpr uint32_t kIndexAlgorithmVersion = 1;
-
-/** Version and normalized construction metadata carried by an index file.
- *
- * Version-2 files store this metadata in a checksummed envelope before the
- * existing algorithm payload. Legacy files have format_major=1,
- * algorithm_version=0, and metadata inferred from the loaded payload.
- */
-struct IndexFileMetadata {
-  uint16_t format_major = kIndexFileFormatMajor;
-  uint16_t format_minor = kIndexFileFormatMinor;
-  uint32_t algorithm_version = kIndexAlgorithmVersion;
-  IndexConfig config;
-  bool is_legacy = false;
-};
-
-/** Describe the normalized configuration that would be persisted for index. */
-IndexFileMetadata GetIndexFileMetadata(const Index& index);
-
 void WriteIndex(const Index* idx, const char* fname, int io_flags = 0);
 void WriteIndex(const Index* idx, FILE* f, int io_flags = 0);
 void WriteIndex(const Index* idx, IOWriter* writer, int io_flags = 0);
@@ -71,17 +47,6 @@ std::unique_ptr<Index> ReadIndexUp(const char* fname, int io_flags = 0);
 std::unique_ptr<Index> ReadIndexUp(FILE* f, int io_flags = 0);
 std::unique_ptr<Index> ReadIndexUp(IOReader* reader, int io_flags = 0);
 
-/** Read an index and return its file metadata through metadata when non-null.
- */
-std::unique_ptr<Index> ReadIndexUp(const char* fname,
-                                   IndexFileMetadata* metadata,
-                                   int io_flags = 0);
-std::unique_ptr<Index> ReadIndexUp(FILE* f, IndexFileMetadata* metadata,
-                                   int io_flags = 0);
-std::unique_ptr<Index> ReadIndexUp(IOReader* reader,
-                                   IndexFileMetadata* metadata,
-                                   int io_flags = 0);
-
 ProductQuantizer* read_ProductQuantizer(const char* fname);
 ProductQuantizer* read_ProductQuantizer(IOReader* reader);
 std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(const char* fname);
@@ -92,9 +57,9 @@ void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f);
 LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname);
 LocalVectorQuantizer* read_LocalVectorQuantizer(IOReader* reader);
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-    const char* fname);
+  const char* fname);
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-    IOReader* reader);
+  IOReader* reader);
 void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq,
                                 const char* fname);
 void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq, IOWriter* f);

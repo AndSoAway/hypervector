@@ -58,10 +58,6 @@ struct IndexHNSWPQ : IndexHNSW {
 
   ~IndexHNSWPQ() override;
 
-  std::string_view TypeName() const noexcept override { return "hnsw_pq"; }
-
-  IndexCapabilities Capabilities() const noexcept override;
-
   /// Train the embedded ProductQuantizer. The IndexFlatL2 scaffold is
   /// self-trained (no codebook).
   void Train(idx_t n, const float* x) override;

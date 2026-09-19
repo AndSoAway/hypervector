@@ -229,8 +229,8 @@ TEST(ProductQuantizer, EncodeDecodeRoundtripIsCentroidExact) {
   // is now exactly its own nearest centroid).
   const hypervec::idx_t d = 8, M = 4;
   const int nbits = 5;  // ksub=32, generic bit-packing path
-  const std::vector<float> x = MakeClusteredData(d, 32, 7, 23);
-  const hypervec::idx_t n = static_cast<hypervec::idx_t>(x.size()) / d;
+  const hypervec::idx_t n = 200;
+  const std::vector<float> x = MakeClusteredData(d, 32, n / 32, 23);
 
   hypervec::ProductQuantizer pq(d, M, nbits);
   pq.Train(n, x.data());
@@ -255,8 +255,8 @@ TEST(ProductQuantizer, DistanceTableEqualsFvecL2) {
   // dis_table[m, k] must equal fvec_L2sqr(query_subvector_m, centroid_{m,k}).
   const hypervec::idx_t d = 16, M = 4;
   const int nbits = 6;
+  const hypervec::idx_t n_train = 1000;
   const std::vector<float> xt = MakeClusteredData(d, 64, 16, 1);
-  const hypervec::idx_t n_train = static_cast<hypervec::idx_t>(xt.size()) / d;
 
   hypervec::ProductQuantizer pq(d, M, nbits);
   pq.Train(n_train, xt.data());
@@ -287,8 +287,8 @@ TEST(ProductQuantizer, AdcSumEqualsL2OfDecodedVector) {
   // because each subvector contributes independently to L2².
   const hypervec::idx_t d = 16, M = 4;
   const int nbits = 8;
-  const std::vector<float> x = MakeClusteredData(d, 64, 16, 41);
-  const hypervec::idx_t n = static_cast<hypervec::idx_t>(x.size()) / d;
+  const hypervec::idx_t n = 1000;
+  const std::vector<float> x = MakeClusteredData(d, 64, n / 64, 41);
 
   hypervec::ProductQuantizer pq(d, M, nbits);
   pq.Train(n, x.data());

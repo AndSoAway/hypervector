@@ -8,13 +8,12 @@
  * HNSW-only index write implementation
  */
 
+#include <utils/log/assert.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
-#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
-#include <index/nsw/index_nsw.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -25,15 +24,11 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
-#include <utils/log/assert.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <vector>
-
-#include "persistence/index_file_header.h"
 
 namespace hypervec {
 
@@ -73,7 +68,7 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITE1(hnsw.max_level);
   WRITE1(hnsw.entry_point);
   int nb_levels =
-      hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
+    hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
   WRITE1(nb_levels);
   WRITEVECTOR(hnsw.cum_nneighbor_per_level);
   WRITEVECTOR(hnsw.levels);
@@ -81,29 +76,8 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITEVECTOR(hnsw.offsets);
 }
 
-static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
+void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   (void)io_flags;
-
-  const IndexIDMap* id_map = dynamic_cast<const IndexIDMap*>(index);
-  if (id_map) {
-    HYPERVEC_THROW_IF_NOT_MSG(id_map->index != nullptr,
-                              "IndexIDMap serialize: underlying index is null");
-    id_map->check_consistency();
-
-    std::vector<idx_t> external_ids(static_cast<size_t>(id_map->n_total), -1);
-    for (const auto& entry : id_map->id_map) {
-      external_ids[static_cast<size_t>(entry.second)] = entry.first;
-    }
-
-    uint32_t h = fourcc("IDMp");
-    WRITE1(h);
-    write_index_header(*id_map, f);
-    const uint8_t maintain_rev_map = id_map->maintain_rev_map ? 1 : 0;
-    WRITE1(maintain_rev_map);
-    WRITEVECTOR(external_ids);
-    write_index_payload(id_map->index, f, 0);
-    return;
-  }
 
   const IndexHNSWFlat* hnswflat = dynamic_cast<const IndexHNSWFlat*>(index);
   if (hnswflat) {
@@ -112,25 +86,8 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*hnswflat, f);
     write_HNSW(hnswflat->hnsw, f);
     if (hnswflat->storage) {
-      write_index_payload(hnswflat->storage, f, 0);
+      WriteIndex(hnswflat->storage, f, 0);
     }
-    return;
-  }
-
-  const IndexNSWFlat* nswflat = dynamic_cast<const IndexNSWFlat*>(index);
-  if (nswflat) {
-    nswflat->CheckConsistency();
-    const uint32_t h = fourcc("INSW");
-    WRITE1(h);
-    write_index_header(*nswflat, f);
-    WRITE1(nswflat->graph_degree);
-    WRITE1(nswflat->ef_construction);
-    WRITE1(nswflat->ef_search);
-    WRITE1(nswflat->entry_point);
-    WRITEVECTOR(nswflat->storage.codes);
-    const CsrGraph persisted_graph(nswflat->graph);
-    WRITEVECTOR(persisted_graph.Offsets());
-    WRITEVECTOR(persisted_graph.Edges());
     return;
   }
 
@@ -141,7 +98,7 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*hnswpq, f);
     write_HNSW(hnswpq->hnsw, f);
     HYPERVEC_THROW_IF_NOT(hnswpq->storage != nullptr);
-    write_index_payload(hnswpq->storage, f, 0);
+    WriteIndex(hnswpq->storage, f, 0);
     return;
   }
 
@@ -152,7 +109,7 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*hnswlvq, f);
     write_HNSW(hnswlvq->hnsw, f);
     HYPERVEC_THROW_IF_NOT(hnswlvq->storage != nullptr);
-    write_index_payload(hnswlvq->storage, f, 0);
+    WriteIndex(hnswlvq->storage, f, 0);
     return;
   }
 
@@ -163,7 +120,7 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*hnsw, f);
     write_HNSW(hnsw->hnsw, f);
     if (hnsw->storage) {
-      write_index_payload(hnsw->storage, f, 0);
+      WriteIndex(hnsw->storage, f, 0);
     }
     return;
   }
@@ -285,16 +242,6 @@ static void write_index_payload(const Index* index, IOWriter* f, int io_flags) {
   }
 
   HYPERVEC_THROW_MSG("unsupported index type for writing");
-}
-
-void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
-  HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
-                            "WriteIndex: index must not be null");
-  HYPERVEC_THROW_IF_NOT_MSG(f != nullptr,
-                            "WriteIndex: writer must not be null");
-  const IndexFileMetadata metadata = GetIndexFileMetadata(*index);
-  persistence_detail::WriteIndexFileHeader(metadata, f);
-  write_index_payload(index, f, io_flags);
 }
 
 void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f) {

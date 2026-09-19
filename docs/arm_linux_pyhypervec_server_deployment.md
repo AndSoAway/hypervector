@@ -153,9 +153,13 @@ PYTHON_BIN=$HOME/opt/python-3.12/bin/python3.12 \
 bash scripts/build_arm_pyhypervec_server.sh
 ```
 
-当前 CMake 构建只支持 `HYPERVEC_OPT_LEVEL=generic`。`sve` 对应的核心库与
-Python 扩展目标尚未实现，因此脚本会在配置前明确拒绝该值，而不会在链接阶段
-才失败。
+如果 CPU 支持 SVE：
+
+```bash
+HYPERVEC_OPT_LEVEL=sve \
+PYTHON_BIN=$HOME/opt/python-3.12/bin/python3.12 \
+bash scripts/build_arm_pyhypervec_server.sh
+```
 
 如果只想构建安装，不启动 server：
 

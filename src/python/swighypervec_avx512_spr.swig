@@ -14,6 +14,7 @@
 
 #include <index/index.h>
 #include <index/index_factory.h>
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
@@ -580,6 +581,19 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
       throw std::runtime_error("search_with_params: params must be a dict");
     }
     const hypervec::Index* parameter_target = index_parameter_target($self);
+    if (const auto* diskann =
+            dynamic_cast<const hypervec::IndexDiskANN*>(parameter_target)) {
+      (void)diskann;
+      hypervec::SearchParametersDiskANN params;
+      PyObject* val = PyDict_GetItemString(py_params, "search_width");
+      if (val) params.search_width = read_positive_size(val, "search_width");
+      val = PyDict_GetItemString(py_params, "check_relative_distance");
+      if (val) {
+        params.check_relative_distance =
+            read_python_bool(val, "check_relative_distance");
+      }
+      return index_search_with_params($self, x, k, &params);
+    }
     if (const auto* hnsw =
             dynamic_cast<const hypervec::IndexHNSW*>(parameter_target)) {
       (void)hnsw;

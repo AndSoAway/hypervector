@@ -208,7 +208,18 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
   GraphSearchStats local_stats;
   local_stats.queries = 1;
   local_stats.distance_computations = seed_distance_computations;
-  visited->advance();
+  if (options.advance_visited) {
+    visited->advance();
+  }
+
+  const size_t relative_distance_limit =
+      options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound &&
+              options.relative_distance_limit != 0
+          ? options.relative_distance_limit
+          : options.ef_search;
+  const size_t navigation_bound_limit = options.check_relative_distance
+                                            ? relative_distance_limit
+                                            : options.ef_search;
 
   CandidateQueue candidates(options.max_candidates);
   std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
@@ -251,7 +262,7 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
 
     add_result(candidate);
     const bool within_frontier =
-        navigation_bound.size() < options.ef_search ||
+        navigation_bound.size() < navigation_bound_limit ||
         candidate.distance < navigation_bound.top().distance;
     if (!within_frontier) {
       return;
@@ -262,7 +273,7 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
     local_stats.peak_candidates =
         std::max(local_stats.peak_candidates, candidates.Size());
     navigation_bound.push(candidate);
-    if (navigation_bound.size() > options.ef_search) {
+    if (navigation_bound.size() > navigation_bound_limit) {
       navigation_bound.pop();
     }
     graph_.Prefetch(id);
@@ -297,7 +308,7 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
             ? navigation_bound
             : results;
     if (options.check_relative_distance &&
-        frontier.size() >= options.ef_search &&
+        frontier.size() >= relative_distance_limit &&
         current.distance > frontier.top().distance) {
       stopped_early = true;
       break;

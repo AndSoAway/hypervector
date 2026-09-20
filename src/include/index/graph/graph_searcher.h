@@ -37,6 +37,10 @@ struct GraphSearchOptions {
   size_t max_expansions = 0;
   /** Maximum pending candidates, or zero for an unbounded candidate queue. */
   size_t max_candidates = 0;
+  /** kNavigationBound relative-distance window, or zero to use ef_search. */
+  size_t relative_distance_limit = 0;
+  /** Start a fresh visited-table epoch before searching. */
+  bool advance_visited = true;
 };
 
 struct GraphSearchStats {

@@ -923,12 +923,14 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
   bool check_relative_distance = this->check_relative_distance;
   if (params) {
     if (const SearchParametersHNSW* hnsw_params =
-          dynamic_cast<const SearchParametersHNSW*>(params)) {
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
       bounded_queue = hnsw_params->bounded_queue;
       ef_search = hnsw_params->ef_search;
       check_relative_distance = hnsw_params->check_relative_distance;
     }
   }
+  HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                            "HNSW::Search: ef_search must be positive");
 
   //  greedy Search on upper levels
   storage_idx_t nearest = entry_point;
@@ -936,7 +938,7 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
 
   for (int level = max_level; level >= 1; level--) {
     HNSWStats local_stats =
-      GreedyUpdateNearest(*this, qdis, level, nearest, d_nearest);
+        GreedyUpdateNearest(*this, qdis, level, nearest, d_nearest);
     stats.combine(local_stats);
   }
 
@@ -961,6 +963,8 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
             ? 0
             : static_cast<size_t>(std::max(ef_search, 0)) + 1;
     options.max_candidates = bounded_queue ? static_cast<size_t>(ef) : 0;
+    options.relative_distance_limit = static_cast<size_t>(ef_search);
+    options.advance_visited = false;
     GraphSearchStats graph_stats;
     const std::vector<GraphSearchResult> results =
         searcher.Search(qdis, seeds, options, &vt, &graph_stats);
@@ -982,61 +986,81 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
 }
 
 void HNSW::SearchLevel0(DistanceComputer& qdis, ResultHandler& res,
-                          idx_t nprobe, const storage_idx_t* nearest_i,
-                          const float* nearest_d, int search_type,
-                          HNSWStats& search_stats, VisitedTable& vt,
-                          const SearchParameters* params) const {
-  const HNSW& hnsw = *this;
-
-  auto ef_search = hnsw.ef_search;
+                        idx_t nprobe, const storage_idx_t* nearest_i,
+                        const float* nearest_d, int search_type,
+                        HNSWStats& search_stats, VisitedTable& vt,
+                        const SearchParameters* params) const {
+  int ef_search = this->ef_search;
+  bool check_relative_distance = this->check_relative_distance;
   if (params) {
     if (const SearchParametersHNSW* hnsw_params =
-          dynamic_cast<const SearchParametersHNSW*>(params)) {
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
       ef_search = hnsw_params->ef_search;
+      check_relative_distance = hnsw_params->check_relative_distance;
     }
   }
+  HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                            "HNSW::SearchLevel0: ef_search must be positive");
 
-  int k = extract_k_from_ResultHandler(res);
+  const int k = extract_k_from_ResultHandler(res);
+  const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
+  const GraphSearcher searcher(graph);
+  const auto search_from_seeds = [&](std::span<const GraphSearchSeed> seeds,
+                                     int candidate_capacity) {
+    GraphSearchOptions options;
+    options.ef_search = static_cast<size_t>(candidate_capacity);
+    options.check_relative_distance = check_relative_distance;
+    options.selector = params == nullptr ? nullptr : params->sel;
+    options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+    options.max_expansions =
+        check_relative_distance ? 0 : static_cast<size_t>(ef_search) + 1;
+    options.max_candidates = static_cast<size_t>(candidate_capacity);
+    options.relative_distance_limit = static_cast<size_t>(ef_search);
+    options.advance_visited = false;
+
+    GraphSearchStats graph_stats;
+    const std::vector<GraphSearchResult> results =
+        searcher.Search(qdis, seeds, options, &vt, &graph_stats);
+    for (const GraphSearchResult& result : results) {
+      res.AddResult(result.distance, result.id);
+    }
+    search_stats.n1 += graph_stats.queries;
+    search_stats.n2 += graph_stats.exhausted_queries;
+    search_stats.ndis += graph_stats.distance_computations;
+    search_stats.nhops += graph_stats.expanded_nodes;
+  };
 
   if (search_type == 1) {
-    int nres = 0;
-
     for (int j = 0; j < nprobe; j++) {
-      storage_idx_t cj = nearest_i[j];
+      const storage_idx_t candidate = nearest_i[j];
 
-      if (cj < 0) {
+      if (candidate < 0) {
         break;
       }
-
-      if (vt.get(cj)) {
+      if (vt.get(candidate)) {
         continue;
       }
 
-      int candidates_size = std::max(ef_search, k);
-      MinimaxHeap candidates(candidates_size);
-
-      candidates.push(cj, nearest_d[j]);
-
-      nres = SearchFromCandidates(hnsw, qdis, res, candidates, vt,
-                                    search_stats, 0, nres, params);
-      nres = std::min(nres, candidates_size);
+      const int candidate_capacity = std::max(ef_search, k);
+      const std::array<GraphSearchSeed, 1> seed = {
+          GraphSearchSeed{candidate, nearest_d[j]}};
+      search_from_seeds(seed, candidate_capacity);
     }
   } else if (search_type == 2) {
-    int candidates_size = std::max(ef_search, int(k));
-    candidates_size = std::max(candidates_size, int(nprobe));
-
-    MinimaxHeap candidates(candidates_size);
+    const int candidate_capacity =
+        std::max(std::max(ef_search, k), static_cast<int>(nprobe));
+    std::vector<GraphSearchSeed> seeds;
+    if (nprobe > 0) {
+      seeds.reserve(static_cast<size_t>(nprobe));
+    }
     for (int j = 0; j < nprobe; j++) {
-      storage_idx_t cj = nearest_i[j];
-
-      if (cj < 0) {
+      const storage_idx_t candidate = nearest_i[j];
+      if (candidate < 0) {
         break;
       }
-      candidates.push(cj, nearest_d[j]);
+      seeds.push_back({candidate, nearest_d[j]});
     }
-
-    SearchFromCandidates(hnsw, qdis, res, candidates, vt, search_stats, 0, 0,
-                           params);
+    search_from_seeds(seeds, candidate_capacity);
   }
 }
 

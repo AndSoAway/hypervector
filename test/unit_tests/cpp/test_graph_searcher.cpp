@@ -317,6 +317,32 @@ TEST(GraphSearcher, CandidateCapacityBoundsPendingExpansions) {
   EXPECT_EQ(stats.exhausted_queries, 1U);
 }
 
+TEST(GraphSearcher, CallerCanReuseAnExistingVisitedEpoch) {
+  hypervec::MutableBoundedGraph graph(3, 1);
+  const std::array<hypervec::GraphId, 1> zero = {1};
+  const std::array<hypervec::GraphId, 1> one = {2};
+  graph.SetNeighbors(0, zero);
+  graph.SetNeighbors(1, one);
+  ScalarDistanceComputer distance({0.0F, 1.0F, 2.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  const std::array<hypervec::GraphId, 1> entry = {0};
+  hypervec::VisitedTable visited(graph.NodeCount(), false);
+  ASSERT_TRUE(visited.set(1));
+  hypervec::GraphSearchOptions options;
+  options.ef_search = graph.NodeCount();
+  options.check_relative_distance = false;
+  options.advance_visited = false;
+  const hypervec::GraphSearcher searcher(graph);
+
+  const auto results = searcher.Search(distance, entry, options, &visited);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_EQ(results[0].id, 0);
+  EXPECT_TRUE(visited.get(1));
+  EXPECT_FALSE(visited.get(2));
+}
+
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   hypervec::MutableBoundedGraph graph(2, 1);
   ScalarDistanceComputer distance({0.0F, 1.0F});

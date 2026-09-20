@@ -244,6 +244,105 @@ TEST(HNSWGraphStorage, DisabledRelativeCheckUsesRuntimeExpansionBudget) {
   EXPECT_EQ(stats.nhops, 2U);
 }
 
+TEST(HNSWGraphStorage, RuntimeEfControlsRelativeTerminationWhenKIsLarger) {
+  hypervec::HNSW hnsw = MakeLayeredGraph();
+  hnsw.entry_point = 0;
+  hnsw.max_level = 0;
+  LineDistance distance({0.0F, 2.0F, 5.0F, 9.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+
+  constexpr int k = 3;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+  using ResultHandler = hypervec::HeapBlockResultHandler<hypervec::HNSW::C>;
+  ResultHandler block(1, distances.data(), labels.data(), k);
+  ResultHandler::SingleResultHandler result(block);
+  hypervec::VisitedTable visited(hnsw.levels.size());
+  hypervec::SearchParametersHNSW options;
+  options.ef_search = 1;
+  options.check_relative_distance = true;
+  options.bounded_queue = true;
+
+  result.begin(0);
+  const hypervec::HNSWStats stats =
+      hnsw.Search(distance, nullptr, result, visited, &options);
+  result.end();
+
+  EXPECT_EQ(stats.nhops, 1U);
+  EXPECT_EQ(labels[0], 0);
+  EXPECT_EQ(labels[1], 1);
+}
+
+TEST(HNSWGraphStorage, SharedLevel0SearchMatchesNativeTraversal) {
+  hypervec::HNSW hnsw = MakeLayeredGraph();
+  LineDistance distance({0.0F, 2.0F, 5.0F, 9.0F});
+  const float query = 4.0F;
+  distance.SetQuery(&query);
+  constexpr int k = 2;
+  constexpr int nprobe = 2;
+  const std::array<hypervec::HNSW::storage_idx_t, nprobe> entries = {0, 3};
+  const std::array<float, nprobe> entry_distances = {4.0F, 5.0F};
+  hypervec::SearchParametersHNSW options;
+  options.ef_search = 2;
+  options.check_relative_distance = true;
+
+  using ResultHandler = hypervec::HeapBlockResultHandler<hypervec::HNSW::C>;
+  for (int search_type : {1, 2}) {
+    std::array<float, k> common_distances{};
+    std::array<hypervec::idx_t, k> common_labels{};
+    ResultHandler common_block(1, common_distances.data(), common_labels.data(),
+                               k);
+    ResultHandler::SingleResultHandler common_result(common_block);
+    hypervec::VisitedTable common_visited(hnsw.levels.size());
+    hypervec::HNSWStats common_stats;
+    common_result.begin(0);
+    hnsw.SearchLevel0(distance, common_result, nprobe, entries.data(),
+                      entry_distances.data(), search_type, common_stats,
+                      common_visited, &options);
+    common_result.end();
+
+    std::array<float, k> native_distances{};
+    std::array<hypervec::idx_t, k> native_labels{};
+    ResultHandler native_block(1, native_distances.data(), native_labels.data(),
+                               k);
+    ResultHandler::SingleResultHandler native_result(native_block);
+    hypervec::VisitedTable native_visited(hnsw.levels.size());
+    hypervec::HNSWStats native_stats;
+    native_result.begin(0);
+    if (search_type == 1) {
+      int result_count = 0;
+      for (int probe = 0; probe < nprobe; ++probe) {
+        if (native_visited.get(entries[probe])) {
+          continue;
+        }
+        hypervec::HNSW::MinimaxHeap candidates(options.ef_search);
+        candidates.push(entries[probe], entry_distances[probe]);
+        result_count = hypervec::SearchFromCandidates(
+            hnsw, distance, native_result, candidates, native_visited,
+            native_stats, 0, result_count, &options);
+        result_count = std::min(result_count, options.ef_search);
+      }
+    } else {
+      hypervec::HNSW::MinimaxHeap candidates(nprobe);
+      for (int probe = 0; probe < nprobe; ++probe) {
+        candidates.push(entries[probe], entry_distances[probe]);
+      }
+      hypervec::SearchFromCandidates(hnsw, distance, native_result, candidates,
+                                     native_visited, native_stats, 0, 0,
+                                     &options);
+    }
+    native_result.end();
+
+    EXPECT_EQ(common_labels, native_labels);
+    EXPECT_EQ(common_distances, native_distances);
+    EXPECT_EQ(common_stats.n1, native_stats.n1);
+    EXPECT_EQ(common_stats.n2, native_stats.n2);
+    EXPECT_EQ(common_stats.ndis, native_stats.ndis);
+    EXPECT_EQ(common_stats.nhops, native_stats.nhops);
+  }
+}
+
 TEST(HNSWGraphStorage, RejectsInvalidLayersAndMutatedLayouts) {
   hypervec::HNSW hnsw = MakeLayeredGraph();
   EXPECT_THROW((hypervec::HNSWGraphStorage(hnsw, -1)),

@@ -33,6 +33,9 @@ struct LocalVectorQuantizer;
 struct IOReader;
 struct IOWriter;
 
+/** Keep compatible code and graph arrays as read-only views of the source
+ * file. The returned index retains the mapping lifetime and must not be
+ * mutated. Only file-backed readers support this flag. */
 const int IO_FLAG_MMAP_IFC = 1 << 9;
 
 void WriteIndex(const Index* idx, const char* fname, int io_flags = 0);
@@ -57,9 +60,9 @@ void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f);
 LocalVectorQuantizer* read_LocalVectorQuantizer(const char* fname);
 LocalVectorQuantizer* read_LocalVectorQuantizer(IOReader* reader);
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-  const char* fname);
+    const char* fname);
 std::unique_ptr<LocalVectorQuantizer> read_LocalVectorQuantizer_up(
-  IOReader* reader);
+    IOReader* reader);
 void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq,
                                 const char* fname);
 void write_LocalVectorQuantizer(const LocalVectorQuantizer* lvq, IOWriter* f);

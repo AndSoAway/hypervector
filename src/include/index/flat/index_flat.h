@@ -28,8 +28,8 @@ struct IndexFlat : IndexFlatCodes {
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   void Reconstruct(idx_t key, float* recons) const override;
 
@@ -41,16 +41,19 @@ struct IndexFlat : IndexFlatCodes {
    * @param distances
    *                corresponding output distances, size n * k
    */
-  void ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
-                               float* distances, const idx_t* labels) const;
+  void ComputeDistanceSubset(idx_t n, const float* x, idx_t k, float* distances,
+                             const idx_t* labels) const;
 
-  // get pointer to the floating point data
-  float* GetXb() {
-    return (float*)codes.data();
-  }
-  const float* GetXb() const {
-    return (const float*)codes.data();
-  }
+  /** Whether the encoded storage can be accessed directly as floats. */
+  bool IsDataAligned() const noexcept;
+
+  /** Return the floating-point storage.
+   *
+   * Throws when a memory-mapped legacy payload is not float-aligned. Public
+   * search APIs transparently use an alignment-safe path in that case.
+   */
+  float* GetXb();
+  const float* GetXb() const;
 
   IndexFlat() {}
 

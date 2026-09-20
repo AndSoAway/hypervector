@@ -15,6 +15,13 @@
 
 namespace hypervec {
 
+enum class HNSWGraphValidation {
+  /** Validate every node when the adapter is constructed. */
+  kFull,
+  /** Validate constant-size metadata eagerly and each node when accessed. */
+  kOnAccess,
+};
+
 /** Zero-copy read-only view of one HNSW layer as common graph storage.
  *
  * Node identifiers stay dense across the complete HNSW index. Nodes that do
@@ -23,7 +30,9 @@ namespace hypervec {
  */
 class HNSWGraphStorage final : public GraphStorage {
  public:
-  explicit HNSWGraphStorage(const HNSW& hnsw, int layer = 0);
+  explicit HNSWGraphStorage(
+      const HNSW& hnsw, int layer = 0,
+      HNSWGraphValidation validation = HNSWGraphValidation::kFull);
 
   size_t NodeCount() const noexcept override;
   size_t MaxDegree() const noexcept override;

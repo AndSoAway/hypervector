@@ -124,3 +124,14 @@ TEST(HNSWGraphStorage, RejectsInvalidLayersAndMutatedLayouts) {
   hnsw.offsets.pop_back();
   EXPECT_THROW(graph.Neighbors(0), hypervec::HypervecException);
 }
+
+TEST(HNSWGraphStorage, OnAccessValidationAvoidsTheFullConstructionScan) {
+  hypervec::HNSW hnsw = MakeLayeredGraph();
+  hnsw.levels[3] = 0;
+
+  EXPECT_THROW((hypervec::HNSWGraphStorage(hnsw)), hypervec::HypervecException);
+  const hypervec::HNSWGraphStorage graph(
+      hnsw, 0, hypervec::HNSWGraphValidation::kOnAccess);
+  EXPECT_NO_THROW(graph.Neighbors(0));
+  EXPECT_THROW(graph.Neighbors(3), hypervec::HypervecException);
+}

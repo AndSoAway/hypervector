@@ -17,7 +17,7 @@
 namespace hypervec {
 namespace {
 
-void ValidateLayout(const HNSW& hnsw, int layer) {
+void ValidateHeader(const HNSW& hnsw, int layer) {
   static_assert(std::is_same_v<HNSW::storage_idx_t, GraphId>);
   HYPERVEC_THROW_IF_NOT_MSG(layer >= 0,
                             "HNSWGraphStorage: layer must be non-negative");
@@ -29,20 +29,30 @@ void ValidateLayout(const HNSW& hnsw, int layer) {
                                 hnsw.offsets.front() == 0 &&
                                 hnsw.offsets.back() == hnsw.neighbors.size(),
                             "HNSWGraphStorage: graph arrays are inconsistent");
-  for (size_t node = 0; node < hnsw.levels.size(); ++node) {
-    HYPERVEC_THROW_IF_NOT_MSG(hnsw.levels[node] > 0 &&
-                                  static_cast<size_t>(hnsw.levels[node]) <
-                                      hnsw.cum_nneighbor_per_level.size() &&
-                                  hnsw.offsets[node] <= hnsw.offsets[node + 1],
-                              "HNSWGraphStorage: node layout is invalid");
-  }
+}
+
+void ValidateNodeLayout(const HNSW& hnsw, size_t node) {
+  HYPERVEC_THROW_IF_NOT_MSG(hnsw.levels[node] > 0 &&
+                                static_cast<size_t>(hnsw.levels[node]) <
+                                    hnsw.cum_nneighbor_per_level.size() &&
+                                hnsw.offsets[node] <= hnsw.offsets[node + 1],
+                            "HNSWGraphStorage: node layout is invalid");
 }
 
 }  // namespace
 
-HNSWGraphStorage::HNSWGraphStorage(const HNSW& hnsw, int layer)
+HNSWGraphStorage::HNSWGraphStorage(const HNSW& hnsw, int layer,
+                                   HNSWGraphValidation validation)
     : hnsw_(hnsw), layer_(layer) {
-  ValidateLayout(hnsw_, layer_);
+  HYPERVEC_THROW_IF_NOT_MSG(validation == HNSWGraphValidation::kFull ||
+                                validation == HNSWGraphValidation::kOnAccess,
+                            "HNSWGraphStorage: unknown validation policy");
+  ValidateHeader(hnsw_, layer_);
+  if (validation == HNSWGraphValidation::kFull) {
+    for (size_t node = 0; node < hnsw_.levels.size(); ++node) {
+      ValidateNodeLayout(hnsw_, node);
+    }
+  }
 }
 
 size_t HNSWGraphStorage::NodeCount() const noexcept {
@@ -64,13 +74,17 @@ GraphNeighborList HNSWGraphStorage::Neighbors(GraphId node) const {
       node >= 0 && static_cast<size_t>(node) < NodeCount(),
       "HNSWGraphStorage::Neighbors: node is outside the graph");
   const size_t index = static_cast<size_t>(node);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw_.offsets.size() == NodeCount() + 1 && !hnsw_.offsets.empty() &&
+          hnsw_.offsets.front() == 0 &&
+          hnsw_.offsets.back() == hnsw_.neighbors.size(),
+      "HNSWGraphStorage::Neighbors: graph layout changed incompatibly");
+  ValidateNodeLayout(hnsw_, index);
   if (hnsw_.levels[index] <= layer_) {
     return {};
   }
   HYPERVEC_THROW_IF_NOT_MSG(
-      hnsw_.offsets.size() == NodeCount() + 1 &&
-          static_cast<size_t>(layer_) + 1 <
-              hnsw_.cum_nneighbor_per_level.size(),
+      static_cast<size_t>(layer_) + 1 < hnsw_.cum_nneighbor_per_level.size(),
       "HNSWGraphStorage::Neighbors: graph layout changed incompatibly");
   const size_t layer_begin = static_cast<size_t>(
       hnsw_.cum_nneighbor_per_level[static_cast<size_t>(layer_)]);

@@ -73,6 +73,8 @@ def main():
             queries,
             "--ground-truth",
             ground_truth,
+            "--metric",
+            "l2",
             "--k",
             2,
             "--warmup-runs",
@@ -89,6 +91,7 @@ def main():
         assert report["index"]["metric"] == "l2"
         assert report["index"]["vector_count"] == 3
         assert report["workload"]["query_count"] == 1
+        assert report["workload"]["semantic_metric"] == "l2"
         assert report["workload"]["k"] == 2
         assert report["execution"]["warmup_runs"] == 0
         assert report["execution"]["measured_runs"] == 1
@@ -96,6 +99,64 @@ def main():
         assert report["metrics"]["recall_at_k"] == 1.0
         assert Path(report["index"]["path"]).is_absolute()
         assert Path(report["workload"]["queries"]).is_absolute()
+
+        cosine_base = directory / "cosine-base.fvecs"
+        cosine_queries = directory / "cosine-queries.fvecs"
+        cosine_ground_truth = directory / "cosine-ground-truth.ivecs"
+        cosine_index = directory / "cosine-flat.index"
+        cosine_report_path = directory / "cosine-report.json"
+        write_fvecs(cosine_base, [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+        write_fvecs(cosine_queries, [[0.8, 0.6]])
+
+        run(
+            ground_truth_tool,
+            "--base",
+            cosine_base,
+            "--queries",
+            cosine_queries,
+            "--output",
+            cosine_ground_truth,
+            "--k",
+            2,
+            "--metric",
+            "cosine",
+        )
+        run(
+            build_tool,
+            "--input",
+            cosine_base,
+            "--output",
+            cosine_index,
+            "--index-type",
+            "flat",
+            "--metric",
+            "cosine",
+        )
+        run(
+            eval_tool,
+            "--index",
+            cosine_index,
+            "--queries",
+            cosine_queries,
+            "--ground-truth",
+            cosine_ground_truth,
+            "--metric",
+            "cosine",
+            "--k",
+            2,
+            "--warmup-runs",
+            0,
+            "--measured-runs",
+            1,
+            "--json-output",
+            cosine_report_path,
+        )
+        cosine_report = json.loads(
+            cosine_report_path.read_text(encoding="utf-8")
+        )
+        assert cosine_report["index"]["metric"] == "inner_product"
+        assert cosine_report["workload"]["semantic_metric"] == "cosine"
+        assert cosine_report["metrics"]["recall_at_k"] == 1.0
 
 
 if __name__ == "__main__":

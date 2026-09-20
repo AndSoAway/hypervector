@@ -9,16 +9,9 @@
 #ifndef SRC_INCLUDE_EVAL_EXACT_GROUND_TRUTH_H_
 #define SRC_INCLUDE_EVAL_EXACT_GROUND_TRUTH_H_
 
-#include <eval/vector_dataset.h>
+#include <eval/semantic_metric.h>
 
 namespace hypervec {
-
-/** Semantic distance used to produce exact evaluation neighbors. */
-enum class GroundTruthMetric {
-  kL2,
-  kInnerProduct,
-  kCosine,
-};
 
 /** Compute deterministic exact top-k neighbor IDs.
  *

@@ -6,7 +6,7 @@
  * source tree.
  */
 
-#include <eval/vector_dataset.h>
+#include <eval/semantic_metric.h>
 #include <index/index_factory.h>
 #include <persistence/index_io.h>
 
@@ -44,7 +44,7 @@ struct CommandLine {
   std::string training_query_path;
   std::string output_path;
   std::string index_type;
-  hypervec::MetricType metric = hypervec::kMetricL2;
+  hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
   bool has_metric = false;
   std::vector<ConfigParameter> parameters;
   bool list_indexes = false;
@@ -59,7 +59,7 @@ void PrintUsage(std::ostream& output) {
       << "  --training-queries TRAIN.fvecs  Optional representative queries\n"
       << "  --output INDEX                  Persisted index output\n"
       << "  --index-type NAME               Registered index name or alias\n"
-      << "  --metric METRIC                 l2 or inner_product\n"
+      << "  --metric METRIC                 l2, inner_product, or cosine\n"
       << "  --index-param NAME=TYPE:VALUE   Repeatable typed factory option\n"
       << "                                   TYPE: int, double, bool, string\n"
       << "  --list-indexes                  List registered indexes and "
@@ -138,18 +138,17 @@ ConfigParameter ParseIndexParameter(std::string_view assignment) {
   return parameter;
 }
 
-hypervec::MetricType ParseMetric(std::string_view value) {
+hypervec::SemanticMetric ParseMetric(std::string_view value) {
   if (value == "l2") {
-    return hypervec::kMetricL2;
+    return hypervec::SemanticMetric::kL2;
   }
   if (value == "inner_product") {
-    return hypervec::kMetricInnerProduct;
+    return hypervec::SemanticMetric::kInnerProduct;
   }
-  throw std::runtime_error("--metric must be l2 or inner_product");
-}
-
-std::string_view MetricName(hypervec::MetricType metric) {
-  return metric == hypervec::kMetricInnerProduct ? "inner_product" : "l2";
+  if (value == "cosine") {
+    return hypervec::SemanticMetric::kCosine;
+  }
+  throw std::runtime_error("--metric must be l2, inner_product, or cosine");
 }
 
 CommandLine ParseCommandLine(int argc, char** argv) {
@@ -170,7 +169,7 @@ CommandLine ParseCommandLine(int argc, char** argv) {
     } else if (argument == "--index-type") {
       command.index_type = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--metric") {
-      command.metric =
+      command.semantic_metric =
           ParseMetric(RequireValue(argc, argv, &position, argument));
       command.has_metric = true;
     } else if (argument == "--index-param") {
@@ -253,10 +252,11 @@ int Run(const CommandLine& command) {
   ValidateCommand(command);
   const hypervec::FloatVectorDataset base =
       hypervec::ReadFvecsFile(command.input_path);
-  hypervec::ValidateFloatVectorDataset(base);
+  hypervec::ValidateSemanticMetricDataset(base, command.semantic_metric);
 
-  hypervec::IndexConfig config(command.index_type, base.dimension,
-                               command.metric);
+  hypervec::IndexConfig config(
+      command.index_type, base.dimension,
+      hypervec::IndexMetricForSemanticMetric(command.semantic_metric));
   for (const ConfigParameter& parameter : command.parameters) {
     ApplyParameter(parameter, &config);
   }
@@ -265,7 +265,8 @@ int Run(const CommandLine& command) {
   hypervec::FloatVectorDataset training_queries;
   if (!command.training_query_path.empty()) {
     training_queries = hypervec::ReadFvecsFile(command.training_query_path);
-    hypervec::ValidateFloatVectorDataset(training_queries);
+    hypervec::ValidateSemanticMetricDataset(training_queries,
+                                            command.semantic_metric);
     if (training_queries.dimension != base.dimension) {
       throw std::runtime_error(
           "training-query dimension does not match base dimension");
@@ -294,7 +295,12 @@ int Run(const CommandLine& command) {
       std::chrono::duration<double>(write_end - write_start).count();
   std::cout << std::setprecision(10);
   std::cout << "index_type=" << command.index_type << '\n';
-  std::cout << "metric=" << MetricName(command.metric) << '\n';
+  std::cout << "metric="
+            << hypervec::SemanticMetricName(command.semantic_metric) << '\n';
+  std::cout << "index_metric="
+            << (index->metric_type == hypervec::kMetricL2 ? "l2"
+                                                          : "inner_product")
+            << '\n';
   std::cout << "dimension=" << base.dimension << '\n';
   std::cout << "vector_count=" << base.vector_count << '\n';
   std::cout << "training_query_count=" << training_queries.vector_count << '\n';

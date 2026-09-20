@@ -7,7 +7,7 @@
  */
 
 #include <eval/search_evaluator.h>
-#include <eval/vector_dataset.h>
+#include <eval/semantic_metric.h>
 #include <index/search_parameters_factory.h>
 #include <persistence/index_io.h>
 
@@ -35,6 +35,8 @@ struct CommandLine {
   std::string query_path;
   std::string ground_truth_path;
   std::string json_output_path;
+  hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
+  bool has_metric = false;
   hypervec::idx_t k = 10;
   size_t warmup_runs = 1;
   size_t measured_runs = 3;
@@ -51,6 +53,7 @@ void PrintUsage(std::ostream& output) {
       << "  --k N                    Recall/search depth (default: 10)\n"
       << "  --warmup-runs N          Untimed full-query runs (default: 1)\n"
       << "  --measured-runs N        Timed full-query runs (default: 3)\n"
+      << "  --metric METRIC          l2, inner_product, or cosine\n"
       << "  --search-param NAME=VALUE  Repeatable integer/bool runtime option\n"
       << "  --json-output REPORT.json  Optional reproducible result report\n"
       << "  --help                   Show this message\n";
@@ -88,6 +91,19 @@ size_t ParseRunCount(std::string_view value, std::string_view context,
   return static_cast<size_t>(parsed);
 }
 
+hypervec::SemanticMetric ParseMetric(std::string_view value) {
+  if (value == "l2") {
+    return hypervec::SemanticMetric::kL2;
+  }
+  if (value == "inner_product") {
+    return hypervec::SemanticMetric::kInnerProduct;
+  }
+  if (value == "cosine") {
+    return hypervec::SemanticMetric::kCosine;
+  }
+  throw std::runtime_error("--metric must be l2, inner_product, or cosine");
+}
+
 void ParseSearchParameter(std::string_view assignment,
                           hypervec::SearchConfig* config) {
   const size_t separator = assignment.find('=');
@@ -120,6 +136,10 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.ground_truth_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--json-output") {
       command.json_output_path = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--metric") {
+      command.semantic_metric =
+          ParseMetric(RequireValue(argc, argv, &position, argument));
+      command.has_metric = true;
     } else if (argument == "--k") {
       const int64_t value =
           ParseInteger(RequireValue(argc, argv, &position, argument), "--k");
@@ -151,9 +171,9 @@ std::filesystem::path NormalizedPath(const std::string& path) {
 
 void ValidateCommand(const CommandLine& command) {
   if (command.index_path.empty() || command.query_path.empty() ||
-      command.ground_truth_path.empty()) {
+      command.ground_truth_path.empty() || !command.has_metric) {
     throw std::runtime_error(
-        "--index, --queries, and --ground-truth are required");
+        "--index, --queries, --ground-truth, and --metric are required");
   }
   if (!command.json_output_path.empty()) {
     const std::filesystem::path output =
@@ -283,6 +303,8 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
          << "\",\n"
          << "    \"query_count\": " << result.query_count << ",\n"
          << "    \"ground_truth_width\": " << ground_truth.dimension << ",\n"
+         << "    \"semantic_metric\": \""
+         << hypervec::SemanticMetricName(command.semantic_metric) << "\",\n"
          << "    \"k\": " << result.k << "\n"
          << "  },\n"
          << "  \"execution\": {\n"
@@ -320,6 +342,9 @@ int Run(const CommandLine& command) {
       hypervec::ReadFvecsFile(command.query_path);
   const hypervec::IntegerVectorDataset ground_truth =
       hypervec::ReadIvecsFile(command.ground_truth_path);
+  hypervec::ValidateSemanticMetricDataset(queries, command.semantic_metric);
+  hypervec::ValidateSemanticMetricIndex(index->metric_type,
+                                        command.semantic_metric);
   if (queries.dimension != index->d) {
     throw std::runtime_error("query dimension does not match index dimension");
   }
@@ -346,6 +371,8 @@ int Run(const CommandLine& command) {
 
   std::cout << std::setprecision(10);
   std::cout << "index_family=" << descriptor.name << '\n';
+  std::cout << "metric="
+            << hypervec::SemanticMetricName(command.semantic_metric) << '\n';
   std::cout << "query_count=" << result.query_count << '\n';
   std::cout << "k=" << result.k << '\n';
   std::cout << "measured_runs=" << result.measured_runs << '\n';

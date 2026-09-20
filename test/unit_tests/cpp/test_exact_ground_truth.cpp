@@ -13,6 +13,23 @@
 #include <limits>
 #include <vector>
 
+TEST(SemanticMetric, MapsWorkloadSemanticsAndRejectsIndexMismatch) {
+  EXPECT_EQ(hypervec::SemanticMetricName(hypervec::SemanticMetric::kL2), "l2");
+  EXPECT_EQ(hypervec::SemanticMetricName(hypervec::SemanticMetric::kCosine),
+            "cosine");
+  EXPECT_EQ(hypervec::IndexMetricForSemanticMetric(
+                hypervec::SemanticMetric::kInnerProduct),
+            hypervec::kMetricInnerProduct);
+  EXPECT_EQ(
+      hypervec::IndexMetricForSemanticMetric(hypervec::SemanticMetric::kCosine),
+      hypervec::kMetricInnerProduct);
+  EXPECT_NO_THROW(hypervec::ValidateSemanticMetricIndex(
+      hypervec::kMetricInnerProduct, hypervec::SemanticMetric::kCosine));
+  EXPECT_THROW(hypervec::ValidateSemanticMetricIndex(
+                   hypervec::kMetricL2, hypervec::SemanticMetric::kCosine),
+               hypervec::HypervecException);
+}
+
 TEST(ExactGroundTruth, ComputesL2NeighborsWithStableTies) {
   const hypervec::FloatVectorDataset base{
       4, 2, {0.0F, 0.0F, 2.0F, 0.0F, 2.0F, 0.0F, 0.0F, 3.0F}};

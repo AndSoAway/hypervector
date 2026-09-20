@@ -80,15 +80,7 @@ hypervec::GroundTruthMetric ParseMetric(std::string_view value) {
 }
 
 std::string_view MetricName(hypervec::GroundTruthMetric metric) {
-  switch (metric) {
-    case hypervec::GroundTruthMetric::kL2:
-      return "l2";
-    case hypervec::GroundTruthMetric::kInnerProduct:
-      return "inner_product";
-    case hypervec::GroundTruthMetric::kCosine:
-      return "cosine";
-  }
-  throw std::runtime_error("unknown metric");
+  return hypervec::SemanticMetricName(metric);
 }
 
 CommandLine ParseCommandLine(int argc, char** argv) {

@@ -6,7 +6,7 @@
  * source tree.
  */
 
-#include <eval/vector_dataset.h>
+#include <eval/semantic_metric.h>
 
 #include <charconv>
 #include <cstdint>
@@ -22,7 +22,7 @@
 
 namespace {
 
-enum class SemanticMetric { kL2, kInnerProduct, kCosine };
+using hypervec::SemanticMetric;
 
 struct CommandLine {
   std::string name;
@@ -84,18 +84,6 @@ SemanticMetric ParseMetric(std::string_view value) {
   }
   throw std::runtime_error(
       "--semantic-metric must be l2, inner_product, or cosine");
-}
-
-std::string_view MetricName(SemanticMetric metric) {
-  switch (metric) {
-    case SemanticMetric::kL2:
-      return "l2";
-    case SemanticMetric::kInnerProduct:
-      return "inner_product";
-    case SemanticMetric::kCosine:
-      return "cosine";
-  }
-  throw std::runtime_error("unknown semantic metric");
 }
 
 CommandLine ParseCommandLine(int argc, char** argv) {
@@ -229,8 +217,8 @@ void WriteMetadata(const CommandLine& command,
          << "  \"source_count\": " << source.vector_count << ",\n"
          << "  \"base_count\": " << split.base_rows.size() << ",\n"
          << "  \"query_count\": " << split.query_rows.size() << ",\n"
-         << "  \"semantic_metric\": \"" << MetricName(command.semantic_metric)
-         << "\",\n"
+         << "  \"semantic_metric\": \""
+         << hypervec::SemanticMetricName(command.semantic_metric) << "\",\n"
          << "  \"l2_normalized\": "
          << (command.semantic_metric == SemanticMetric::kCosine ? "true"
                                                                 : "false")
@@ -266,8 +254,8 @@ int Run(const CommandLine& command) {
   std::cout << "dimension=" << source.dimension << '\n';
   std::cout << "base_count=" << split.base_rows.size() << '\n';
   std::cout << "query_count=" << split.query_rows.size() << '\n';
-  std::cout << "semantic_metric=" << MetricName(command.semantic_metric)
-            << '\n';
+  std::cout << "semantic_metric="
+            << hypervec::SemanticMetricName(command.semantic_metric) << '\n';
   std::cout << "l2_normalized="
             << (command.semantic_metric == SemanticMetric::kCosine ? "true"
                                                                    : "false")

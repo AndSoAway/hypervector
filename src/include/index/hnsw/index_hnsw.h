@@ -106,7 +106,9 @@ struct IndexHNSW : Index {
   void InitLevel0FromKnngraph(int k, const float* distances,
                               const idx_t* labels);
 
-  /// alternative graph building
+  /** Transactionally add level-0 links for currently unlinked points by
+   * searching from the corresponding entry points. Both arrays contain npt
+   * internal IDs. */
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
                                  const storage_idx_t* nearests);
 

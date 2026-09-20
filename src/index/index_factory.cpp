@@ -31,6 +31,7 @@
 #include <cctype>
 #include <cinttypes>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <memory>
@@ -116,6 +117,25 @@ int HnswDegree(const IndexConfig& config) {
   return degree;
 }
 
+void ConfigureHNSW(IndexHNSW* index, const IndexConfig& config) {
+  index->hnsw.ef_construction = PositiveIntParameter(
+      config, "ef_construction", index->hnsw.ef_construction);
+  index->hnsw.ef_search =
+      PositiveIntParameter(config, "ef_search", index->hnsw.ef_search);
+  index->hnsw.check_relative_distance = config.GetBoolean(
+      "check_relative_distance", index->hnsw.check_relative_distance);
+  index->hnsw.search_bounded_queue =
+      config.GetBoolean("bounded_queue", index->hnsw.search_bounded_queue);
+  if (config.HasParameter("build_use_visited_hashset")) {
+    index->hnsw.use_visited_hashset =
+        config.GetBoolean("build_use_visited_hashset", false);
+  }
+  if (config.HasParameter("search_use_visited_hashset")) {
+    index->use_visited_hashset =
+        config.GetBoolean("search_use_visited_hashset", false);
+  }
+}
+
 std::unique_ptr<Index> MakeFlat(const IndexConfig& config) {
   if (config.metric_type == kMetricL2) {
     return std::make_unique<IndexFlatL2>(config.dimension);
@@ -198,6 +218,7 @@ std::unique_ptr<Index> MakeHNSWFlat(const IndexConfig& config) {
   auto index = std::make_unique<IndexHNSWFlat>(
       static_cast<int>(config.dimension), degree, config.metric_type);
   index->storage->metric_arg = config.metric_arg;
+  ConfigureHNSW(index.get(), config);
   return index;
 }
 
@@ -338,9 +359,11 @@ std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
                             std::numeric_limits<int>::max());
   const int nbits = PositiveIntParameter(config, "nbits", 8);
   const int degree = HnswDegree(config);
-  return std::make_unique<IndexHNSWPQ>(static_cast<int>(config.dimension),
-                                       static_cast<int>(m_pq), nbits, degree,
-                                       config.metric_type);
+  auto index = std::make_unique<IndexHNSWPQ>(static_cast<int>(config.dimension),
+                                             static_cast<int>(m_pq), nbits,
+                                             degree, config.metric_type);
+  ConfigureHNSW(index.get(), config);
+  return index;
 }
 
 std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
@@ -351,9 +374,26 @@ std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
                             std::numeric_limits<int>::max());
   const int nbits = PositiveIntParameter(config, "nbits", 8);
   const int degree = HnswDegree(config);
-  return std::make_unique<IndexHNSWLVQ>(static_cast<int>(config.dimension),
-                                        static_cast<int>(nlocal), nbits, degree,
-                                        config.metric_type);
+  auto index = std::make_unique<IndexHNSWLVQ>(
+      static_cast<int>(config.dimension), static_cast<int>(nlocal), nbits,
+      degree, config.metric_type);
+  ConfigureHNSW(index.get(), config);
+  return index;
+}
+
+std::vector<std::string> HnswParameterNames(
+    std::initializer_list<std::string_view> storage_parameters = {}) {
+  std::vector<std::string> names = {"m_hnsw",
+                                    "ef_construction",
+                                    "ef_search",
+                                    "check_relative_distance",
+                                    "bounded_queue",
+                                    "build_use_visited_hashset",
+                                    "search_use_visited_hashset"};
+  for (const std::string_view parameter : storage_parameters) {
+    names.emplace_back(parameter);
+  }
+  return names;
 }
 
 void RegisterBuiltins(IndexRegistry* registry) {
@@ -384,14 +424,16 @@ void RegisterBuiltins(IndexRegistry* registry) {
                      MakeIVFRaBitQ);
   registry->Register({"hnsw_flat",
                       {"hnsw", "hnswflat", "IndexHNSWFlat", "autoindex"},
-                      {"m_hnsw"}},
+                      HnswParameterNames()},
                      MakeHNSWFlat);
-  registry->Register(
-      {"hnsw_pq", {"hnswpq", "IndexHNSWPQ"}, {"m_pq", "nbits", "m_hnsw"}},
-      MakeHNSWPQ);
-  registry->Register(
-      {"hnsw_lvq", {"hnswlvq", "IndexHNSWLVQ"}, {"nlocal", "nbits", "m_hnsw"}},
-      MakeHNSWLVQ);
+  registry->Register({"hnsw_pq",
+                      {"hnswpq", "IndexHNSWPQ"},
+                      HnswParameterNames({"m_pq", "nbits"})},
+                     MakeHNSWPQ);
+  registry->Register({"hnsw_lvq",
+                      {"hnswlvq", "IndexHNSWLVQ"},
+                      HnswParameterNames({"nlocal", "nbits"})},
+                     MakeHNSWLVQ);
   registry->Register({"nsw_flat",
                       {"nsw", "nswflat", "IndexNSWFlat"},
                       {"max_degree", "ef_construction", "ef_search",

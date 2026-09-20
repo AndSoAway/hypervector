@@ -69,6 +69,9 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("ef_construction", 8)
       .SetInteger("ef_search", 4)
       .SetBoolean("check_relative_distance", true)
+      .SetBoolean("bounded_queue", true)
+      .SetBoolean("build_use_visited_hashset", false)
+      .SetBoolean("search_use_visited_hashset", false)
       .SetBoolean("fill_to_max_degree", true);
 
   const auto allowed = hypervec::GetIndexRegistry().List();
@@ -81,8 +84,11 @@ void ExpectBuiltIn(std::string name,
   hypervec::IndexConfig filtered(config.index_type, config.dimension,
                                  config.metric_type);
   for (const std::string& parameter : type->parameter_names) {
-    if (parameter == "check_relative_distance" ||
-        parameter == "fill_to_max_degree") {
+    if (parameter == "bounded_queue" ||
+        parameter == "build_use_visited_hashset" ||
+        parameter == "check_relative_distance" ||
+        parameter == "fill_to_max_degree" ||
+        parameter == "search_use_visited_hashset") {
       filtered.SetBoolean(parameter, config.GetBoolean(parameter, false));
     } else if (parameter == "nn_descent_convergence_threshold" ||
                parameter == "alpha") {
@@ -249,12 +255,24 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(opq_pq->pq.nbits, 4);
 
   hypervec::IndexConfig hnsw_config("hnsw_flat", 12);
-  hnsw_config.SetInteger("m_hnsw", 11);
+  hnsw_config.SetInteger("m_hnsw", 11)
+      .SetInteger("ef_construction", 53)
+      .SetInteger("ef_search", 29)
+      .SetBoolean("check_relative_distance", false)
+      .SetBoolean("bounded_queue", false)
+      .SetBoolean("build_use_visited_hashset", true)
+      .SetBoolean("search_use_visited_hashset", false);
   auto hnsw_base = hypervec::CreateIndex(hnsw_config);
   auto* hnsw = dynamic_cast<hypervec::IndexHNSWFlat*>(hnsw_base.get());
   ASSERT_NE(hnsw, nullptr);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(0), 22);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(1), 11);
+  EXPECT_EQ(hnsw->hnsw.ef_construction, 53);
+  EXPECT_EQ(hnsw->hnsw.ef_search, 29);
+  EXPECT_FALSE(hnsw->hnsw.check_relative_distance);
+  EXPECT_FALSE(hnsw->hnsw.search_bounded_queue);
+  EXPECT_EQ(hnsw->hnsw.use_visited_hashset, true);
+  EXPECT_EQ(hnsw->use_visited_hashset, false);
 
   hypervec::IndexConfig nsw_config("nsw_flat", 12);
   nsw_config.SetInteger("max_degree", 7)
@@ -433,6 +451,9 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_degree("hnsw_flat", 4);
   bad_degree.SetInteger("m_hnsw", 1);
   EXPECT_THROW(hypervec::CreateIndex(bad_degree), hypervec::HypervecException);
+  hypervec::IndexConfig bad_hnsw_ef("hnsw_flat", 4);
+  bad_hnsw_ef.SetInteger("ef_construction", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_hnsw_ef), hypervec::HypervecException);
 
   hypervec::IndexConfig bad_nsw("nsw_flat", 4);
   bad_nsw.SetInteger("max_degree", 8).SetInteger("ef_construction", 4);

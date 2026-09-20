@@ -595,7 +595,7 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
   std::unique_ptr<DistanceComputer> dis(
       storage_distance_computer(construction_storage));
   OmpLockArray lock_array(static_cast<size_t>(new_total) + 1);
-  VisitedTable vt(new_total);
+  VisitedTable vt(new_total, hnsw.use_visited_hashset);
   const std::function<void(storage_idx_t)> before_node_mutation =
       [&graph_guard](storage_idx_t node) { graph_guard.CaptureNode(node); };
   for (idx_t i = n0; i < new_total; i++) {
@@ -950,7 +950,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   typename RH::SingleResultHandler res(bres);
 
   // Create visited table
-  VisitedTable vt(n_total);
+  VisitedTable vt(n_total, use_visited_hashset);
   const bool similarity = IsSimilarityMetric(metric_type);
 
   // Search each query
@@ -1104,7 +1104,7 @@ void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
     using RH = RangeSearchBlockResultHandler<HNSW::C>;
     RH block(result, similarity ? -radius : radius);
     typename RH::SingleResultHandler handler(block);
-    VisitedTable visited(n_total);
+    VisitedTable visited(n_total, use_visited_hashset);
     for (idx_t query = 0; query < n; ++query) {
       dis->SetQuery(x + query * d);
       handler.begin(query);
@@ -1130,7 +1130,7 @@ void IndexHNSW::Search1(const float* x, ResultHandler& handler,
 
   std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
   dis->SetQuery(x);
-  VisitedTable visited(n_total);
+  VisitedTable visited(n_total, use_visited_hashset);
   if (IsSimilarityMetric(metric_type)) {
     NegatingResultHandler external_results(handler);
     hnsw.Search(*dis, this, external_results, visited, params);

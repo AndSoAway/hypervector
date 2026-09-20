@@ -326,6 +326,73 @@ TEST(IndexHNSWCorrectness, LayoutReconfigurationIsValidatedAndTransactional) {
   EXPECT_THROW(graph.SetNbNeighbors(0, 16), hypervec::HypervecException);
 }
 
+TEST(IndexHNSWCorrectness, VisitedTablePoliciesCoverBuildAndSearchPaths) {
+  constexpr hypervec::idx_t dimension = 4;
+  constexpr hypervec::idx_t count = 32;
+  constexpr hypervec::idx_t k = 5;
+  const auto data = RandomVectors(count, dimension, 2111);
+
+  hypervec::IndexHNSWFlat vector_index(dimension, 4);
+  vector_index.hnsw.use_visited_hashset = false;
+  vector_index.use_visited_hashset = false;
+  vector_index.Add(count, data.data());
+
+  hypervec::IndexHNSWFlat hash_index(dimension, 4);
+  hash_index.hnsw.use_visited_hashset = true;
+  hash_index.use_visited_hashset = true;
+  hash_index.Add(count, data.data());
+
+  EXPECT_EQ(vector_index.hnsw.levels, hash_index.hnsw.levels);
+  EXPECT_EQ(vector_index.hnsw.offsets, hash_index.hnsw.offsets);
+  EXPECT_EQ(
+      std::vector<hypervec::HNSW::storage_idx_t>(
+          vector_index.hnsw.neighbors.begin(),
+          vector_index.hnsw.neighbors.end()),
+      std::vector<hypervec::HNSW::storage_idx_t>(
+          hash_index.hnsw.neighbors.begin(), hash_index.hnsw.neighbors.end()));
+
+  std::array<float, k> vector_distances{};
+  std::array<float, k> hash_distances{};
+  std::array<hypervec::idx_t, k> vector_labels{};
+  std::array<hypervec::idx_t, k> hash_labels{};
+  vector_index.Search(1, data.data(), k, vector_distances.data(),
+                      vector_labels.data());
+  hash_index.Search(1, data.data(), k, hash_distances.data(),
+                    hash_labels.data());
+  EXPECT_EQ(vector_labels, hash_labels);
+  EXPECT_EQ(vector_distances, hash_distances);
+
+  hypervec::RangeSearchResult vector_range(1);
+  hypervec::RangeSearchResult hash_range(1);
+  vector_index.RangeSearch(1, data.data(), 2.0F, &vector_range);
+  hash_index.RangeSearch(1, data.data(), 2.0F, &hash_range);
+  ASSERT_EQ(vector_range.lims[1], hash_range.lims[1]);
+  EXPECT_EQ(
+      std::vector<hypervec::idx_t>(vector_range.labels,
+                                   vector_range.labels + vector_range.lims[1]),
+      std::vector<hypervec::idx_t>(hash_range.labels,
+                                   hash_range.labels + hash_range.lims[1]));
+  EXPECT_EQ(std::vector<float>(vector_range.distances,
+                               vector_range.distances + vector_range.lims[1]),
+            std::vector<float>(hash_range.distances,
+                               hash_range.distances + hash_range.lims[1]));
+
+  CollectingResultHandler vector_handler;
+  CollectingResultHandler hash_handler;
+  vector_index.Search1(data.data(), vector_handler);
+  hash_index.Search1(data.data(), hash_handler);
+  EXPECT_EQ(vector_handler.results, hash_handler.results);
+
+  const hypervec::HNSW::storage_idx_t entry = 0;
+  const float entry_distance = 0.0F;
+  vector_index.SearchLevel0(1, data.data(), k, &entry, &entry_distance,
+                            vector_distances.data(), vector_labels.data());
+  hash_index.SearchLevel0(1, data.data(), k, &entry, &entry_distance,
+                          hash_distances.data(), hash_labels.data());
+  EXPECT_EQ(vector_labels, hash_labels);
+  EXPECT_EQ(vector_distances, hash_distances);
+}
+
 TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {
   int destruction_count = 0;
   ThrowingSearchStorage storage(&destruction_count);

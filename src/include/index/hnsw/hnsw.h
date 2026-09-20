@@ -158,7 +158,8 @@ struct HNSW {
   /// Reserved for a future Panorama implementation. Search rejects true.
   bool is_panorama = false;
 
-  // See impl/VisitedTable.h.
+  // Graph-construction visited-table policy. When unset, the shared
+  // VisitedTable chooses automatically from the graph size.
   std::optional<bool> use_visited_hashset;
 
   // methods that initialize the tree sizes

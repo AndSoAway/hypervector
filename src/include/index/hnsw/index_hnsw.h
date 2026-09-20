@@ -48,7 +48,8 @@ struct IndexHNSW : Index {
   // used during copyFrom operations.
   bool keep_max_size_level0 = false;
 
-  // See impl/VisitedTable.h.
+  // Query-time visited-table policy. When unset, the shared VisitedTable
+  // chooses automatically from the index size.
   std::optional<bool> use_visited_hashset;
 
   explicit IndexHNSW(int d = 0, int M = 32, MetricType metric = kMetricL2);

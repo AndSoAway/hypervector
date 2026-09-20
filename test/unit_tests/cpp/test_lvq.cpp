@@ -19,11 +19,12 @@
 #include <utils/structures/random.h>
 
 #include <cmath>
-#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -52,15 +53,7 @@ void ExpectSortedValid(const std::vector<float>& distances,
   }
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 

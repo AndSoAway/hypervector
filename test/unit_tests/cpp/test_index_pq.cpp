@@ -15,11 +15,12 @@
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -51,16 +52,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-// Cross-platform tmpfile path with cleanup helper.
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 

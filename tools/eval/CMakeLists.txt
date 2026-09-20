@@ -15,6 +15,11 @@ target_link_libraries(hypervec_ground_truth PRIVATE hypervec)
 add_executable(hypervec_build index_build_main.cpp)
 target_link_libraries(hypervec_build PRIVATE hypervec)
 
+install(PROGRAMS convert_hdf5.py
+  DESTINATION ${CMAKE_INSTALL_BINDIR}
+  RENAME hypervec_convert_hdf5
+)
+
 install(TARGETS
   hypervec_eval
   hypervec_dataset
@@ -29,4 +34,11 @@ if(BUILD_TESTING)
   add_test(NAME HypervecGroundTruth.Help COMMAND hypervec_ground_truth --help)
   add_test(NAME HypervecBuild.Help COMMAND hypervec_build --help)
   add_test(NAME HypervecBuild.ListIndexes COMMAND hypervec_build --list-indexes)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME HypervecHdf5Converter
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/test_convert_hdf5.py
+              ${CMAKE_CURRENT_SOURCE_DIR}/convert_hdf5.py)
+  endif()
 endif()

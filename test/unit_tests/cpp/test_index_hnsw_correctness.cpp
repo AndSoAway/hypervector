@@ -13,8 +13,10 @@
 #include <utils/distances/distance_computer.h>
 #include <utils/structures/random.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -166,6 +168,10 @@ TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {
   ThrowingSearchStorage storage(&destruction_count);
   hypervec::IndexHNSW index(&storage, 4);
   index.n_total = 1;
+  index.hnsw.levels = {1};
+  index.hnsw.offsets = {0, 8};
+  index.hnsw.neighbors.resize(8);
+  std::fill(index.hnsw.neighbors.begin(), index.hnsw.neighbors.end(), -1);
   index.hnsw.entry_point = 0;
   index.hnsw.max_level = 0;
 
@@ -175,6 +181,46 @@ TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {
   EXPECT_THROW(index.Search(1, &query, 1, &distance, &label),
                std::runtime_error);
   EXPECT_EQ(destruction_count, 1);
+}
+
+TEST(IndexHNSWCorrectness, SearchValidatesInputsAndAlignedState) {
+  hypervec::IndexHNSWFlat empty(2, 4);
+  const std::array<float, 2> query = {0.0F, 1.0F};
+  float distance = 0.0F;
+  hypervec::idx_t label = 0;
+
+  EXPECT_THROW(empty.Search(-1, nullptr, 1, nullptr, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(empty.Search(1, query.data(), 0, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(empty.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(empty.Search(1, query.data(), 1, nullptr, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(empty.Search(1, query.data(), 1, &distance, nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(empty.Search(0, nullptr, 1, nullptr, nullptr));
+
+  empty.Search(1, query.data(), 1, &distance, &label);
+  EXPECT_EQ(label, -1);
+  EXPECT_EQ(distance, (std::numeric_limits<float>::max)());
+
+  hypervec::IndexHNSWFlat populated(2, 4);
+  populated.Add(1, query.data());
+  populated.storage->n_total = 0;
+  EXPECT_THROW(populated.Search(1, query.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  populated.storage->n_total = 1;
+
+  populated.hnsw.entry_point = 1;
+  EXPECT_THROW(populated.Search(1, query.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  populated.hnsw.entry_point = 0;
+
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = 0;
+  EXPECT_THROW(populated.Search(1, query.data(), 1, &distance, &label, &params),
+               hypervec::HypervecException);
 }
 
 TEST(IndexHNSWCorrectness, RepeatedAddFlatKeepsGraphAligned) {

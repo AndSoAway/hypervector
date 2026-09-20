@@ -168,6 +168,41 @@ void CommitStoragePermutation(PreparedStoragePermutation* prepared) {
   }
 }
 
+void ValidateSearchState(const IndexHNSW& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
+                            "IndexHNSW::Search: storage must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total >= 0,
+      "IndexHNSW::Search: vector count must not be negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->n_total == index.n_total,
+      "IndexHNSW::Search: storage and index counts differ");
+
+  const size_t count = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.levels.size() == count &&
+          index.hnsw.offsets.size() == count + 1 &&
+          index.hnsw.offsets.front() == 0 &&
+          index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
+      "IndexHNSW::Search: graph storage is inconsistent");
+  if (count == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
+        "IndexHNSW::Search: empty graph has an entry point or level");
+    return;
+  }
+
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.entry_point >= 0 &&
+          static_cast<size_t>(index.hnsw.entry_point) < count,
+      "IndexHNSW::Search: entry point is outside the index");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.max_level >= 0 &&
+          index.hnsw.levels[static_cast<size_t>(index.hnsw.entry_point)] >
+              index.hnsw.max_level,
+      "IndexHNSW::Search: entry-point level is inconsistent");
+}
+
 }  // namespace
 
 /**************************************************************
@@ -266,6 +301,40 @@ void IndexHNSW::Reset() {
 
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::Search: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  HYPERVEC_THROW_IF_NOT_FMT(
+      k > 0, "IndexHNSW::Search: k must be positive, got %" PRId64,
+      static_cast<int64_t>(k));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k <= (std::numeric_limits<int>::max)(),
+      "IndexHNSW::Search: k exceeds the supported graph-search range");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexHNSW::Search: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || distances != nullptr,
+      "IndexHNSW::Search: distances must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || labels != nullptr,
+      "IndexHNSW::Search: labels must not be null when n is positive");
+  ValidateSearchState(*this);
+  if (n == 0) {
+    return;
+  }
+  (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                        "IndexHNSW::Search output size");
+  if (n_total > 0) {
+    int ef_search = hnsw.ef_search;
+    if (const auto* hnsw_params =
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
+      ef_search = hnsw_params->ef_search;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                              "IndexHNSW::Search: ef_search must be positive");
+  }
+
   // Use HNSW graph-based Search
   // Get distance computer from storage.
   // Must go through storage_distance_computer() so similarity metrics are

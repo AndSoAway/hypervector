@@ -12,6 +12,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
 #include <algorithm>
@@ -317,6 +318,33 @@ TEST(IndexHNSWCorrectness, SearchReturnsExternalSimilarityScores) {
         actual.GetDistanceComputer());
     distance->SetQuery(query.data());
     EXPECT_FLOAT_EQ((*distance)(actual_labels[0]), actual_distances[0]);
+  }
+}
+
+TEST(IndexHNSWCorrectness, UnboundedQueueUsesSharedFilteredTraversal) {
+  constexpr hypervec::idx_t count = 32;
+  constexpr hypervec::idx_t k = 5;
+  std::array<float, count> database{};
+  for (size_t index = 0; index < database.size(); ++index) {
+    database[index] = static_cast<float>(index);
+  }
+  hypervec::IndexHNSWFlat index(1, 4);
+  index.Add(count, database.data());
+
+  hypervec::IDSelectorRange selector(10, 20);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.bounded_queue = false;
+  params.sel = &selector;
+  const float query = 12.25F;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+
+  index.Search(1, &query, k, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, k>{12, 13, 11, 14, 10}));
+  for (hypervec::idx_t label : labels) {
+    EXPECT_TRUE(selector.IsMember(label));
   }
 }
 

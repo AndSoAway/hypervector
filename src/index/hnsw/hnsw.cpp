@@ -6,7 +6,9 @@
  * source tree.
  */
 
+#include <index/graph/graph_searcher.h>
 #include <index/hnsw/hnsw.h>
+#include <index/hnsw/hnsw_graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/common/result_handler.h>
@@ -14,6 +16,7 @@
 #include <utils/selector/id_selector.h>
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdio>
@@ -949,20 +952,28 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
                                       stats, 0, 0, params);
     }
   } else {
-    std::priority_queue<Node> top_candidates = SearchFromCandidateUnbounded(
-      *this, Node(d_nearest, nearest), qdis, ef, &vt, stats);
+    const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
+    const GraphSearcher searcher(graph);
+    const std::array<GraphSearchSeed, 1> seeds = {
+        GraphSearchSeed{nearest, d_nearest}};
+    GraphSearchOptions options;
+    options.ef_search = static_cast<size_t>(ef);
+    options.check_relative_distance = true;
+    options.selector = params == nullptr ? nullptr : params->sel;
+    options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+    GraphSearchStats graph_stats;
+    const std::vector<GraphSearchResult> results =
+        searcher.Search(qdis, seeds, options, &vt, &graph_stats);
 
-    while (top_candidates.size() > k) {
-      top_candidates.pop();
+    const size_t result_count =
+        std::min(results.size(), static_cast<size_t>(k));
+    for (size_t result = 0; result < result_count; ++result) {
+      res.AddResult(results[result].distance, results[result].id);
     }
-
-    while (!top_candidates.empty()) {
-      float d;
-      storage_idx_t label;
-      std::tie(d, label) = top_candidates.top();
-      res.AddResult(d, label);
-      top_candidates.pop();
-    }
+    stats.n1 += graph_stats.queries;
+    stats.n2 += graph_stats.exhausted_queries;
+    stats.ndis += graph_stats.distance_computations;
+    stats.nhops += graph_stats.expanded_nodes;
   }
 
   vt.advance();

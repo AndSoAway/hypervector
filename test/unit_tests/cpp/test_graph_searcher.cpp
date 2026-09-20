@@ -232,6 +232,39 @@ TEST(GraphSearcher, BatchesFourNeighborDistancesWithoutChangingOrder) {
   EXPECT_EQ(stats.visited_nodes, 6U);
 }
 
+TEST(GraphSearcher, NavigationBoundIsIndependentOfResultFiltering) {
+  hypervec::MutableBoundedGraph graph(4, 2);
+  const std::array<hypervec::GraphId, 2> start_neighbors = {1, 2};
+  const std::array<hypervec::GraphId, 1> bridge = {3};
+  graph.SetNeighbors(0, start_neighbors);
+  graph.SetNeighbors(2, bridge);
+  ScalarDistanceComputer distance({10.0F, 1.0F, 2.0F, 0.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  const std::array<hypervec::GraphId, 1> entry = {0};
+  hypervec::IDSelectorRange selector(3, 4);
+  const hypervec::GraphSearcher searcher(graph);
+
+  hypervec::VisitedTable result_visited(graph.NodeCount(), false);
+  const auto result_bound =
+      searcher.Search(distance, entry,
+                      hypervec::GraphSearchOptions{
+                          1, true, &selector,
+                          hypervec::GraphSearchFrontierPolicy::kResultBound},
+                      &result_visited);
+  ASSERT_EQ(result_bound.size(), 1U);
+  EXPECT_EQ(result_bound[0].id, 3);
+
+  hypervec::VisitedTable navigation_visited(graph.NodeCount(), false);
+  const auto navigation_bound = searcher.Search(
+      distance, entry,
+      hypervec::GraphSearchOptions{
+          1, true, &selector,
+          hypervec::GraphSearchFrontierPolicy::kNavigationBound},
+      &navigation_visited);
+  EXPECT_TRUE(navigation_bound.empty());
+}
+
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   hypervec::MutableBoundedGraph graph(2, 1);
   ScalarDistanceComputer distance({0.0F, 1.0F});

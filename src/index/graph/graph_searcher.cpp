@@ -136,6 +136,9 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
   std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
                       FartherFirst>
       results;
+  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
+                      FartherFirst>
+      navigation_bound;
 
   const auto add_result = [&](const GraphSearchResult& candidate) {
     if (options.selector != nullptr &&
@@ -150,31 +153,59 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
 
   const auto add_candidate = [&](GraphId id, float candidate_distance) {
     const GraphSearchResult candidate{id, candidate_distance};
-    const bool within_frontier = results.size() < options.ef_search ||
-                                 candidate.distance <= results.top().distance;
+    const bool independent_navigation =
+        options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound;
+    if (!independent_navigation) {
+      const bool within_frontier = results.size() < options.ef_search ||
+                                   candidate.distance <= results.top().distance;
+      if (!within_frontier) {
+        return;
+      }
+      candidates.push(candidate);
+      add_result(candidate);
+      graph_.Prefetch(id);
+      return;
+    }
+
+    add_result(candidate);
+    const bool within_frontier =
+        navigation_bound.size() < options.ef_search ||
+        candidate.distance < navigation_bound.top().distance;
     if (!within_frontier) {
       return;
     }
     candidates.push(candidate);
-    add_result(candidate);
+    navigation_bound.push(candidate);
+    if (navigation_bound.size() > options.ef_search) {
+      navigation_bound.pop();
+    }
     graph_.Prefetch(id);
   };
 
   for (const GraphSearchSeed& seed : seeds) {
     visited->set(static_cast<size_t>(seed.id));
     ++local_stats.visited_nodes;
-    const GraphSearchResult candidate{seed.id, seed.distance};
-    candidates.push(candidate);
-    add_result(candidate);
-    graph_.Prefetch(seed.id);
+    if (options.frontier_policy ==
+        GraphSearchFrontierPolicy::kNavigationBound) {
+      add_candidate(seed.id, seed.distance);
+    } else {
+      const GraphSearchResult candidate{seed.id, seed.distance};
+      candidates.push(candidate);
+      add_result(candidate);
+      graph_.Prefetch(seed.id);
+    }
   }
 
   bool stopped_early = false;
   while (!candidates.empty()) {
     const GraphSearchResult current = candidates.top();
+    const auto& frontier =
+        options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound
+            ? navigation_bound
+            : results;
     if (options.check_relative_distance &&
-        results.size() >= options.ef_search &&
-        current.distance > results.top().distance) {
+        frontier.size() >= options.ef_search &&
+        current.distance > frontier.top().distance) {
       stopped_early = true;
       break;
     }

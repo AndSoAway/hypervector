@@ -20,10 +20,19 @@ namespace hypervec {
 
 struct IDSelector;
 
+enum class GraphSearchFrontierPolicy {
+  /** Selected results also bound graph navigation. */
+  kResultBound,
+  /** A separate unfiltered nearest-neighbor set bounds navigation. */
+  kNavigationBound,
+};
+
 struct GraphSearchOptions {
   size_t ef_search = 16;
   bool check_relative_distance = true;
   const IDSelector* selector = nullptr;
+  GraphSearchFrontierPolicy frontier_policy =
+      GraphSearchFrontierPolicy::kResultBound;
 };
 
 struct GraphSearchStats {

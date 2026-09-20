@@ -1303,7 +1303,7 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   uint32_t h;
   READ1(h);
 
-  IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
+  IndexIORegistry& registry = GetIndexIORegistry();
   if (registry.Contains(h)) {
     return registry.ReadPayload(h, f, io_flags).release();
   }

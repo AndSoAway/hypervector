@@ -76,4 +76,12 @@ class IndexIORegistry {
   std::unique_ptr<Impl> impl_;
 };
 
+/** Process-wide registry used by WriteIndex and ReadIndex.
+ *
+ * Built-in codecs are installed before this reference is returned. Custom
+ * codecs may be registered at runtime; names, exact C++ types, and format tags
+ * must remain unique for the lifetime of the process.
+ */
+IndexIORegistry& GetIndexIORegistry();
+
 }  // namespace hypervec

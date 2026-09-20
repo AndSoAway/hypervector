@@ -788,7 +788,7 @@ void WriteVamanaFlatPayload(const Index& index, IOWriter* f, int io_flags) {
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
                             "WriteIndex: index must not be null");
-  IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
+  IndexIORegistry& registry = GetIndexIORegistry();
   if (registry.Contains(std::type_index(typeid(*index)))) {
     registry.Write(*index, f, io_flags);
     return;

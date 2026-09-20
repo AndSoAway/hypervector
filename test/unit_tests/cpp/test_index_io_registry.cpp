@@ -141,6 +141,34 @@ TEST(IndexIORegistry, GlobalEntrypointsUseFixedCodeRegistry) {
   EXPECT_FLOAT_EQ(reconstructed[1], 4.0F);
 }
 
+TEST(IndexIORegistry, GlobalEntrypointsSupportCustomRegistrations) {
+  hypervec::GetIndexIORegistry().Register(
+      {"test_global", hypervec::fourcc("Tg01"), {}},
+      std::type_index(typeid(TestIndex)),
+      [](const hypervec::Index& base, hypervec::IOWriter* writer, int) {
+        const auto& index = static_cast<const TestIndex&>(base);
+        HYPERVEC_THROW_IF_NOT_MSG(
+            (*writer)(&index.value, sizeof(index.value), 1) == 1,
+            "global test payload write failed");
+      },
+      [](hypervec::IOReader* reader, int) {
+        int32_t value = 0;
+        HYPERVEC_THROW_IF_NOT_MSG((*reader)(&value, sizeof(value), 1) == 1,
+                                  "global test payload read failed");
+        return std::make_unique<TestIndex>(value);
+      });
+
+  hypervec::VectorIOWriter writer;
+  TestIndex source(73);
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored = hypervec::ReadIndexUp(&reader);
+  auto* test = dynamic_cast<TestIndex*>(restored.get());
+  ASSERT_NE(test, nullptr);
+  EXPECT_EQ(test->value, 73);
+}
+
 TEST(IndexIORegistry, GlobalWriterRejectsUnregisteredDerivedTypes) {
   hypervec::IndexFlat1D derived;
   hypervec::VectorIOWriter writer;

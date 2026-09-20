@@ -109,4 +109,9 @@ IndexIORegistry& GetBuiltinIndexIORegistry() {
 }
 
 }  // namespace persistence_internal
+
+IndexIORegistry& GetIndexIORegistry() {
+  return persistence_internal::GetBuiltinIndexIORegistry();
+}
+
 }  // namespace hypervec

@@ -16,6 +16,19 @@
 #include <vector>
 
 namespace hypervec {
+namespace {
+
+void ValidateCodeStorage(idx_t count, size_t code_size, size_t actual_size,
+                         const char* operation) {
+  HYPERVEC_THROW_IF_NOT_FMT(count >= 0, "%s: vector count is negative",
+                            operation);
+  const size_t expected_size =
+      mul_no_overflow(static_cast<size_t>(count), code_size, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(actual_size == expected_size,
+                            "%s: code storage size is inconsistent", operation);
+}
+
+}  // namespace
 
 IndexLVQ::IndexLVQ() : Index(0, kMetricL2) { is_trained = false; }
 
@@ -76,6 +89,7 @@ void IndexLVQ::Add(idx_t n, const float* x) {
 void IndexLVQ::Search(idx_t n, const float* x, idx_t k, float* distances,
                       idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, lvq.code_size, codes.size(), "IndexLVQ::Search");
   HYPERVEC_THROW_IF_NOT_MSG(params == nullptr || params->sel == nullptr,
                             "IndexLVQ::Search does not support IDSelector yet");
   lvq.SearchL2(n, x, n_total, codes.data(), k, distances, labels);
@@ -88,10 +102,14 @@ void IndexLVQ::Reset() {
 
 void IndexLVQ::Reconstruct(idx_t key, float* recons) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, lvq.code_size, codes.size(),
+                      "IndexLVQ::Reconstruct");
   HYPERVEC_THROW_IF_NOT_FMT(
       key >= 0 && key < n_total,
       "IndexLVQ::Reconstruct: key %" PRId64 " out of range [0, %" PRId64 ")",
       static_cast<int64_t>(key), static_cast<int64_t>(n_total));
+  HYPERVEC_THROW_IF_NOT_MSG(recons != nullptr,
+                            "IndexLVQ::Reconstruct: output must not be null");
   const LocalVectorQuantizerAdapter quantizer(lvq);
   quantizer.Decode(1, codes.data() + static_cast<size_t>(key) * lvq.code_size,
                    recons);
@@ -99,6 +117,8 @@ void IndexLVQ::Reconstruct(idx_t key, float* recons) const {
 
 DistanceComputer* IndexLVQ::GetDistanceComputer() const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, lvq.code_size, codes.size(),
+                      "IndexLVQ::GetDistanceComputer");
   const LocalVectorQuantizerAdapter quantizer(lvq);
   return quantizer
       .CreateDistanceComputer(

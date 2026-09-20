@@ -117,6 +117,41 @@ TEST(IndexLVQ, InvalidAddDoesNotMutateCodes) {
   EXPECT_THROW((*distance)(1), hypervec::HypervecException);
 }
 
+TEST(IndexLVQ, SearchAndReconstructValidateInputsAndStorage) {
+  const auto x = RandomVectors(32, 4, 24);
+  hypervec::IndexLVQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+
+  EXPECT_THROW(index.Search(-1, x.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 0, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, nullptr, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, &distance, nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
+  EXPECT_THROW(index.Reconstruct(0, nullptr), hypervec::HypervecException);
+
+  EXPECT_THROW(index.lvq.SearchL2(1, x.data(), -1, index.codes.data(), 1,
+                                  &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(
+      index.lvq.SearchL2(1, x.data(), 1, nullptr, 1, &distance, &label),
+      hypervec::HypervecException);
+
+  index.codes.resize(index.codes.size() - 1);
+  EXPECT_THROW(index.Search(0, nullptr, 1, nullptr, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(0, &distance), hypervec::HypervecException);
+  EXPECT_THROW(index.GetDistanceComputer(), hypervec::HypervecException);
+}
+
 TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   const hypervec::idx_t d = 12, nb = 1000, nq = 20, k = 5;
   const auto base = RandomVectors(nb, d, 31, 4.0f);

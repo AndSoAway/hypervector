@@ -16,6 +16,19 @@
 #include <vector>
 
 namespace hypervec {
+namespace {
+
+void ValidateCodeStorage(idx_t count, size_t code_size, size_t actual_size,
+                         const char* operation) {
+  HYPERVEC_THROW_IF_NOT_FMT(count >= 0, "%s: vector count is negative",
+                            operation);
+  const size_t expected_size =
+      mul_no_overflow(static_cast<size_t>(count), code_size, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(actual_size == expected_size,
+                            "%s: code storage size is inconsistent", operation);
+}
+
+}  // namespace
 
 IndexPQ::IndexPQ() : Index(0, kMetricL2) { is_trained = false; }
 
@@ -76,6 +89,7 @@ void IndexPQ::Add(idx_t n, const float* x) {
 void IndexPQ::Search(idx_t n, const float* x, idx_t k, float* distances,
                      idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, pq.code_size, codes.size(), "IndexPQ::Search");
   // T1 does not honour an IDSelector. Reject explicitly so callers don't
   // get silently-incorrect results.
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -92,10 +106,14 @@ void IndexPQ::Reset() {
 
 void IndexPQ::Reconstruct(idx_t key, float* recons) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, pq.code_size, codes.size(),
+                      "IndexPQ::Reconstruct");
   HYPERVEC_THROW_IF_NOT_FMT(
       key >= 0 && key < n_total,
       "IndexPQ::Reconstruct: key %" PRId64 " out of range [0, %" PRId64 ")",
       static_cast<int64_t>(key), static_cast<int64_t>(n_total));
+  HYPERVEC_THROW_IF_NOT_MSG(recons != nullptr,
+                            "IndexPQ::Reconstruct: output must not be null");
   const ProductQuantizerAdapter quantizer(pq);
   quantizer.Decode(1, codes.data() + static_cast<size_t>(key) * pq.code_size,
                    recons);
@@ -103,6 +121,8 @@ void IndexPQ::Reconstruct(idx_t key, float* recons) const {
 
 DistanceComputer* IndexPQ::GetDistanceComputer() const {
   HYPERVEC_THROW_IF_NOT(is_trained);
+  ValidateCodeStorage(n_total, pq.code_size, codes.size(),
+                      "IndexPQ::GetDistanceComputer");
   const ProductQuantizerAdapter quantizer(pq);
   return quantizer
       .CreateDistanceComputer(

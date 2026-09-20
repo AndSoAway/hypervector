@@ -169,6 +169,40 @@ TEST(IndexPQ, InvalidAddDoesNotMutateCodes) {
   EXPECT_THROW((*distance)(1), hypervec::HypervecException);
 }
 
+TEST(IndexPQ, SearchAndReconstructValidateInputsAndStorage) {
+  const auto x = RandomVectors(32, 4, 89);
+  hypervec::IndexPQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+
+  EXPECT_THROW(index.Search(-1, x.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 0, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, nullptr, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, &distance, nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
+  EXPECT_THROW(index.Reconstruct(0, nullptr), hypervec::HypervecException);
+
+  EXPECT_THROW(index.pq.SearchL2(1, x.data(), -1, index.codes.data(), 1,
+                                 &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.pq.SearchL2(1, x.data(), 1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+
+  index.codes.resize(index.codes.size() - 1);
+  EXPECT_THROW(index.Search(0, nullptr, 1, nullptr, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(0, &distance), hypervec::HypervecException);
+  EXPECT_THROW(index.GetDistanceComputer(), hypervec::HypervecException);
+}
+
 TEST(IndexPQ, IDSelectorParamThrows) {
   // T1 doesn't honour an IDSelector and rejects rather than ignoring it.
   hypervec::IndexPQ idx(8, 4, 4);

@@ -20,6 +20,8 @@
 #include <string_view>
 #include <system_error>
 
+#include "eval/json_util.h"
+
 namespace {
 
 using hypervec::SemanticMetric;
@@ -156,45 +158,6 @@ void ValidateCommand(const CommandLine& command) {
   }
 }
 
-std::string JsonEscape(std::string_view value) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string escaped;
-  for (unsigned char character : value) {
-    switch (character) {
-      case '\"':
-        escaped += "\\\"";
-        break;
-      case '\\':
-        escaped += "\\\\";
-        break;
-      case '\b':
-        escaped += "\\b";
-        break;
-      case '\f':
-        escaped += "\\f";
-        break;
-      case '\n':
-        escaped += "\\n";
-        break;
-      case '\r':
-        escaped += "\\r";
-        break;
-      case '\t':
-        escaped += "\\t";
-        break;
-      default:
-        if (character < 0x20U) {
-          escaped += "\\u00";
-          escaped.push_back(kHex[character >> 4U]);
-          escaped.push_back(kHex[character & 0x0FU]);
-        } else {
-          escaped.push_back(static_cast<char>(character));
-        }
-    }
-  }
-  return escaped;
-}
-
 void WriteMetadata(const CommandLine& command,
                    const hypervec::FloatVectorDataset& source,
                    const hypervec::DatasetRowSplit& split) {
@@ -206,13 +169,16 @@ void WriteMetadata(const CommandLine& command,
   }
   output << "{\n"
          << "  \"format\": \"hypervec-eval-dataset-v1\",\n"
-         << "  \"name\": \"" << JsonEscape(command.name) << "\",\n"
+         << "  \"name\": \"" << hypervec::eval_cli::JsonEscape(command.name)
+         << "\",\n"
          << "  \"source_format\": \"fvecs\",\n"
          << "  \"dtype\": \"float32\",\n"
-         << "  \"source\": \"" << JsonEscape(command.input_path) << "\",\n"
-         << "  \"base\": \"" << JsonEscape(command.base_output_path) << "\",\n"
-         << "  \"queries\": \"" << JsonEscape(command.query_output_path)
-         << "\",\n"
+         << "  \"source\": \""
+         << hypervec::eval_cli::JsonEscape(command.input_path) << "\",\n"
+         << "  \"base\": \""
+         << hypervec::eval_cli::JsonEscape(command.base_output_path) << "\",\n"
+         << "  \"queries\": \""
+         << hypervec::eval_cli::JsonEscape(command.query_output_path) << "\",\n"
          << "  \"dimension\": " << source.dimension << ",\n"
          << "  \"source_count\": " << source.vector_count << ",\n"
          << "  \"base_count\": " << split.base_rows.size() << ",\n"

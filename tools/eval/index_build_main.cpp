@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>  // NOLINT(build/c++17): the project requires C++20.
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -25,6 +26,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "eval/json_util.h"
 
 namespace {
 
@@ -43,10 +46,12 @@ struct CommandLine {
   std::string input_path;
   std::string training_query_path;
   std::string output_path;
+  std::string json_output_path;
   std::string index_type;
   hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
   bool has_metric = false;
   std::vector<ConfigParameter> parameters;
+  std::vector<std::string> parameter_assignments;
   bool list_indexes = false;
   bool show_help = false;
 };
@@ -62,6 +67,7 @@ void PrintUsage(std::ostream& output) {
       << "  --metric METRIC                 l2, inner_product, or cosine\n"
       << "  --index-param NAME=TYPE:VALUE   Repeatable typed factory option\n"
       << "                                   TYPE: int, double, bool, string\n"
+      << "  --json-output REPORT.json       Optional build manifest\n"
       << "  --list-indexes                  List registered indexes and "
          "options\n"
       << "  --help                          Show this message\n";
@@ -168,13 +174,17 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.output_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--index-type") {
       command.index_type = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--json-output") {
+      command.json_output_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--metric") {
       command.semantic_metric =
           ParseMetric(RequireValue(argc, argv, &position, argument));
       command.has_metric = true;
     } else if (argument == "--index-param") {
-      command.parameters.push_back(
-          ParseIndexParameter(RequireValue(argc, argv, &position, argument)));
+      const std::string_view assignment =
+          RequireValue(argc, argv, &position, argument);
+      command.parameters.push_back(ParseIndexParameter(assignment));
+      command.parameter_assignments.emplace_back(assignment);
     } else {
       throw std::runtime_error("unknown option: " + std::string(argument));
     }
@@ -197,6 +207,16 @@ void ValidateCommand(const CommandLine& command) {
       (!command.training_query_path.empty() &&
        output == NormalizedPath(command.training_query_path))) {
     throw std::runtime_error("index output must differ from dataset inputs");
+  }
+  if (!command.json_output_path.empty()) {
+    const std::filesystem::path report =
+        NormalizedPath(command.json_output_path);
+    if (report == output || report == NormalizedPath(command.input_path) ||
+        (!command.training_query_path.empty() &&
+         report == NormalizedPath(command.training_query_path))) {
+      throw std::runtime_error(
+          "build manifest must differ from index and dataset paths");
+    }
   }
   std::unordered_set<std::string> names;
   for (const ConfigParameter& parameter : command.parameters) {
@@ -248,6 +268,87 @@ void PrintList(std::ostream& output) {
   }
 }
 
+std::string_view IndexMetricName(hypervec::MetricType metric) {
+  if (metric == hypervec::kMetricL2) {
+    return "l2";
+  }
+  if (metric == hypervec::kMetricInnerProduct) {
+    return "inner_product";
+  }
+  throw std::runtime_error("unsupported build index metric");
+}
+
+void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
+                       const hypervec::FloatVectorDataset& base,
+                       hypervec::idx_t training_query_count,
+                       double build_seconds, double write_seconds) {
+  if (command.json_output_path.empty()) {
+    return;
+  }
+  std::ofstream output(command.json_output_path,
+                       std::ios::out | std::ios::trunc);
+  if (!output.is_open()) {
+    throw std::runtime_error("cannot open build manifest output: " +
+                             command.json_output_path);
+  }
+  output << std::setprecision(17);
+  output << "{\n"
+         << "  \"format\": \"hypervec-build-report-v1\",\n"
+         << "  \"library_version\": \"" << VERSION_STRING << "\",\n"
+         << "  \"dataset\": {\n"
+         << "    \"base\": \""
+         << hypervec::eval_cli::JsonEscape(
+                NormalizedPath(command.input_path).generic_string())
+         << "\",\n"
+         << "    \"training_queries\": ";
+  if (command.training_query_path.empty()) {
+    output << "null";
+  } else {
+    output << "\""
+           << hypervec::eval_cli::JsonEscape(
+                  NormalizedPath(command.training_query_path).generic_string())
+           << "\"";
+  }
+  output << ",\n"
+         << "    \"semantic_metric\": \""
+         << hypervec::SemanticMetricName(command.semantic_metric) << "\",\n"
+         << "    \"dimension\": " << base.dimension << ",\n"
+         << "    \"vector_count\": " << base.vector_count << ",\n"
+         << "    \"training_query_count\": " << training_query_count << "\n"
+         << "  },\n"
+         << "  \"index\": {\n"
+         << "    \"path\": \""
+         << hypervec::eval_cli::JsonEscape(
+                NormalizedPath(command.output_path).generic_string())
+         << "\",\n"
+         << "    \"requested_type\": \""
+         << hypervec::eval_cli::JsonEscape(command.index_type) << "\",\n"
+         << "    \"metric\": \"" << IndexMetricName(index.metric_type)
+         << "\",\n"
+         << "    \"metric_type\": " << static_cast<int>(index.metric_type)
+         << ",\n"
+         << "    \"requested_parameters\": [";
+  for (size_t offset = 0; offset < command.parameter_assignments.size();
+       ++offset) {
+    output << (offset == 0 ? "" : ", ") << "\""
+           << hypervec::eval_cli::JsonEscape(
+                  command.parameter_assignments[offset])
+           << "\"";
+  }
+  output << "]\n"
+         << "  },\n"
+         << "  \"timing\": {\n"
+         << "    \"build_seconds\": " << build_seconds << ",\n"
+         << "    \"write_seconds\": " << write_seconds << "\n"
+         << "  }\n"
+         << "}\n";
+  output.close();
+  if (output.fail()) {
+    throw std::runtime_error("cannot write build manifest output: " +
+                             command.json_output_path);
+  }
+}
+
 int Run(const CommandLine& command) {
   ValidateCommand(command);
   const hypervec::FloatVectorDataset base =
@@ -293,6 +394,8 @@ int Run(const CommandLine& command) {
       std::chrono::duration<double>(build_end - build_start).count();
   const double write_seconds =
       std::chrono::duration<double>(write_end - write_start).count();
+  WriteJsonManifest(command, *index, base, training_queries.vector_count,
+                    build_seconds, write_seconds);
   std::cout << std::setprecision(10);
   std::cout << "index_type=" << command.index_type << '\n';
   std::cout << "metric="
@@ -306,6 +409,9 @@ int Run(const CommandLine& command) {
   std::cout << "training_query_count=" << training_queries.vector_count << '\n';
   std::cout << "build_seconds=" << build_seconds << '\n';
   std::cout << "write_seconds=" << write_seconds << '\n';
+  if (!command.json_output_path.empty()) {
+    std::cout << "json_output=" << command.json_output_path << '\n';
+  }
   return 0;
 }
 

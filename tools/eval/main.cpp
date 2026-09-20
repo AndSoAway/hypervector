@@ -28,6 +28,8 @@
 #include <system_error>
 #include <vector>
 
+#include "eval/json_util.h"
+
 namespace {
 
 struct CommandLine {
@@ -187,45 +189,6 @@ void ValidateCommand(const CommandLine& command) {
   }
 }
 
-std::string JsonEscape(std::string_view value) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string escaped;
-  for (unsigned char character : value) {
-    switch (character) {
-      case '\"':
-        escaped += "\\\"";
-        break;
-      case '\\':
-        escaped += "\\\\";
-        break;
-      case '\b':
-        escaped += "\\b";
-        break;
-      case '\f':
-        escaped += "\\f";
-        break;
-      case '\n':
-        escaped += "\\n";
-        break;
-      case '\r':
-        escaped += "\\r";
-        break;
-      case '\t':
-        escaped += "\\t";
-        break;
-      default:
-        if (character < 0x20U) {
-          escaped += "\\u00";
-          escaped.push_back(kHex[character >> 4U]);
-          escaped.push_back(kHex[character & 0x0FU]);
-        } else {
-          escaped.push_back(static_cast<char>(character));
-        }
-    }
-  }
-  return escaped;
-}
-
 std::string_view MetricName(hypervec::MetricType metric) {
   switch (metric) {
     case hypervec::kMetricInnerProduct:
@@ -281,9 +244,11 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
          << "  \"library_version\": \"" << VERSION_STRING << "\",\n"
          << "  \"index\": {\n"
          << "    \"path\": \""
-         << JsonEscape(NormalizedPath(command.index_path).generic_string())
+         << hypervec::eval_cli::JsonEscape(
+                NormalizedPath(command.index_path).generic_string())
          << "\",\n"
-         << "    \"family\": \"" << JsonEscape(descriptor.name) << "\",\n"
+         << "    \"family\": \""
+         << hypervec::eval_cli::JsonEscape(descriptor.name) << "\",\n"
          << "    \"dimension\": " << index.d << ",\n"
          << "    \"vector_count\": " << index.n_total << ",\n"
          << "    \"metric\": \"" << MetricName(index.metric_type) << "\",\n"
@@ -295,10 +260,11 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
          << "  },\n"
          << "  \"workload\": {\n"
          << "    \"queries\": \""
-         << JsonEscape(NormalizedPath(command.query_path).generic_string())
+         << hypervec::eval_cli::JsonEscape(
+                NormalizedPath(command.query_path).generic_string())
          << "\",\n"
          << "    \"ground_truth\": \""
-         << JsonEscape(
+         << hypervec::eval_cli::JsonEscape(
                 NormalizedPath(command.ground_truth_path).generic_string())
          << "\",\n"
          << "    \"query_count\": " << result.query_count << ",\n"
@@ -313,7 +279,8 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
          << "    \"search_parameters\": [";
   for (size_t offset = 0; offset < command.search_parameters.size(); ++offset) {
     output << (offset == 0 ? "" : ", ") << "\""
-           << JsonEscape(command.search_parameters[offset]) << "\"";
+           << hypervec::eval_cli::JsonEscape(command.search_parameters[offset])
+           << "\"";
   }
   output << "]\n"
          << "  },\n"

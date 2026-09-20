@@ -37,6 +37,7 @@ def main():
         queries = directory / "queries.fvecs"
         ground_truth = directory / "ground-truth.ivecs"
         index = directory / "flat.index"
+        build_report_path = directory / "build-report.json"
         report_path = directory / "report.json"
         write_fvecs(base, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         write_fvecs(queries, [[0.9, 0.1]])
@@ -64,6 +65,8 @@ def main():
             "flat",
             "--metric",
             "l2",
+            "--json-output",
+            build_report_path,
         )
         run(
             eval_tool,
@@ -84,6 +87,16 @@ def main():
             "--json-output",
             report_path,
         )
+
+        build_report = json.loads(build_report_path.read_text(encoding="utf-8"))
+        assert build_report["format"] == "hypervec-build-report-v1"
+        assert build_report["dataset"]["semantic_metric"] == "l2"
+        assert build_report["dataset"]["vector_count"] == 3
+        assert build_report["index"]["requested_type"] == "flat"
+        assert build_report["index"]["metric"] == "l2"
+        assert build_report["index"]["requested_parameters"] == []
+        assert build_report["timing"]["build_seconds"] >= 0.0
+        assert Path(build_report["dataset"]["base"]).is_absolute()
 
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["format"] == "hypervec-eval-report-v1"

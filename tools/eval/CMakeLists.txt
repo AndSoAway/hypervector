@@ -15,6 +15,13 @@ target_link_libraries(hypervec_ground_truth PRIVATE hypervec)
 add_executable(hypervec_build index_build_main.cpp)
 target_link_libraries(hypervec_build PRIVATE hypervec)
 
+foreach(target
+    hypervec_eval
+    hypervec_dataset
+    hypervec_build)
+  target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+endforeach()
+
 install(PROGRAMS convert_hdf5.py
   DESTINATION ${CMAKE_INSTALL_BINDIR}
   RENAME hypervec_convert_hdf5

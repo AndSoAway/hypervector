@@ -117,6 +117,10 @@ void IndexHNSWLVQ::Freeze() {
   }
 }
 
+void IndexHNSWLVQ::PermuteEntries(const idx_t* perm) {
+  PermuteEntriesImpl(perm, raw_storage);
+}
+
 size_t IndexHNSWLVQ::SaCodeSize() const {
   HYPERVEC_THROW_IF_NOT(storage != nullptr);
   return storage->SaCodeSize();

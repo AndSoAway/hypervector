@@ -12,6 +12,8 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <omp.h>
+#include <quantization/lvq/index_lvq.h>
+#include <quantization/pq/index_pq.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
 #include <utils/log/assert.h>
@@ -25,8 +27,11 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <random>
+#include <utility>
+#include <vector>
 
 #include "index/hnsw/hnsw_build_utils.h"
 
@@ -49,6 +54,117 @@ DistanceComputer* storage_distance_computer(const Index* storage) {
     return new NegativeDistanceComputer(storage->GetDistanceComputer());
   } else {
     return storage->GetDistanceComputer();
+  }
+}
+
+std::vector<idx_t> ValidatePermutation(const idx_t* perm, idx_t count) {
+  HYPERVEC_THROW_IF_NOT_MSG(count >= 0,
+                            "IndexHNSW::PermuteEntries: negative vector count");
+  std::vector<idx_t> inverse(static_cast<size_t>(count));
+  if (count == 0) {
+    return inverse;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      perm != nullptr,
+      "IndexHNSW::PermuteEntries: permutation must not be null");
+  std::vector<uint8_t> seen(static_cast<size_t>(count), 0);
+  for (idx_t new_id = 0; new_id < count; ++new_id) {
+    const idx_t old_id = perm[new_id];
+    HYPERVEC_THROW_IF_NOT_FMT(old_id >= 0 && old_id < count,
+                              "IndexHNSW::PermuteEntries: entry %" PRId64
+                              " is outside [0, %" PRId64 ")",
+                              static_cast<int64_t>(old_id),
+                              static_cast<int64_t>(count));
+    HYPERVEC_THROW_IF_NOT_FMT(
+        seen[static_cast<size_t>(old_id)] == 0,
+        "IndexHNSW::PermuteEntries: duplicate old id %" PRId64,
+        static_cast<int64_t>(old_id));
+    seen[static_cast<size_t>(old_id)] = 1;
+    inverse[static_cast<size_t>(old_id)] = new_id;
+  }
+  return inverse;
+}
+
+struct PreparedStoragePermutation {
+  MaybeOwnedVector<uint8_t>* storage_codes = nullptr;
+  MaybeOwnedVector<uint8_t> codes;
+  IndexFlatL2* flat_l2 = nullptr;
+  IndexFlat1D* flat_1d = nullptr;
+  bool replace_flat_1d_permutation = false;
+  std::vector<idx_t> flat_1d_permutation;
+};
+
+PreparedStoragePermutation PrepareStoragePermutation(
+    Index* storage, const idx_t* perm, idx_t count,
+    const std::vector<idx_t>& inverse) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW::PermuteEntries: storage must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage->n_total == count,
+      "IndexHNSW::PermuteEntries: storage and graph counts differ");
+  size_t code_size = 0;
+  MaybeOwnedVector<uint8_t>* storage_codes = nullptr;
+  if (auto* flat_codes = dynamic_cast<IndexFlatCodes*>(storage)) {
+    code_size = flat_codes->code_size;
+    storage_codes = &flat_codes->codes;
+  } else if (auto* pq = dynamic_cast<IndexPQ*>(storage)) {
+    code_size = pq->pq.code_size;
+    storage_codes = &pq->codes;
+  } else if (auto* lvq = dynamic_cast<IndexLVQ*>(storage)) {
+    code_size = lvq->lvq.code_size;
+    storage_codes = &lvq->codes;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage_codes != nullptr,
+      "IndexHNSW::PermuteEntries: storage does not support code reordering");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_size > 0 || count == 0,
+      "IndexHNSW::PermuteEntries: storage code size is invalid");
+  const size_t expected_bytes = mul_no_overflow(
+      static_cast<size_t>(count), code_size, "IndexHNSW permutation storage");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage_codes->size() == expected_bytes,
+      "IndexHNSW::PermuteEntries: encoded storage size is inconsistent");
+
+  PreparedStoragePermutation prepared;
+  prepared.storage_codes = storage_codes;
+  prepared.codes.resize(expected_bytes);
+  for (idx_t new_id = 0; new_id < count; ++new_id) {
+    std::memcpy(
+        prepared.codes.data() + static_cast<size_t>(new_id) * code_size,
+        storage_codes->data() + static_cast<size_t>(perm[new_id]) * code_size,
+        code_size);
+  }
+
+  prepared.flat_l2 = dynamic_cast<IndexFlatL2*>(storage);
+  prepared.flat_1d = dynamic_cast<IndexFlat1D*>(storage);
+  if (prepared.flat_1d != nullptr && !prepared.flat_1d->perm.empty()) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        prepared.flat_1d->perm.size() == static_cast<size_t>(count),
+        "IndexHNSW::PermuteEntries: IndexFlat1D permutation is inconsistent");
+    prepared.replace_flat_1d_permutation = true;
+    prepared.flat_1d_permutation.resize(static_cast<size_t>(count));
+    for (idx_t rank = 0; rank < count; ++rank) {
+      const idx_t old_id = prepared.flat_1d->perm[static_cast<size_t>(rank)];
+      HYPERVEC_THROW_IF_NOT_MSG(
+          old_id >= 0 && old_id < count,
+          "IndexHNSW::PermuteEntries: IndexFlat1D contains an invalid id");
+      prepared.flat_1d_permutation[static_cast<size_t>(rank)] =
+          inverse[static_cast<size_t>(old_id)];
+    }
+  }
+  return prepared;
+}
+
+void CommitStoragePermutation(PreparedStoragePermutation* prepared) {
+  using std::swap;
+  swap(*prepared->storage_codes, prepared->codes);
+  if (prepared->flat_l2 != nullptr) {
+    prepared->flat_l2->cached_l2norms.clear();
+  }
+  if (prepared->replace_flat_1d_permutation) {
+    prepared->flat_1d->perm.swap(prepared->flat_1d_permutation);
   }
 }
 
@@ -193,7 +309,34 @@ void IndexHNSW::Search1(const float* x, ResultHandler& handler,
 }
 
 void IndexHNSW::PermuteEntries(const idx_t* perm) {
-  // Not implemented in minimal HNSW build
+  PermuteEntriesImpl(perm, nullptr);
+}
+
+void IndexHNSW::PermuteEntriesImpl(const idx_t* perm,
+                                   Index* secondary_storage) {
+  const std::vector<idx_t> inverse = ValidatePermutation(perm, n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.levels.size() == static_cast<size_t>(n_total),
+      "IndexHNSW::PermuteEntries: graph and index counts differ");
+
+  PreparedStoragePermutation primary =
+      PrepareStoragePermutation(storage, perm, n_total, inverse);
+  std::optional<PreparedStoragePermutation> secondary;
+  if (secondary_storage != nullptr) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        secondary_storage != storage,
+        "IndexHNSW::PermuteEntries: secondary storage aliases storage");
+    secondary.emplace(
+        PrepareStoragePermutation(secondary_storage, perm, n_total, inverse));
+  }
+
+  // HNSW validates and stages its replacement arrays before swapping them.
+  // Once it succeeds, the prepared code-buffer swaps below cannot allocate.
+  hnsw.PermuteEntries(perm);
+  CommitStoragePermutation(&primary);
+  if (secondary.has_value()) {
+    CommitStoragePermutation(&secondary.value());
+  }
 }
 
 void IndexHNSW::Reconstruct(idx_t key, float* recons) const {

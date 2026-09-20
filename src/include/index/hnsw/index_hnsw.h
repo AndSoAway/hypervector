@@ -108,6 +108,11 @@ struct IndexHNSW : Index {
   virtual void PermuteEntries(const idx_t* perm);
 
   DistanceComputer* GetDistanceComputer() const override;
+
+ protected:
+  /** Permute the graph, encoded storage, and an optional build-time store as
+   * one validated operation. */
+  void PermuteEntriesImpl(const idx_t* perm, Index* secondary_storage);
 };
 
 /** Flat index topped with with a HNSW structure to access elements

@@ -390,6 +390,133 @@ void WritePreTransformPayload(const Index& index, IOWriter* f, int io_flags) {
   WriteIndex(wrapper.index.get(), f, 0);
 }
 
+void ValidateLSHForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& lsh = static_cast<const IndexLSH&>(index);
+  const size_t expected_code_size = mul_no_overflow(
+      static_cast<size_t>(lsh.d), sizeof(float), "IndexLSH code size");
+  const size_t expected_hyperplanes = mul_no_overflow(
+      mul_no_overflow(lsh.Options().table_count, lsh.Options().bits_per_table,
+                      "IndexLSH hyperplane count"),
+      static_cast<size_t>(lsh.d), "IndexLSH hyperplane elements");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      lsh.is_trained && lsh.metric_type == kMetricInnerProduct &&
+          lsh.CodeStore().CodeSize() == expected_code_size &&
+          lsh.CodeStore().Size() == lsh.n_total,
+      "IndexLSH serialize: index metadata does not match stored vectors");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      lsh.Hyperplanes().size() == expected_hyperplanes,
+      "IndexLSH serialize: hyperplane count does not match the options");
+}
+
+void WriteLSHPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& lsh = static_cast<const IndexLSH&>(index);
+  write_index_header(lsh, f);
+  const LSHIndexOptions& options = lsh.Options();
+  WRITE1(options.table_count);
+  WRITE1(options.bits_per_table);
+  WRITE1(options.probe_count);
+  WRITE1(options.candidate_limit);
+  WRITE1(options.random_seed);
+  WRITEVECTOR(lsh.Hyperplanes());
+  const size_t code_bytes =
+      mul_no_overflow(static_cast<size_t>(lsh.n_total),
+                      lsh.CodeStore().CodeSize(), "IndexLSH codes");
+  WRITE1(code_bytes);
+  WRITEANDCHECK(lsh.CodeStore().Data(), code_bytes);
+}
+
+void ValidateNSWFlatForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& nsw = static_cast<const IndexNSWFlat&>(index);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nsw.CodeStore().Size() == nsw.n_total &&
+          nsw.Graph().NodeCount() == static_cast<size_t>(nsw.n_total),
+      "IndexNSWFlat serialize: stored counts do not match n_total");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nsw.QuantizerModel().Dimension() == nsw.d &&
+          nsw.QuantizerModel().Metric() == nsw.metric_type &&
+          nsw.QuantizerModel().IsTrained() == nsw.is_trained,
+      "IndexNSWFlat serialize: quantizer metadata does not match the index");
+  const GraphValidationReport report =
+      ValidateGraph(nsw.Graph(), nsw.EntryPoint());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid(),
+      "IndexNSWFlat serialize: graph structure is invalid");
+}
+
+void WriteNSWFlatPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& nsw = static_cast<const IndexNSWFlat&>(index);
+  write_index_header(nsw, f);
+  const NSWIndexOptions& options = nsw.Options();
+  WRITE1(options.max_degree);
+  WRITE1(options.ef_construction);
+  WRITE1(options.ef_search);
+  const uint8_t check_relative_distance = options.check_relative_distance;
+  const uint8_t fill_to_max_degree = options.fill_to_max_degree;
+  WRITE1(check_relative_distance);
+  WRITE1(fill_to_max_degree);
+  const GraphId entry_point = nsw.EntryPoint();
+  WRITE1(entry_point);
+  const size_t code_bytes =
+      mul_no_overflow(static_cast<size_t>(nsw.n_total),
+                      nsw.CodeStore().CodeSize(), "IndexNSWFlat codes");
+  WRITE1(code_bytes);
+  WRITEANDCHECK(nsw.CodeStore().Data(), code_bytes);
+  const CsrGraph graph(nsw.Graph());
+  WRITEVECTOR(graph.Offsets());
+  WRITEVECTOR(graph.Edges());
+}
+
+void ValidateNSGFlatForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& nsg = static_cast<const IndexNSGFlat&>(index);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nsg.CodeStore().Size() == nsg.n_total &&
+          nsg.Graph().NodeCount() == static_cast<size_t>(nsg.n_total),
+      "IndexNSGFlat serialize: stored counts do not match n_total");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nsg.QuantizerModel().Dimension() == nsg.d &&
+          nsg.QuantizerModel().Metric() == nsg.metric_type &&
+          nsg.QuantizerModel().IsTrained() == nsg.is_trained,
+      "IndexNSGFlat serialize: quantizer metadata does not match the index");
+  const GraphValidationReport report =
+      ValidateGraph(nsg.Graph(), nsg.EntryPoint());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid() &&
+          report.reachable_nodes == static_cast<size_t>(nsg.n_total),
+      "IndexNSGFlat serialize: graph is invalid or unreachable");
+}
+
+void WriteNSGFlatPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& nsg = static_cast<const IndexNSGFlat&>(index);
+  write_index_header(nsg, f);
+  const NSGIndexOptions& options = nsg.Options();
+  WRITE1(options.knn_degree);
+  WRITE1(options.nn_descent_iterations);
+  WRITE1(options.nn_descent_convergence_threshold);
+  WRITE1(options.random_seed);
+  WRITE1(options.max_degree);
+  WRITE1(options.build_search_width);
+  WRITE1(options.candidate_pool_size);
+  WRITE1(options.ef_search);
+  const uint8_t check_relative_distance = options.check_relative_distance;
+  WRITE1(check_relative_distance);
+  const GraphId entry_point = nsg.EntryPoint();
+  WRITE1(entry_point);
+  const size_t code_bytes =
+      mul_no_overflow(static_cast<size_t>(nsg.n_total),
+                      nsg.CodeStore().CodeSize(), "IndexNSGFlat codes");
+  WRITE1(code_bytes);
+  WRITEANDCHECK(nsg.CodeStore().Data(), code_bytes);
+  const CsrGraph graph(nsg.Graph());
+  WRITEVECTOR(graph.Offsets());
+  WRITEVECTOR(graph.Edges());
+}
+
 }  // namespace persistence_internal
 
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
@@ -467,132 +594,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     } else {
       write_random_access_payload(*reader, f);
     }
-    return;
-  }
-
-  const auto* lsh = dynamic_cast<const IndexLSH*>(index);
-  if (lsh) {
-    const size_t expected_code_size = mul_no_overflow(
-        static_cast<size_t>(lsh->d), sizeof(float), "IndexLSH code size");
-    const size_t expected_hyperplanes = mul_no_overflow(
-        mul_no_overflow(lsh->Options().table_count,
-                        lsh->Options().bits_per_table,
-                        "IndexLSH hyperplane count"),
-        static_cast<size_t>(lsh->d), "IndexLSH hyperplane elements");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        lsh->is_trained && lsh->metric_type == kMetricInnerProduct &&
-            lsh->CodeStore().CodeSize() == expected_code_size &&
-            lsh->CodeStore().Size() == lsh->n_total,
-        "IndexLSH serialize: index metadata does not match stored vectors");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        lsh->Hyperplanes().size() == expected_hyperplanes,
-        "IndexLSH serialize: hyperplane count does not match the options");
-
-    uint32_t h = fourcc("ILSh");
-    WRITE1(h);
-    write_index_header(*lsh, f);
-    const LSHIndexOptions& options = lsh->Options();
-    WRITE1(options.table_count);
-    WRITE1(options.bits_per_table);
-    WRITE1(options.probe_count);
-    WRITE1(options.candidate_limit);
-    WRITE1(options.random_seed);
-    WRITEVECTOR(lsh->Hyperplanes());
-    const size_t code_bytes =
-        mul_no_overflow(static_cast<size_t>(lsh->n_total),
-                        lsh->CodeStore().CodeSize(), "IndexLSH codes");
-    WRITE1(code_bytes);
-    WRITEANDCHECK(lsh->CodeStore().Data(), code_bytes);
-    return;
-  }
-
-  const auto* nswflat = dynamic_cast<const IndexNSWFlat*>(index);
-  if (nswflat) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-        nswflat->CodeStore().Size() == nswflat->n_total &&
-            nswflat->Graph().NodeCount() ==
-                static_cast<size_t>(nswflat->n_total),
-        "IndexNSWFlat serialize: stored counts do not match n_total");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        nswflat->QuantizerModel().Dimension() == nswflat->d &&
-            nswflat->QuantizerModel().Metric() == nswflat->metric_type &&
-            nswflat->QuantizerModel().IsTrained() == nswflat->is_trained,
-        "IndexNSWFlat serialize: quantizer metadata does not match the index");
-    const GraphValidationReport report =
-        ValidateGraph(nswflat->Graph(), nswflat->EntryPoint());
-    HYPERVEC_THROW_IF_NOT_MSG(
-        report.IsStructurallyValid(),
-        "IndexNSWFlat serialize: graph structure is invalid");
-
-    uint32_t h = fourcc("INSf");
-    WRITE1(h);
-    write_index_header(*nswflat, f);
-    const NSWIndexOptions& options = nswflat->Options();
-    WRITE1(options.max_degree);
-    WRITE1(options.ef_construction);
-    WRITE1(options.ef_search);
-    const uint8_t check_relative_distance = options.check_relative_distance;
-    const uint8_t fill_to_max_degree = options.fill_to_max_degree;
-    WRITE1(check_relative_distance);
-    WRITE1(fill_to_max_degree);
-    const GraphId entry_point = nswflat->EntryPoint();
-    WRITE1(entry_point);
-
-    const size_t code_bytes =
-        mul_no_overflow(static_cast<size_t>(nswflat->n_total),
-                        nswflat->CodeStore().CodeSize(), "IndexNSWFlat codes");
-    WRITE1(code_bytes);
-    WRITEANDCHECK(nswflat->CodeStore().Data(), code_bytes);
-    const CsrGraph graph(nswflat->Graph());
-    WRITEVECTOR(graph.Offsets());
-    WRITEVECTOR(graph.Edges());
-    return;
-  }
-
-  const auto* nsgflat = dynamic_cast<const IndexNSGFlat*>(index);
-  if (nsgflat) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-        nsgflat->CodeStore().Size() == nsgflat->n_total &&
-            nsgflat->Graph().NodeCount() ==
-                static_cast<size_t>(nsgflat->n_total),
-        "IndexNSGFlat serialize: stored counts do not match n_total");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        nsgflat->QuantizerModel().Dimension() == nsgflat->d &&
-            nsgflat->QuantizerModel().Metric() == nsgflat->metric_type &&
-            nsgflat->QuantizerModel().IsTrained() == nsgflat->is_trained,
-        "IndexNSGFlat serialize: quantizer metadata does not match the index");
-    const GraphValidationReport report =
-        ValidateGraph(nsgflat->Graph(), nsgflat->EntryPoint());
-    HYPERVEC_THROW_IF_NOT_MSG(
-        report.IsStructurallyValid() &&
-            report.reachable_nodes == static_cast<size_t>(nsgflat->n_total),
-        "IndexNSGFlat serialize: graph is invalid or unreachable");
-
-    uint32_t h = fourcc("INGf");
-    WRITE1(h);
-    write_index_header(*nsgflat, f);
-    const NSGIndexOptions& options = nsgflat->Options();
-    WRITE1(options.knn_degree);
-    WRITE1(options.nn_descent_iterations);
-    WRITE1(options.nn_descent_convergence_threshold);
-    WRITE1(options.random_seed);
-    WRITE1(options.max_degree);
-    WRITE1(options.build_search_width);
-    WRITE1(options.candidate_pool_size);
-    WRITE1(options.ef_search);
-    const uint8_t check_relative_distance = options.check_relative_distance;
-    WRITE1(check_relative_distance);
-    const GraphId entry_point = nsgflat->EntryPoint();
-    WRITE1(entry_point);
-
-    const size_t code_bytes =
-        mul_no_overflow(static_cast<size_t>(nsgflat->n_total),
-                        nsgflat->CodeStore().CodeSize(), "IndexNSGFlat codes");
-    WRITE1(code_bytes);
-    WRITEANDCHECK(nsgflat->CodeStore().Data(), code_bytes);
-    const CsrGraph graph(nsgflat->Graph());
-    WRITEVECTOR(graph.Offsets());
-    WRITEVECTOR(graph.Edges());
     return;
   }
 

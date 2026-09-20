@@ -9,6 +9,9 @@
 #include <index/flat/index_flat.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
+#include <index/nsg/index_nsg.h>
+#include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
 #include <persistence/index_io_builtins.h>
 #include <persistence/index_io_registry.h>
@@ -61,6 +64,15 @@ class BuiltinIndexIOCodecs {
                       std::type_index(typeid(IndexPreTransform)),
                       WritePreTransformPayload, ReadPreTransformPayload,
                       ValidatePreTransformForWrite);
+    registry.Register({"lsh", fourcc("ILSh"), {}},
+                      std::type_index(typeid(IndexLSH)), WriteLSHPayload,
+                      ReadLSHPayload, ValidateLSHForWrite);
+    registry.Register(
+        {"nsw_flat", fourcc("INSf"), {}}, std::type_index(typeid(IndexNSWFlat)),
+        WriteNSWFlatPayload, ReadNSWFlatPayload, ValidateNSWFlatForWrite);
+    registry.Register(
+        {"nsg_flat", fourcc("INGf"), {}}, std::type_index(typeid(IndexNSGFlat)),
+        WriteNSGFlatPayload, ReadNSGFlatPayload, ValidateNSGFlatForWrite);
   }
 
   IndexIORegistry registry;

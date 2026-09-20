@@ -353,6 +353,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
 
   // Create visited table
   VisitedTable vt(n_total);
+  const bool similarity = IsSimilarityMetric(metric_type);
 
   // Search each query
   for (idx_t i = 0; i < n; i++) {
@@ -360,6 +361,14 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
     res.begin(i);
     hnsw.Search(*dis, this, res, vt, params);
     res.end();
+    if (similarity) {
+      const size_t output_offset =
+          static_cast<size_t>(i) * static_cast<size_t>(k);
+      for (idx_t result = 0; result < k; ++result) {
+        distances[output_offset + static_cast<size_t>(result)] =
+            -distances[output_offset + static_cast<size_t>(result)];
+      }
+    }
   }
 }
 
@@ -410,7 +419,10 @@ void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
 }
 
 DistanceComputer* IndexHNSW::GetDistanceComputer() const {
-  return storage_distance_computer(storage);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW::GetDistanceComputer: storage must not be null");
+  return storage->GetDistanceComputer();
 }
 
 /**************************************************************

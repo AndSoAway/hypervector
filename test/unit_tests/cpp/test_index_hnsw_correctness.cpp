@@ -7,6 +7,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
@@ -221,6 +222,42 @@ TEST(IndexHNSWCorrectness, SearchValidatesInputsAndAlignedState) {
   params.ef_search = 0;
   EXPECT_THROW(populated.Search(1, query.data(), 1, &distance, &label, &params),
                hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, SearchReturnsExternalSimilarityScores) {
+  constexpr hypervec::idx_t dimension = 2;
+  constexpr hypervec::idx_t count = 3;
+  constexpr hypervec::idx_t k = 4;
+  const std::vector<float> database = {1.0F, 0.2F, 0.2F, 1.0F, 0.7F, 0.7F};
+  const std::array<float, dimension> query = {1.0F, 0.1F};
+
+  for (const hypervec::MetricType metric :
+       {hypervec::kMetricInnerProduct, hypervec::kMetricJaccard}) {
+    hypervec::IndexFlat expected(dimension, metric);
+    expected.Add(count, database.data());
+    hypervec::IndexHNSWFlat actual(dimension, 4, metric);
+    actual.Add(count, database.data());
+
+    std::array<float, k> expected_distances{};
+    std::array<float, k> actual_distances{};
+    std::array<hypervec::idx_t, k> expected_labels{};
+    std::array<hypervec::idx_t, k> actual_labels{};
+    expected.Search(1, query.data(), k, expected_distances.data(),
+                    expected_labels.data());
+    actual.Search(1, query.data(), k, actual_distances.data(),
+                  actual_labels.data());
+
+    EXPECT_EQ(actual_labels, expected_labels);
+    EXPECT_GT(actual_distances[0], 0.0F);
+    for (size_t result = 0; result < static_cast<size_t>(k); ++result) {
+      EXPECT_FLOAT_EQ(actual_distances[result], expected_distances[result]);
+    }
+
+    std::unique_ptr<hypervec::DistanceComputer> distance(
+        actual.GetDistanceComputer());
+    distance->SetQuery(query.data());
+    EXPECT_FLOAT_EQ((*distance)(actual_labels[0]), actual_distances[0]);
+  }
 }
 
 TEST(IndexHNSWCorrectness, RepeatedAddFlatKeepsGraphAligned) {

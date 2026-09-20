@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "eval/artifact_fingerprint.h"
 #include "eval/json_util.h"
 
 namespace {
@@ -285,6 +286,15 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
   if (command.json_output_path.empty()) {
     return;
   }
+  const hypervec::eval_cli::ArtifactFingerprint base_fingerprint =
+      hypervec::eval_cli::FingerprintFile(command.input_path);
+  const hypervec::eval_cli::ArtifactFingerprint index_fingerprint =
+      hypervec::eval_cli::FingerprintFile(command.output_path);
+  hypervec::eval_cli::ArtifactFingerprint training_fingerprint;
+  if (!command.training_query_path.empty()) {
+    training_fingerprint =
+        hypervec::eval_cli::FingerprintFile(command.training_query_path);
+  }
   std::ofstream output(command.json_output_path,
                        std::ios::out | std::ios::trunc);
   if (!output.is_open()) {
@@ -336,6 +346,24 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
            << "\"";
   }
   output << "]\n"
+         << "  },\n"
+         << "  \"artifacts\": {\n"
+         << "    \"base\": ";
+  hypervec::eval_cli::WriteArtifactJson(output, command.input_path,
+                                        base_fingerprint, "    ");
+  output << ",\n"
+         << "    \"training_queries\": ";
+  if (command.training_query_path.empty()) {
+    output << "null";
+  } else {
+    hypervec::eval_cli::WriteArtifactJson(output, command.training_query_path,
+                                          training_fingerprint, "    ");
+  }
+  output << ",\n"
+         << "    \"index\": ";
+  hypervec::eval_cli::WriteArtifactJson(output, command.output_path,
+                                        index_fingerprint, "    ");
+  output << "\n"
          << "  },\n"
          << "  \"timing\": {\n"
          << "    \"build_seconds\": " << build_seconds << ",\n"

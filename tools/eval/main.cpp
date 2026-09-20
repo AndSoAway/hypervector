@@ -28,6 +28,7 @@
 #include <system_error>
 #include <vector>
 
+#include "eval/artifact_fingerprint.h"
 #include "eval/json_util.h"
 
 namespace {
@@ -232,6 +233,12 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
   if (command.json_output_path.empty()) {
     return;
   }
+  const hypervec::eval_cli::ArtifactFingerprint index_fingerprint =
+      hypervec::eval_cli::FingerprintFile(command.index_path);
+  const hypervec::eval_cli::ArtifactFingerprint query_fingerprint =
+      hypervec::eval_cli::FingerprintFile(command.query_path);
+  const hypervec::eval_cli::ArtifactFingerprint ground_truth_fingerprint =
+      hypervec::eval_cli::FingerprintFile(command.ground_truth_path);
   std::ofstream output(command.json_output_path,
                        std::ios::out | std::ios::trunc);
   if (!output.is_open()) {
@@ -283,6 +290,20 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
            << "\"";
   }
   output << "]\n"
+         << "  },\n"
+         << "  \"artifacts\": {\n"
+         << "    \"index\": ";
+  hypervec::eval_cli::WriteArtifactJson(output, command.index_path,
+                                        index_fingerprint, "    ");
+  output << ",\n"
+         << "    \"queries\": ";
+  hypervec::eval_cli::WriteArtifactJson(output, command.query_path,
+                                        query_fingerprint, "    ");
+  output << ",\n"
+         << "    \"ground_truth\": ";
+  hypervec::eval_cli::WriteArtifactJson(output, command.ground_truth_path,
+                                        ground_truth_fingerprint, "    ");
+  output << "\n"
          << "  },\n"
          << "  \"metrics\": {\n"
          << "    \"recall_at_k\": ";

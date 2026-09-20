@@ -2,6 +2,7 @@
 """End-to-end smoke test for the file-based evaluation pipeline."""
 
 import json
+import hashlib
 from pathlib import Path
 import struct
 import subprocess
@@ -25,6 +26,12 @@ def run(*arguments):
         text=True,
         capture_output=True,
     )
+
+
+def assert_fingerprint(artifact, path):
+    assert artifact["path"] == str(path.resolve())
+    assert artifact["size_bytes"] == path.stat().st_size
+    assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def main():
@@ -97,6 +104,9 @@ def main():
         assert build_report["index"]["requested_parameters"] == []
         assert build_report["timing"]["build_seconds"] >= 0.0
         assert Path(build_report["dataset"]["base"]).is_absolute()
+        assert_fingerprint(build_report["artifacts"]["base"], base)
+        assert build_report["artifacts"]["training_queries"] is None
+        assert_fingerprint(build_report["artifacts"]["index"], index)
 
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["format"] == "hypervec-eval-report-v1"
@@ -112,6 +122,11 @@ def main():
         assert report["metrics"]["recall_at_k"] == 1.0
         assert Path(report["index"]["path"]).is_absolute()
         assert Path(report["workload"]["queries"]).is_absolute()
+        assert_fingerprint(report["artifacts"]["index"], index)
+        assert_fingerprint(report["artifacts"]["queries"], queries)
+        assert_fingerprint(
+            report["artifacts"]["ground_truth"], ground_truth
+        )
 
         cosine_base = directory / "cosine-base.fvecs"
         cosine_queries = directory / "cosine-queries.fvecs"

@@ -3,8 +3,12 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the "License") found in the
 # LICENSE file in the root directory of this source tree.
 
+add_library(hypervec_eval_support STATIC artifact_fingerprint.cpp)
+target_include_directories(hypervec_eval_support
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+
 add_executable(hypervec_eval main.cpp)
-target_link_libraries(hypervec_eval PRIVATE hypervec)
+target_link_libraries(hypervec_eval PRIVATE hypervec hypervec_eval_support)
 
 add_executable(hypervec_dataset dataset_main.cpp)
 target_link_libraries(hypervec_dataset PRIVATE hypervec)
@@ -13,7 +17,7 @@ add_executable(hypervec_ground_truth ground_truth_main.cpp)
 target_link_libraries(hypervec_ground_truth PRIVATE hypervec)
 
 add_executable(hypervec_build index_build_main.cpp)
-target_link_libraries(hypervec_build PRIVATE hypervec)
+target_link_libraries(hypervec_build PRIVATE hypervec hypervec_eval_support)
 
 foreach(target
     hypervec_eval

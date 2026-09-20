@@ -169,6 +169,33 @@ TEST(IndexPQ, InvalidAddDoesNotMutateCodes) {
   EXPECT_THROW((*distance)(1), hypervec::HypervecException);
 }
 
+TEST(IndexPQ, MappedStorageRejectsAddWithoutMutation) {
+#if !defined(__linux__) && !defined(__FreeBSD__) && !defined(_WIN32)
+  GTEST_SKIP() << "Memory-mapped persistence is not supported on this OS.";
+#endif
+  const auto x = RandomVectors(32, 4, 90);
+  hypervec::IndexPQ source(4, 2, 2);
+  source.Train(32, x.data());
+  source.Add(1, x.data());
+
+  TempFile file;
+  hypervec::WriteIndex(&source, file.path.c_str());
+  std::unique_ptr<hypervec::Index> loaded =
+      hypervec::ReadIndexUp(file.path.c_str(), hypervec::IO_FLAG_MMAP_IFC);
+  auto* mapped = dynamic_cast<hypervec::IndexPQ*>(loaded.get());
+  ASSERT_NE(mapped, nullptr);
+  ASSERT_FALSE(mapped->codes.is_owned);
+  const std::vector<uint8_t> original_codes(
+      mapped->codes.data(), mapped->codes.data() + mapped->codes.size());
+
+  EXPECT_THROW(mapped->Add(1, x.data()), hypervec::HypervecException);
+  EXPECT_EQ(mapped->n_total, 1);
+  EXPECT_FALSE(mapped->codes.is_owned);
+  EXPECT_EQ(std::vector<uint8_t>(mapped->codes.data(),
+                                 mapped->codes.data() + mapped->codes.size()),
+            original_codes);
+}
+
 TEST(IndexPQ, SearchAndReconstructValidateInputsAndStorage) {
   const auto x = RandomVectors(32, 4, 89);
   hypervec::IndexPQ index(4, 2, 2);

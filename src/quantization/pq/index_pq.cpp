@@ -62,6 +62,8 @@ void IndexPQ::Add(idx_t n, const float* x) {
     return;
   }
   HYPERVEC_THROW_IF_NOT_MSG(x != nullptr, "IndexPQ::Add: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(codes.is_owned,
+                            "IndexPQ::Add: mapped storage is read-only");
 
   HYPERVEC_THROW_IF_NOT_MSG(
       n <= (std::numeric_limits<idx_t>::max)() - n_total,

@@ -107,7 +107,8 @@ struct IndexHNSW : Index {
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
                                  const storage_idx_t* nearests);
 
-  // reorder links from nearest to farthest
+  /** Transactionally reorder existing level-0 links from nearest to farthest.
+   * Similarity metrics are ordered from highest to lowest similarity. */
   void ReorderLinks();
 
   void LinkSingletons();

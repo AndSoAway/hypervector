@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -201,6 +202,44 @@ void ValidateHNSWState(const IndexHNSW& index, const char* operation) {
           index.hnsw.levels[static_cast<size_t>(index.hnsw.entry_point)] >
               index.hnsw.max_level,
       "%s: entry-point level is inconsistent", operation);
+}
+
+std::vector<NodeDistFarther> CollectLevel0Neighbors(const IndexHNSW& index,
+                                                    idx_t node,
+                                                    DistanceComputer& distance,
+                                                    const char* operation) {
+  size_t begin = 0;
+  size_t end = 0;
+  index.hnsw.NeighborRange(node, 0, &begin, &end);
+  std::vector<NodeDistFarther> neighbors;
+  neighbors.reserve(end - begin);
+  bool reached_end = false;
+  for (size_t offset = begin; offset < end; ++offset) {
+    const storage_idx_t neighbor = index.hnsw.neighbors[offset];
+    if (neighbor < 0) {
+      HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
+                                "%s: node %" PRId64
+                                " has an invalid neighbor sentinel",
+                                operation, static_cast<int64_t>(node));
+      reached_end = true;
+      continue;
+    }
+    HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
+                              "%s: node %" PRId64
+                              " has a neighbor after the end sentinel",
+                              operation, static_cast<int64_t>(node));
+    HYPERVEC_THROW_IF_NOT_FMT(static_cast<idx_t>(neighbor) < index.n_total,
+                              "%s: node %" PRId64
+                              " has an out-of-range neighbor %d",
+                              operation, static_cast<int64_t>(node), neighbor);
+    const float value = distance.symmetric_dis(node, neighbor);
+    HYPERVEC_THROW_IF_NOT_FMT(!std::isnan(value),
+                              "%s: node %" PRId64
+                              " has a NaN distance to neighbor %d",
+                              operation, static_cast<int64_t>(node), neighbor);
+    neighbors.emplace_back(value, neighbor);
+  }
+  return neighbors;
 }
 
 void ValidateRuntimeEfSearch(const IndexHNSW& index,
@@ -546,27 +585,11 @@ void IndexHNSW::ShrinkLevel0Neighbors(int size) {
     size_t begin = 0;
     size_t end = 0;
     hnsw.NeighborRange(node, 0, &begin, &end);
+    const std::vector<NodeDistFarther> level_neighbors =
+        CollectLevel0Neighbors(*this, node, *dis, operation);
     std::priority_queue<NodeDistFarther> candidates;
-    bool reached_end = false;
-    for (size_t offset = begin; offset < end; ++offset) {
-      const storage_idx_t neighbor = hnsw.neighbors[offset];
-      if (neighbor < 0) {
-        HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
-                                  "%s: node %" PRId64
-                                  " has an invalid neighbor sentinel",
-                                  operation, static_cast<int64_t>(node));
-        reached_end = true;
-        continue;
-      }
-      HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
-                                "%s: node %" PRId64
-                                " has a neighbor after the end sentinel",
-                                operation, static_cast<int64_t>(node));
-      HYPERVEC_THROW_IF_NOT_FMT(
-          static_cast<idx_t>(neighbor) < n_total,
-          "%s: node %" PRId64 " has an out-of-range neighbor %d", operation,
-          static_cast<int64_t>(node), neighbor);
-      candidates.emplace(dis->symmetric_dis(node, neighbor), neighbor);
+    for (const NodeDistFarther& neighbor : level_neighbors) {
+      candidates.push(neighbor);
     }
 
     std::vector<NodeDistFarther> selected;
@@ -576,6 +599,35 @@ void IndexHNSW::ShrinkLevel0Neighbors(int size) {
       updated[offset] = selected_offset < selected.size()
                             ? selected[selected_offset].id
                             : storage_idx_t{-1};
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
+void IndexHNSW::ReorderLinks() {
+  constexpr const char* operation = "IndexHNSW::ReorderLinks";
+  ValidateHNSWState(*this, operation);
+  if (n_total == 0) {
+    return;
+  }
+
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    std::vector<NodeDistFarther> level_neighbors =
+        CollectLevel0Neighbors(*this, node, *dis, operation);
+    std::sort(level_neighbors.begin(), level_neighbors.end(),
+              [](const NodeDistFarther& left, const NodeDistFarther& right) {
+                return left.d < right.d ||
+                       (left.d == right.d && left.id < right.id);
+              });
+    for (size_t offset = 0; offset < level_neighbors.size(); ++offset) {
+      updated[begin + offset] = level_neighbors[offset].id;
     }
   }
 

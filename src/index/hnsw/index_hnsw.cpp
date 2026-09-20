@@ -614,8 +614,10 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
 }
 
 void IndexHNSW::Reset() {
-  hnsw.Reset();
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Reset: storage must not be null");
   storage->Reset();
+  hnsw.Reset();
   n_total = 0;
 }
 
@@ -1171,6 +1173,8 @@ void IndexHNSW::PermuteEntriesImpl(const idx_t* perm,
 }
 
 void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Reconstruct: storage must not be null");
   storage->Reconstruct(key, recons);
 }
 

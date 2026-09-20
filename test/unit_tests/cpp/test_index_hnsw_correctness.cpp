@@ -97,6 +97,21 @@ class ThrowingReconstructStorage final : public hypervec::IndexFlatL2 {
   hypervec::idx_t fail_key = -1;
 };
 
+class ThrowingResetStorage final : public hypervec::IndexFlatL2 {
+ public:
+  explicit ThrowingResetStorage(hypervec::idx_t dimension)
+      : IndexFlatL2(dimension) {}
+
+  void Reset() override {
+    if (fail_reset) {
+      throw std::runtime_error("injected reset failure");
+    }
+    IndexFlatL2::Reset();
+  }
+
+  bool fail_reset = false;
+};
+
 class FailingAddDistanceComputer final : public hypervec::DistanceComputer {
  public:
   FailingAddDistanceComputer(
@@ -391,6 +406,54 @@ TEST(IndexHNSWCorrectness, VisitedTablePoliciesCoverBuildAndSearchPaths) {
                           hash_distances.data(), hash_labels.data());
   EXPECT_EQ(vector_labels, hash_labels);
   EXPECT_EQ(vector_distances, hash_distances);
+}
+
+TEST(IndexHNSWCorrectness, LifecycleRejectsMissingStorageWithoutMutation) {
+  float reconstructed = 0.0F;
+
+  hypervec::IndexHNSW bare;
+  const auto bare_offsets = bare.hnsw.offsets;
+  EXPECT_THROW(bare.Reset(), hypervec::HypervecException);
+  EXPECT_THROW(bare.Reconstruct(0, &reconstructed),
+               hypervec::HypervecException);
+  EXPECT_EQ(bare.hnsw.offsets, bare_offsets);
+
+  hypervec::IndexHNSWFlat flat;
+  EXPECT_THROW(flat.Reset(), hypervec::HypervecException);
+  EXPECT_THROW(flat.Reconstruct(0, &reconstructed),
+               hypervec::HypervecException);
+
+  hypervec::IndexHNSWPQ pq;
+  EXPECT_THROW(pq.Reset(), hypervec::HypervecException);
+  EXPECT_THROW(pq.Reconstruct(0, &reconstructed), hypervec::HypervecException);
+
+  hypervec::IndexHNSWLVQ lvq;
+  EXPECT_THROW(lvq.Reset(), hypervec::HypervecException);
+  EXPECT_THROW(lvq.Reconstruct(0, &reconstructed), hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, FailedStorageResetPreservesGraphState) {
+  constexpr hypervec::idx_t dimension = 2;
+  constexpr hypervec::idx_t count = 8;
+  const auto data = RandomVectors(count, dimension, 2137);
+  ThrowingResetStorage storage(dimension);
+  hypervec::IndexHNSW index(&storage, 4);
+  index.Add(count, data.data());
+
+  const auto levels = index.hnsw.levels;
+  const auto offsets = index.hnsw.offsets;
+  const auto neighbors = std::vector<hypervec::HNSW::storage_idx_t>(
+      index.hnsw.neighbors.begin(), index.hnsw.neighbors.end());
+  storage.fail_reset = true;
+  EXPECT_THROW(index.Reset(), std::runtime_error);
+
+  EXPECT_EQ(index.n_total, count);
+  EXPECT_EQ(storage.n_total, count);
+  EXPECT_EQ(index.hnsw.levels, levels);
+  EXPECT_EQ(index.hnsw.offsets, offsets);
+  EXPECT_EQ(std::vector<hypervec::HNSW::storage_idx_t>(
+                index.hnsw.neighbors.begin(), index.hnsw.neighbors.end()),
+            neighbors);
 }
 
 TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {

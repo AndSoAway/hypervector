@@ -59,13 +59,13 @@ void IndexHNSWPQ::Add(idx_t n, const float* x) {
 }
 
 void IndexHNSWPQ::Reset() {
-  hnsw.Reset();
-  if (storage) {
-    storage->Reset();
-  }
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSWPQ::Reset: storage must not be null");
   if (raw_storage) {
     raw_storage->Reset();
   }
+  storage->Reset();
+  hnsw.Reset();
   n_total = 0;
 }
 

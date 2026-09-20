@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   wheel:
+    if: ${{ vars.HYPERVECTOR_CI_ENABLED != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

@@ -11,6 +11,7 @@
 #include <utils/selector/id_selector.h>
 
 #include <algorithm>
+#include <array>
 #include <queue>
 #include <unordered_set>
 #include <utility>
@@ -147,6 +148,18 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
     }
   };
 
+  const auto add_candidate = [&](GraphId id, float candidate_distance) {
+    const GraphSearchResult candidate{id, candidate_distance};
+    const bool within_frontier = results.size() < options.ef_search ||
+                                 candidate.distance <= results.top().distance;
+    if (!within_frontier) {
+      return;
+    }
+    candidates.push(candidate);
+    add_result(candidate);
+    graph_.Prefetch(id);
+  };
+
   for (const GraphSearchSeed& seed : seeds) {
     visited->set(static_cast<size_t>(seed.id));
     ++local_stats.visited_nodes;
@@ -173,22 +186,31 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
     for (GraphId neighbor : neighbors) {
       visited->prefetch(static_cast<size_t>(neighbor));
     }
+    std::array<GraphId, 4> distance_batch;
+    size_t batch_size = 0;
     for (GraphId neighbor : neighbors) {
       if (!visited->set(static_cast<size_t>(neighbor))) {
         continue;
       }
-      const GraphSearchResult candidate{neighbor, distance(neighbor)};
+      distance_batch[batch_size++] = neighbor;
+      if (batch_size == distance_batch.size()) {
+        std::array<float, 4> distances;
+        distance.distances_batch_4(distance_batch[0], distance_batch[1],
+                                   distance_batch[2], distance_batch[3],
+                                   distances[0], distances[1], distances[2],
+                                   distances[3]);
+        local_stats.distance_computations += distance_batch.size();
+        local_stats.visited_nodes += distance_batch.size();
+        for (size_t index = 0; index < distance_batch.size(); ++index) {
+          add_candidate(distance_batch[index], distances[index]);
+        }
+        batch_size = 0;
+      }
+    }
+    for (size_t index = 0; index < batch_size; ++index) {
+      add_candidate(distance_batch[index], distance(distance_batch[index]));
       ++local_stats.distance_computations;
       ++local_stats.visited_nodes;
-
-      const bool within_frontier = results.size() < options.ef_search ||
-                                   candidate.distance <= results.top().distance;
-      if (!within_frontier) {
-        continue;
-      }
-      candidates.push(candidate);
-      add_result(candidate);
-      graph_.Prefetch(neighbor);
     }
   }
 

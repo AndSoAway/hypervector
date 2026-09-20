@@ -42,12 +42,23 @@ class ScalarDistanceComputer final : public hypervec::DistanceComputer {
     return difference * difference;
   }
 
+  void distances_batch_4(hypervec::idx_t idx0, hypervec::idx_t idx1,
+                         hypervec::idx_t idx2, hypervec::idx_t idx3,
+                         float& dis0, float& dis1, float& dis2,
+                         float& dis3) override {
+    ++batch_calls_;
+    DistanceComputer::distances_batch_4(idx0, idx1, idx2, idx3, dis0, dis1,
+                                        dis2, dis3);
+  }
+
   size_t Calls() const noexcept { return calls_; }
+  size_t BatchCalls() const noexcept { return batch_calls_; }
 
  private:
   std::vector<float> values_;
   float query_ = 0.0F;
   size_t calls_ = 0;
+  size_t batch_calls_ = 0;
 };
 
 void PopulateChain(hypervec::MutableGraphStorage* graph) {
@@ -193,6 +204,32 @@ TEST(GraphSearcher, PrecomputedSeedsAvoidDuplicateDistanceComputations) {
   EXPECT_EQ(distance.Calls(), 4U);
   EXPECT_EQ(stats.distance_computations, 4U);
   EXPECT_EQ(stats.visited_nodes, 5U);
+}
+
+TEST(GraphSearcher, BatchesFourNeighborDistancesWithoutChangingOrder) {
+  hypervec::MutableBoundedGraph graph(6, 5);
+  const std::array<hypervec::GraphId, 5> neighbors = {5, 4, 3, 2, 1};
+  graph.SetNeighbors(0, neighbors);
+  ScalarDistanceComputer distance({10.0F, 5.0F, 4.0F, 3.0F, 2.0F, 1.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  const std::array<hypervec::GraphId, 1> entry = {0};
+  hypervec::VisitedTable visited(graph.NodeCount(), false);
+  hypervec::GraphSearchStats stats;
+  const hypervec::GraphSearcher searcher(graph);
+
+  const auto results = searcher.Search(
+      distance, entry, hypervec::GraphSearchOptions{6, false, nullptr},
+      &visited, &stats);
+
+  ASSERT_EQ(results.size(), 6U);
+  for (size_t index = 0; index < results.size(); ++index) {
+    EXPECT_EQ(results[index].id, static_cast<hypervec::GraphId>(5 - index));
+  }
+  EXPECT_EQ(distance.BatchCalls(), 1U);
+  EXPECT_EQ(distance.Calls(), 6U);
+  EXPECT_EQ(stats.distance_computations, 6U);
+  EXPECT_EQ(stats.visited_nodes, 6U);
 }
 
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {

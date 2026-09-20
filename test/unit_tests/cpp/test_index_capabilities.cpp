@@ -105,7 +105,7 @@ TEST(IndexCapabilities, HnswComposesStorageRequirements) {
                                        static_cast<hypervec::Index*>(&lvq)}) {
     const auto capabilities = index->GetCapabilities();
     EXPECT_TRUE(capabilities.requires_training);
-    EXPECT_FALSE(capabilities.supports_range_search);
+    EXPECT_TRUE(capabilities.supports_range_search);
     EXPECT_TRUE(capabilities.supports_reconstruct);
     EXPECT_FALSE(capabilities.supports_add_with_ids);
     EXPECT_FALSE(capabilities.supports_remove_ids);

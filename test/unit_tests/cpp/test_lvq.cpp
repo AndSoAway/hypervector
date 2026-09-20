@@ -291,6 +291,12 @@ TEST(IndexHNSWLVQ, TrainAddSearchSmoke) {
   idx.Search(nq, query.data(), k, distances.data(), labels.data());
   ExpectSortedValid(distances, labels, nq, k, nb);
 
+  hypervec::RangeSearchResult range(1);
+  idx.RangeSearch(1, query.data(), (std::numeric_limits<float>::infinity)(),
+                  &range);
+  EXPECT_GT(range.lims[1], 0U);
+  EXPECT_LE(range.lims[1], static_cast<size_t>(idx.hnsw.ef_search));
+
   idx.Freeze();
   EXPECT_THROW(idx.Add(1, base.data()), hypervec::HypervecException);
 }

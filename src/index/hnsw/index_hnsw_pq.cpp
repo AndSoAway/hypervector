@@ -95,16 +95,15 @@ void IndexHNSWPQ::SaDecode(idx_t n, const uint8_t* bytes, float* x) const {
   storage->SaDecode(n, bytes, x);
 }
 
-void IndexHNSWPQ::Search1(const float* /*x*/, ResultHandler& /*handler*/,
-                          SearchParameters* /*params*/) const {
-  HYPERVEC_THROW_MSG("IndexHNSWPQ::Search1 not supported");
+void IndexHNSWPQ::Search1(const float* x, ResultHandler& handler,
+                          SearchParameters* params) const {
+  IndexHNSW::Search1(x, handler, params);
 }
 
-void IndexHNSWPQ::RangeSearch(idx_t /*n*/, const float* /*x*/,
-                              float /*radius*/,
-                              RangeSearchResult* /*result*/,
-                              const SearchParameters* /*params*/) const {
-  HYPERVEC_THROW_MSG("IndexHNSWPQ::RangeSearch not supported");
+void IndexHNSWPQ::RangeSearch(idx_t n, const float* x, float radius,
+                              RangeSearchResult* result,
+                              const SearchParameters* params) const {
+  IndexHNSW::RangeSearch(n, x, radius, result, params);
 }
 
 }  // namespace hypervec

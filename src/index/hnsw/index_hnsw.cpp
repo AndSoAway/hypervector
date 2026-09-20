@@ -205,6 +205,38 @@ void ValidateSearchState(const IndexHNSW& index) {
       "IndexHNSW::Search: entry-point level is inconsistent");
 }
 
+void ValidateRuntimeEfSearch(const IndexHNSW& index,
+                             const SearchParameters* params,
+                             const char* operation) {
+  if (index.n_total == 0) {
+    return;
+  }
+  int ef_search = index.hnsw.ef_search;
+  if (const auto* hnsw_params =
+          dynamic_cast<const SearchParametersHNSW*>(params)) {
+    ef_search = hnsw_params->ef_search;
+  }
+  HYPERVEC_THROW_IF_NOT_FMT(ef_search > 0, "%s: ef_search must be positive",
+                            operation);
+}
+
+class NegatingResultHandler final : public ResultHandler {
+ public:
+  explicit NegatingResultHandler(ResultHandler& delegate)
+      : delegate_(delegate) {
+    threshold = -delegate_.threshold;
+  }
+
+  bool AddResult(float distance, idx_t id) override {
+    const bool updated = delegate_.AddResult(-distance, id);
+    threshold = -delegate_.threshold;
+    return updated;
+  }
+
+ private:
+  ResultHandler& delegate_;
+};
+
 void ValidateAppendState(const IndexHNSW& index, idx_t n, const float* x,
                          const Index* secondary_storage) {
   HYPERVEC_THROW_IF_NOT_FMT(
@@ -415,11 +447,10 @@ IndexHNSW::~IndexHNSW() {
 
 IndexCapabilities IndexHNSW::GetCapabilities() const {
   IndexCapabilities capabilities;
+  capabilities.supports_range_search = true;
   if (storage != nullptr) {
     const IndexCapabilities storage_capabilities = storage->GetCapabilities();
     capabilities.requires_training = storage_capabilities.requires_training;
-    capabilities.supports_range_search =
-        storage_capabilities.supports_range_search;
     capabilities.supports_reconstruct =
         storage_capabilities.supports_reconstruct;
   }
@@ -525,15 +556,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   }
   (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
                         "IndexHNSW::Search output size");
-  if (n_total > 0) {
-    int ef_search = hnsw.ef_search;
-    if (const auto* hnsw_params =
-            dynamic_cast<const SearchParametersHNSW*>(params)) {
-      ef_search = hnsw_params->ef_search;
-    }
-    HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
-                              "IndexHNSW::Search: ef_search must be positive");
-  }
+  ValidateRuntimeEfSearch(*this, params, "IndexHNSW::Search");
 
   // Use HNSW graph-based Search
   // Get distance computer from storage.
@@ -616,13 +639,7 @@ void IndexHNSW::SearchLevel0(idx_t n, const float* x, idx_t k,
   (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(nprobe),
                         "IndexHNSW::SearchLevel0 entry-point size");
   if (n_total > 0) {
-    int ef_search = hnsw.ef_search;
-    if (const auto* hnsw_params =
-            dynamic_cast<const SearchParametersHNSW*>(params)) {
-      ef_search = hnsw_params->ef_search;
-    }
-    HYPERVEC_THROW_IF_NOT_MSG(
-        ef_search > 0, "IndexHNSW::SearchLevel0: ef_search must be positive");
+    ValidateRuntimeEfSearch(*this, params, "IndexHNSW::SearchLevel0");
     for (idx_t query = 0; query < n; ++query) {
       const size_t offset =
           static_cast<size_t>(query) * static_cast<size_t>(nprobe);
@@ -683,12 +700,68 @@ void IndexHNSW::SearchLevel0(idx_t n, const float* x, idx_t k,
 void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
                             RangeSearchResult* result,
                             const SearchParameters* params) const {
-  storage->RangeSearch(n, x, radius, result, params);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::RangeSearch: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexHNSW::RangeSearch: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || result != nullptr,
+      "IndexHNSW::RangeSearch: result must not be null when n is positive");
+  if (n > 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        result->nq == static_cast<size_t>(n),
+        "IndexHNSW::RangeSearch: result query count does not match n");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        result->lims != nullptr,
+        "IndexHNSW::RangeSearch: result limits must not be null");
+  }
+  ValidateSearchState(*this);
+  if (n == 0) {
+    return;
+  }
+  ValidateRuntimeEfSearch(*this, params, "IndexHNSW::RangeSearch");
+
+  const bool similarity = IsSimilarityMetric(metric_type);
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  {
+    using RH = RangeSearchBlockResultHandler<HNSW::C>;
+    RH block(result, similarity ? -radius : radius);
+    typename RH::SingleResultHandler handler(block);
+    VisitedTable visited(n_total);
+    for (idx_t query = 0; query < n; ++query) {
+      dis->SetQuery(x + query * d);
+      handler.begin(query);
+      hnsw.Search(*dis, this, handler, visited, params);
+      handler.end();
+    }
+  }
+
+  if (similarity) {
+    for (size_t output = 0; output < result->lims[static_cast<size_t>(n)];
+         ++output) {
+      result->distances[output] = -result->distances[output];
+    }
+  }
 }
 
 void IndexHNSW::Search1(const float* x, ResultHandler& handler,
                         SearchParameters* params) const {
-  storage->Search1(x, handler, params);
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "IndexHNSW::Search1: x must not be null");
+  ValidateSearchState(*this);
+  ValidateRuntimeEfSearch(*this, params, "IndexHNSW::Search1");
+
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  dis->SetQuery(x);
+  VisitedTable visited(n_total);
+  if (IsSimilarityMetric(metric_type)) {
+    NegatingResultHandler external_results(handler);
+    hnsw.Search(*dis, this, external_results, visited, params);
+  } else {
+    hnsw.Search(*dis, this, handler, visited, params);
+  }
 }
 
 void IndexHNSW::PermuteEntries(const idx_t* perm) {

@@ -890,13 +890,16 @@ using MinimaxHeap = HNSW::MinimaxHeap;
 using Node = HNSW::Node;
 using C = HNSW::C;
 
-// just used as a lower bound for the minmaxheap, but it is set for heap Search
+// Returns zero for handlers without a fixed top-k capacity. Those handlers
+// receive every candidate retained by the ef_search-bounded graph traversal.
 int extract_k_from_ResultHandler(ResultHandler& res) {
-  using RH = HeapBlockResultHandler<C>;
-  if (auto hres = dynamic_cast<RH::SingleResultHandler*>(&res)) {
-    return hres->k;
+  if (const auto* hres = dynamic_cast<HeapResultHandler<C>*>(&res)) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hres->k <= static_cast<size_t>((std::numeric_limits<int>::max)()),
+        "HNSW::Search: result handler capacity is too large");
+    return static_cast<int>(hres->k);
   }
-  return 1;
+  return 0;
 }
 
 }  // namespace
@@ -911,7 +914,7 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* /*index*/,
   if (entry_point == -1) {
     return stats;
   }
-  int k = extract_k_from_ResultHandler(res);
+  const int k = extract_k_from_ResultHandler(res);
 
   bool bounded_queue = this->search_bounded_queue;
   int ef_search = this->ef_search;
@@ -937,7 +940,7 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* /*index*/,
     stats.combine(local_stats);
   }
 
-  int ef = std::max(ef_search, k);
+  const int ef = std::max(ef_search, std::max(k, 1));
   const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
   const GraphSearcher searcher(graph);
   const std::array<GraphSearchSeed, 1> seeds = {
@@ -957,7 +960,9 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* /*index*/,
   const std::vector<GraphSearchResult> results =
       searcher.Search(qdis, seeds, options, &vt, &graph_stats);
 
-  const size_t result_count = std::min(results.size(), static_cast<size_t>(k));
+  const size_t result_count =
+      k == 0 ? results.size()
+             : std::min(results.size(), static_cast<size_t>(k));
   for (size_t result = 0; result < result_count; ++result) {
     res.AddResult(results[result].distance, results[result].id);
   }

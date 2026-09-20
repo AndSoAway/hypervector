@@ -12,9 +12,12 @@
 #include <persistence/index_io.h>
 
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>  // NOLINT(build/c++17): the project requires C++20.
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -23,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -30,10 +34,12 @@ struct CommandLine {
   std::string index_path;
   std::string query_path;
   std::string ground_truth_path;
+  std::string json_output_path;
   hypervec::idx_t k = 10;
   size_t warmup_runs = 1;
   size_t measured_runs = 3;
   hypervec::SearchConfig search_config;
+  std::vector<std::string> search_parameters;
   bool show_help = false;
 };
 
@@ -46,6 +52,7 @@ void PrintUsage(std::ostream& output) {
       << "  --warmup-runs N          Untimed full-query runs (default: 1)\n"
       << "  --measured-runs N        Timed full-query runs (default: 3)\n"
       << "  --search-param NAME=VALUE  Repeatable integer/bool runtime option\n"
+      << "  --json-output REPORT.json  Optional reproducible result report\n"
       << "  --help                   Show this message\n";
 }
 
@@ -111,6 +118,8 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.query_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--ground-truth") {
       command.ground_truth_path = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--json-output") {
+      command.json_output_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--k") {
       const int64_t value =
           ParseInteger(RequireValue(argc, argv, &position, argument), "--k");
@@ -125,8 +134,10 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.measured_runs = ParseRunCount(
           RequireValue(argc, argv, &position, argument), argument, false);
     } else if (argument == "--search-param") {
-      ParseSearchParameter(RequireValue(argc, argv, &position, argument),
-                           &command.search_config);
+      const std::string_view assignment =
+          RequireValue(argc, argv, &position, argument);
+      ParseSearchParameter(assignment, &command.search_config);
+      command.search_parameters.emplace_back(assignment);
     } else {
       throw std::runtime_error("unknown option: " + std::string(argument));
     }
@@ -134,16 +145,175 @@ CommandLine ParseCommandLine(int argc, char** argv) {
   return command;
 }
 
-void ValidateRequiredPaths(const CommandLine& command) {
+std::filesystem::path NormalizedPath(const std::string& path) {
+  return std::filesystem::absolute(path).lexically_normal();
+}
+
+void ValidateCommand(const CommandLine& command) {
   if (command.index_path.empty() || command.query_path.empty() ||
       command.ground_truth_path.empty()) {
     throw std::runtime_error(
         "--index, --queries, and --ground-truth are required");
   }
+  if (!command.json_output_path.empty()) {
+    const std::filesystem::path output =
+        NormalizedPath(command.json_output_path);
+    if (output == NormalizedPath(command.index_path) ||
+        output == NormalizedPath(command.query_path) ||
+        output == NormalizedPath(command.ground_truth_path)) {
+      throw std::runtime_error(
+          "JSON output must differ from evaluation inputs");
+    }
+  }
+}
+
+std::string JsonEscape(std::string_view value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string escaped;
+  for (unsigned char character : value) {
+    switch (character) {
+      case '\"':
+        escaped += "\\\"";
+        break;
+      case '\\':
+        escaped += "\\\\";
+        break;
+      case '\b':
+        escaped += "\\b";
+        break;
+      case '\f':
+        escaped += "\\f";
+        break;
+      case '\n':
+        escaped += "\\n";
+        break;
+      case '\r':
+        escaped += "\\r";
+        break;
+      case '\t':
+        escaped += "\\t";
+        break;
+      default:
+        if (character < 0x20U) {
+          escaped += "\\u00";
+          escaped.push_back(kHex[character >> 4U]);
+          escaped.push_back(kHex[character & 0x0FU]);
+        } else {
+          escaped.push_back(static_cast<char>(character));
+        }
+    }
+  }
+  return escaped;
+}
+
+std::string_view MetricName(hypervec::MetricType metric) {
+  switch (metric) {
+    case hypervec::kMetricInnerProduct:
+      return "inner_product";
+    case hypervec::kMetricL2:
+      return "l2";
+    case hypervec::kMetricL1:
+      return "l1";
+    case hypervec::kMetricLinf:
+      return "linf";
+    case hypervec::kMetricLp:
+      return "lp";
+    case hypervec::kMetricCanberra:
+      return "canberra";
+    case hypervec::kMetricBrayCurtis:
+      return "bray_curtis";
+    case hypervec::kMetricJensenShannon:
+      return "jensen_shannon";
+    case hypervec::kMetricJaccard:
+      return "jaccard";
+    case hypervec::kMetricNaNEuclidean:
+      return "nan_euclidean";
+    case hypervec::kMetricGower:
+      return "gower";
+  }
+  throw std::runtime_error("unknown index metric");
+}
+
+void WriteJsonNumber(std::ostream& output, double value) {
+  if (std::isfinite(value)) {
+    output << value;
+  } else {
+    output << "null";
+  }
+}
+
+void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
+                     const hypervec::SearchParameterDescriptor& descriptor,
+                     const hypervec::IntegerVectorDataset& ground_truth,
+                     const hypervec::SearchEvaluationResult& result) {
+  if (command.json_output_path.empty()) {
+    return;
+  }
+  std::ofstream output(command.json_output_path,
+                       std::ios::out | std::ios::trunc);
+  if (!output.is_open()) {
+    throw std::runtime_error("cannot open JSON report output: " +
+                             command.json_output_path);
+  }
+  output << std::setprecision(17);
+  output << "{\n"
+         << "  \"format\": \"hypervec-eval-report-v1\",\n"
+         << "  \"library_version\": \"" << VERSION_STRING << "\",\n"
+         << "  \"index\": {\n"
+         << "    \"path\": \""
+         << JsonEscape(NormalizedPath(command.index_path).generic_string())
+         << "\",\n"
+         << "    \"family\": \"" << JsonEscape(descriptor.name) << "\",\n"
+         << "    \"dimension\": " << index.d << ",\n"
+         << "    \"vector_count\": " << index.n_total << ",\n"
+         << "    \"metric\": \"" << MetricName(index.metric_type) << "\",\n"
+         << "    \"metric_type\": " << static_cast<int>(index.metric_type)
+         << ",\n"
+         << "    \"metric_arg\": ";
+  WriteJsonNumber(output, index.metric_arg);
+  output << "\n"
+         << "  },\n"
+         << "  \"workload\": {\n"
+         << "    \"queries\": \""
+         << JsonEscape(NormalizedPath(command.query_path).generic_string())
+         << "\",\n"
+         << "    \"ground_truth\": \""
+         << JsonEscape(
+                NormalizedPath(command.ground_truth_path).generic_string())
+         << "\",\n"
+         << "    \"query_count\": " << result.query_count << ",\n"
+         << "    \"ground_truth_width\": " << ground_truth.dimension << ",\n"
+         << "    \"k\": " << result.k << "\n"
+         << "  },\n"
+         << "  \"execution\": {\n"
+         << "    \"warmup_runs\": " << command.warmup_runs << ",\n"
+         << "    \"measured_runs\": " << result.measured_runs << ",\n"
+         << "    \"search_parameters\": [";
+  for (size_t offset = 0; offset < command.search_parameters.size(); ++offset) {
+    output << (offset == 0 ? "" : ", ") << "\""
+           << JsonEscape(command.search_parameters[offset]) << "\"";
+  }
+  output << "]\n"
+         << "  },\n"
+         << "  \"metrics\": {\n"
+         << "    \"recall_at_k\": ";
+  WriteJsonNumber(output, result.recall_at_k);
+  output << ",\n    \"elapsed_seconds\": ";
+  WriteJsonNumber(output, result.elapsed_seconds);
+  output << ",\n    \"mean_latency_ms\": ";
+  WriteJsonNumber(output, result.mean_latency_ms);
+  output << ",\n    \"queries_per_second\": ";
+  WriteJsonNumber(output, result.queries_per_second);
+  output << "\n  }\n}\n";
+  output.close();
+  if (output.fail()) {
+    throw std::runtime_error("cannot write JSON report output: " +
+                             command.json_output_path);
+  }
 }
 
 int Run(const CommandLine& command) {
-  ValidateRequiredPaths(command);
+  ValidateCommand(command);
   std::unique_ptr<hypervec::Index> index =
       hypervec::ReadIndexUp(command.index_path.c_str());
   const hypervec::FloatVectorDataset queries =
@@ -172,6 +342,7 @@ int Run(const CommandLine& command) {
       hypervec::EvaluateSearch(*index, input, options, parameters.get());
   const hypervec::SearchParameterDescriptor descriptor =
       hypervec::DescribeSearchParameters(*index);
+  WriteJsonReport(command, *index, descriptor, ground_truth, result);
 
   std::cout << std::setprecision(10);
   std::cout << "index_family=" << descriptor.name << '\n';
@@ -182,6 +353,9 @@ int Run(const CommandLine& command) {
   std::cout << "elapsed_seconds=" << result.elapsed_seconds << '\n';
   std::cout << "mean_latency_ms=" << result.mean_latency_ms << '\n';
   std::cout << "queries_per_second=" << result.queries_per_second << '\n';
+  if (!command.json_output_path.empty()) {
+    std::cout << "json_output=" << command.json_output_path << '\n';
+  }
   return 0;
 }
 

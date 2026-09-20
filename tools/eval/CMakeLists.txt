@@ -36,6 +36,12 @@ if(BUILD_TESTING)
   add_test(NAME HypervecBuild.ListIndexes COMMAND hypervec_build --list-indexes)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME HypervecEval.Pipeline
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/test_eval_pipeline.py
+              $<TARGET_FILE:hypervec_ground_truth>
+              $<TARGET_FILE:hypervec_build>
+              $<TARGET_FILE:hypervec_eval>)
     add_test(NAME HypervecHdf5Converter
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_CURRENT_SOURCE_DIR}/test_convert_hdf5.py

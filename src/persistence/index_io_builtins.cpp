@@ -8,6 +8,9 @@
 
 #include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
+#include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <index/lsh/index_lsh.h>
@@ -78,6 +81,16 @@ class BuiltinIndexIOCodecs {
                       std::type_index(typeid(IndexDiskANNFlat)),
                       WriteDiskANNFlatPayload, ReadDiskANNFlatPayload,
                       ValidateDiskANNFlatForWrite);
+    registry.Register({"hnsw_flat", fourcc("IHNf"), {}},
+                      std::type_index(typeid(IndexHNSWFlat)),
+                      WriteHNSWFlatPayload, ReadHNSWFlatPayload,
+                      ValidateHNSWFlatForWrite);
+    registry.Register({"hnsw_pq", fourcc("IHNp"), {}},
+                      std::type_index(typeid(IndexHNSWPQ)), WriteHNSWPQPayload,
+                      ReadHNSWPQPayload, ValidateHNSWPQForWrite);
+    registry.Register(
+        {"hnsw_lvq", fourcc("IHNl"), {}}, std::type_index(typeid(IndexHNSWLVQ)),
+        WriteHNSWLVQPayload, ReadHNSWLVQPayload, ValidateHNSWLVQForWrite);
   }
 
   IndexIORegistry registry;

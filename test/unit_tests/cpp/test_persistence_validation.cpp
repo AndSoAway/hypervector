@@ -11,6 +11,7 @@
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <persistence/index_io.h>
@@ -681,10 +682,9 @@ TEST(PersistenceValidation, RejectsHnswOffsetMismatch) {
   source.hnsw.offsets.back() += 1;
 
   hypervec::VectorIOWriter writer;
-  hypervec::WriteIndex(&source, &writer);
-  hypervec::VectorIOReader reader;
-  reader.data = writer.data;
-  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+  EXPECT_THROW(hypervec::WriteIndex(&source, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
 }
 
 TEST(PersistenceValidation, RejectsHnswOutOfRangeNeighbor) {
@@ -699,10 +699,9 @@ TEST(PersistenceValidation, RejectsHnswOutOfRangeNeighbor) {
   *neighbor = 100;
 
   hypervec::VectorIOWriter writer;
-  hypervec::WriteIndex(&source, &writer);
-  hypervec::VectorIOReader reader;
-  reader.data = writer.data;
-  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+  EXPECT_THROW(hypervec::WriteIndex(&source, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
 }
 
 TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
@@ -717,6 +716,25 @@ TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
   std::unique_ptr<hypervec::Index> restored_base =
       hypervec::ReadIndexUp(&reader);
   auto* restored = dynamic_cast<hypervec::IndexHNSWPQ*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_FALSE(restored->is_trained);
+  EXPECT_FALSE(restored->storage->is_trained);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->hnsw.offsets, (std::vector<size_t>{0}));
+}
+
+TEST(PersistenceValidation, RoundtripsUntrainedHnswLvqState) {
+  hypervec::IndexHNSWLVQ source(4, 2, 2, 8);
+  ASSERT_FALSE(source.is_trained);
+  ASSERT_FALSE(source.storage->is_trained);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored = dynamic_cast<hypervec::IndexHNSWLVQ*>(restored_base.get());
   ASSERT_NE(restored, nullptr);
   EXPECT_FALSE(restored->is_trained);
   EXPECT_FALSE(restored->storage->is_trained);

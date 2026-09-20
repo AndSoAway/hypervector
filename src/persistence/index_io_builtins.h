@@ -44,6 +44,12 @@ void ValidateNSGFlatForWrite(const Index& index, int io_flags);
 void WriteDiskANNFlatPayload(const Index& index, IOWriter* writer,
                              int io_flags);
 void ValidateDiskANNFlatForWrite(const Index& index, int io_flags);
+void WriteHNSWFlatPayload(const Index& index, IOWriter* writer, int io_flags);
+void ValidateHNSWFlatForWrite(const Index& index, int io_flags);
+void WriteHNSWPQPayload(const Index& index, IOWriter* writer, int io_flags);
+void ValidateHNSWPQForWrite(const Index& index, int io_flags);
+void WriteHNSWLVQPayload(const Index& index, IOWriter* writer, int io_flags);
+void ValidateHNSWLVQForWrite(const Index& index, int io_flags);
 
 std::unique_ptr<Index> ReadFlatL2Payload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadFlatIPPayload(IOReader* reader, int io_flags);
@@ -59,6 +65,9 @@ std::unique_ptr<Index> ReadLSHPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadNSWFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadNSGFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadDiskANNFlatPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadHNSWFlatPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadHNSWPQPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags);
 
 }  // namespace persistence_internal
 

@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <index/hnsw/index_hnsw.h>
 #include <persistence/index_io.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
@@ -145,6 +146,14 @@ TEST(IndexIORegistry, GlobalWriterRejectsUnregisteredDerivedTypes) {
   hypervec::VectorIOWriter writer;
   EXPECT_THROW(hypervec::WriteIndex(&derived, &writer),
                hypervec::HypervecException);
+}
+
+TEST(IndexIORegistry, GlobalWriterRejectsBareHnswWithoutWritingAFlatTag) {
+  hypervec::IndexHNSW bare(2, 8);
+  hypervec::VectorIOWriter writer;
+  EXPECT_THROW(hypervec::WriteIndex(&bare, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
 }
 
 TEST(IndexIORegistry, RejectsAmbiguousOrIncompleteRegistrations) {

@@ -587,6 +587,153 @@ void WriteDiskANNFlatPayload(const Index& index, IOWriter* f, int io_flags) {
   }
 }
 
+namespace {
+
+void ValidateHNSWGraphForWrite(const IndexHNSW& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total >= 0 &&
+          index.n_total <= std::numeric_limits<HNSW::storage_idx_t>::max(),
+      "IndexHNSW serialize: n_total exceeds graph ID capacity");
+  const HNSW& hnsw = index.hnsw;
+  const size_t total = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.ef_construction > 0 && hnsw.cum_nneighbor_per_level.size() >= 2 &&
+          hnsw.cum_nneighbor_per_level.front() == 0,
+      "IndexHNSW serialize: graph configuration is invalid");
+  for (size_t level = 1; level < hnsw.cum_nneighbor_per_level.size(); ++level) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.cum_nneighbor_per_level[level] >
+            hnsw.cum_nneighbor_per_level[level - 1],
+        "IndexHNSW serialize: neighbor capacities must increase");
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.levels.size() == total && hnsw.offsets.size() == total + 1 &&
+          !hnsw.offsets.empty() && hnsw.offsets.front() == 0,
+      "IndexHNSW serialize: graph arrays do not match n_total");
+
+  if (total == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.max_level == -1 && hnsw.entry_point == -1 &&
+            hnsw.offsets.back() == 0 && hnsw.neighbors.size() == 0,
+        "IndexHNSW serialize: empty graph metadata is invalid");
+    return;
+  }
+
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.max_level >= 0 && hnsw.entry_point >= 0 &&
+          static_cast<size_t>(hnsw.entry_point) < total,
+      "IndexHNSW serialize: graph entry point is invalid");
+  int observed_levels = 0;
+  for (size_t node = 0; node < total; ++node) {
+    const int node_levels = hnsw.levels[node];
+    HYPERVEC_THROW_IF_NOT_MSG(
+        node_levels > 0 && static_cast<size_t>(node_levels) <
+                               hnsw.cum_nneighbor_per_level.size(),
+        "IndexHNSW serialize: node level is invalid");
+    observed_levels = std::max(observed_levels, node_levels);
+    const size_t expected_span = static_cast<size_t>(
+        hnsw.cum_nneighbor_per_level[static_cast<size_t>(node_levels)]);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hnsw.offsets[node + 1] >= hnsw.offsets[node] &&
+            hnsw.offsets[node + 1] - hnsw.offsets[node] == expected_span,
+        "IndexHNSW serialize: node offsets do not match its levels");
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.max_level == observed_levels - 1 &&
+          hnsw.levels[static_cast<size_t>(hnsw.entry_point)] ==
+              observed_levels &&
+          hnsw.offsets.back() == hnsw.neighbors.size(),
+      "IndexHNSW serialize: graph metadata is inconsistent");
+
+  for (size_t node = 0; node < total; ++node) {
+    for (int level = 0; level < hnsw.levels[node]; ++level) {
+      const size_t begin =
+          hnsw.offsets[node] +
+          static_cast<size_t>(hnsw.cum_nneighbor_per_level[level]);
+      const size_t end =
+          hnsw.offsets[node] +
+          static_cast<size_t>(hnsw.cum_nneighbor_per_level[level + 1]);
+      bool reached_padding = false;
+      for (size_t position = begin; position < end; ++position) {
+        const HNSW::storage_idx_t neighbor = hnsw.neighbors[position];
+        if (neighbor == -1) {
+          reached_padding = true;
+          continue;
+        }
+        HYPERVEC_THROW_IF_NOT_MSG(
+            !reached_padding && neighbor >= 0 &&
+                static_cast<size_t>(neighbor) < total &&
+                static_cast<size_t>(neighbor) != node &&
+                hnsw.levels[static_cast<size_t>(neighbor)] > level,
+            "IndexHNSW serialize: neighbor entry is invalid");
+      }
+    }
+  }
+}
+
+void ValidateHNSWStorageForWrite(const IndexHNSW& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
+                            "IndexHNSW serialize: storage is missing");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->d == index.d && index.storage->n_total == index.n_total &&
+          index.storage->metric_type == index.metric_type &&
+          index.storage->metric_arg == index.metric_arg &&
+          index.storage->is_trained == index.is_trained,
+      "IndexHNSW serialize: storage metadata does not match the graph");
+  ValidateHNSWGraphForWrite(index);
+}
+
+void WriteHNSWPayload(const IndexHNSW& index, IOWriter* f) {
+  write_index_header(index, f);
+  write_HNSW(index.hnsw, f);
+  WriteIndex(index.storage, f, 0);
+}
+
+}  // namespace
+
+void ValidateHNSWFlatForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& hnsw = static_cast<const IndexHNSWFlat&>(index);
+  ValidateHNSWStorageForWrite(hnsw);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      typeid(*hnsw.storage) == typeid(IndexFlatL2) ||
+          typeid(*hnsw.storage) == typeid(IndexFlatIP),
+      "IndexHNSWFlat serialize: inner storage has no registered flat codec");
+}
+
+void WriteHNSWFlatPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  WriteHNSWPayload(static_cast<const IndexHNSWFlat&>(index), f);
+}
+
+void ValidateHNSWPQForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& hnsw = static_cast<const IndexHNSWPQ&>(index);
+  ValidateHNSWStorageForWrite(hnsw);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      typeid(*hnsw.storage) == typeid(IndexPQ),
+      "IndexHNSWPQ serialize: inner storage is not an IndexPQ");
+}
+
+void WriteHNSWPQPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  WriteHNSWPayload(static_cast<const IndexHNSWPQ&>(index), f);
+}
+
+void ValidateHNSWLVQForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& hnsw = static_cast<const IndexHNSWLVQ&>(index);
+  ValidateHNSWStorageForWrite(hnsw);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      typeid(*hnsw.storage) == typeid(IndexLVQ),
+      "IndexHNSWLVQ serialize: inner storage is not an IndexLVQ");
+}
+
+void WriteHNSWLVQPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  WriteHNSWPayload(static_cast<const IndexHNSWLVQ&>(index), f);
+}
+
 }  // namespace persistence_internal
 
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
@@ -595,52 +742,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
   if (registry.Contains(std::type_index(typeid(*index)))) {
     registry.Write(*index, f, io_flags);
-    return;
-  }
-
-  const IndexHNSWFlat* hnswflat = dynamic_cast<const IndexHNSWFlat*>(index);
-  if (hnswflat) {
-    uint32_t h = fourcc("IHNf");
-    WRITE1(h);
-    write_index_header(*hnswflat, f);
-    write_HNSW(hnswflat->hnsw, f);
-    if (hnswflat->storage) {
-      WriteIndex(hnswflat->storage, f, 0);
-    }
-    return;
-  }
-
-  const IndexHNSWPQ* hnswpq = dynamic_cast<const IndexHNSWPQ*>(index);
-  if (hnswpq) {
-    uint32_t h = fourcc("IHNp");
-    WRITE1(h);
-    write_index_header(*hnswpq, f);
-    write_HNSW(hnswpq->hnsw, f);
-    HYPERVEC_THROW_IF_NOT(hnswpq->storage != nullptr);
-    WriteIndex(hnswpq->storage, f, 0);
-    return;
-  }
-
-  const IndexHNSWLVQ* hnswlvq = dynamic_cast<const IndexHNSWLVQ*>(index);
-  if (hnswlvq) {
-    uint32_t h = fourcc("IHNl");
-    WRITE1(h);
-    write_index_header(*hnswlvq, f);
-    write_HNSW(hnswlvq->hnsw, f);
-    HYPERVEC_THROW_IF_NOT(hnswlvq->storage != nullptr);
-    WriteIndex(hnswlvq->storage, f, 0);
-    return;
-  }
-
-  const IndexHNSW* hnsw = dynamic_cast<const IndexHNSW*>(index);
-  if (hnsw) {
-    uint32_t h = fourcc("IHNf");
-    WRITE1(h);
-    write_index_header(*hnsw, f);
-    write_HNSW(hnsw->hnsw, f);
-    if (hnsw->storage) {
-      WriteIndex(hnsw->storage, f, 0);
-    }
     return;
   }
 

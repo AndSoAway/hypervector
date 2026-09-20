@@ -1146,6 +1146,48 @@ std::unique_ptr<Index> ReadDiskANNFlatPayload(IOReader* reader, int io_flags) {
   return read_diskann_flat(header, reader);
 }
 
+std::unique_ptr<Index> ReadHNSWFlatPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexHNSWFlat>();
+  read_index_header(*index, reader);
+  read_HNSW(index->hnsw, *index, reader);
+  index->storage = ReadIndex(reader, 0);
+  index->own_fields = true;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexFlat*>(index->storage) != nullptr,
+      "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
+  ValidateHnswStorage(*index);
+  return index;
+}
+
+std::unique_ptr<Index> ReadHNSWPQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexHNSWPQ>();
+  read_index_header(*index, reader);
+  read_HNSW(index->hnsw, *index, reader);
+  index->storage = ReadIndex(reader, 0);
+  index->own_fields = true;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexPQ*>(index->storage) != nullptr,
+      "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
+  ValidateHnswStorage(*index);
+  return index;
+}
+
+std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexHNSWLVQ>();
+  read_index_header(*index, reader);
+  read_HNSW(index->hnsw, *index, reader);
+  index->storage = ReadIndex(reader, 0);
+  index->own_fields = true;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      dynamic_cast<IndexLVQ*>(index->storage) != nullptr,
+      "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
+  ValidateHnswStorage(*index);
+  return index;
+}
+
 }  // namespace persistence_internal
 
 Index* ReadIndex(IOReader* f, int io_flags) {
@@ -1178,45 +1220,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
   if (registry.Contains(h)) {
     return registry.ReadPayload(h, f, io_flags).release();
-  }
-
-  if (h == fourcc("IHNf")) {
-    auto idxhnsw = std::make_unique<IndexHNSWFlat>();
-    read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
-    idxhnsw->storage = ReadIndex(f, 0);
-    idxhnsw->own_fields = true;
-    HYPERVEC_THROW_IF_NOT_MSG(
-        dynamic_cast<IndexFlat*>(idxhnsw->storage) != nullptr,
-        "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
-    ValidateHnswStorage(*idxhnsw);
-    return idxhnsw.release();
-  }
-
-  if (h == fourcc("IHNp")) {
-    auto idxhnsw = std::make_unique<IndexHNSWPQ>();
-    read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
-    idxhnsw->storage = ReadIndex(f, 0);
-    idxhnsw->own_fields = true;
-    HYPERVEC_THROW_IF_NOT_MSG(
-        dynamic_cast<IndexPQ*>(idxhnsw->storage) != nullptr,
-        "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
-    ValidateHnswStorage(*idxhnsw);
-    return idxhnsw.release();
-  }
-
-  if (h == fourcc("IHNl")) {
-    auto idxhnsw = std::make_unique<IndexHNSWLVQ>();
-    read_index_header(*idxhnsw, f);
-    read_HNSW(idxhnsw->hnsw, *idxhnsw, f);
-    idxhnsw->storage = ReadIndex(f, 0);
-    idxhnsw->own_fields = true;
-    HYPERVEC_THROW_IF_NOT_MSG(
-        dynamic_cast<IndexLVQ*>(idxhnsw->storage) != nullptr,
-        "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
-    ValidateHnswStorage(*idxhnsw);
-    return idxhnsw.release();
   }
 
   HYPERVEC_THROW_MSG("unknown index type");

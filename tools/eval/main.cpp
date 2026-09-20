@@ -43,6 +43,7 @@ struct CommandLine {
   hypervec::idx_t k = 10;
   size_t warmup_runs = 1;
   size_t measured_runs = 3;
+  hypervec::idx_t query_batch_size = 0;
   hypervec::SearchConfig search_config;
   std::vector<std::string> search_parameters;
   bool show_help = false;
@@ -56,6 +57,8 @@ void PrintUsage(std::ostream& output) {
       << "  --k N                    Recall/search depth (default: 10)\n"
       << "  --warmup-runs N          Untimed full-query runs (default: 1)\n"
       << "  --measured-runs N        Timed full-query runs (default: 3)\n"
+      << "  --query-batch-size N     Queries per timed Search call\n"
+      << "                           (default: all queries)\n"
       << "  --metric METRIC          l2, inner_product, or cosine\n"
       << "  --search-param NAME=VALUE  Repeatable integer/bool runtime option\n"
       << "  --json-output REPORT.json  Optional reproducible result report\n"
@@ -156,6 +159,15 @@ CommandLine ParseCommandLine(int argc, char** argv) {
     } else if (argument == "--measured-runs") {
       command.measured_runs = ParseRunCount(
           RequireValue(argc, argv, &position, argument), argument, false);
+    } else if (argument == "--query-batch-size") {
+      const int64_t value =
+          ParseInteger(RequireValue(argc, argv, &position, argument), argument);
+      if (value <= 0 || static_cast<uint64_t>(value) >
+                            static_cast<uint64_t>((
+                                std::numeric_limits<hypervec::idx_t>::max)())) {
+        throw std::runtime_error("--query-batch-size must be positive");
+      }
+      command.query_batch_size = static_cast<hypervec::idx_t>(value);
     } else if (argument == "--search-param") {
       const std::string_view assignment =
           RequireValue(argc, argv, &position, argument);
@@ -314,6 +326,17 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
   WriteJsonNumber(output, result.mean_latency_ms);
   output << ",\n    \"queries_per_second\": ";
   WriteJsonNumber(output, result.queries_per_second);
+  output << ",\n    \"batch_latency_ms\": {\n"
+         << "      \"query_batch_size\": " << result.query_batch_size << ",\n"
+         << "      \"sample_count\": " << result.latency_sample_count << ",\n"
+         << "      \"percentile_method\": \"nearest-rank\",\n"
+         << "      \"p50\": ";
+  WriteJsonNumber(output, result.batch_latency_p50_ms);
+  output << ",\n      \"p95\": ";
+  WriteJsonNumber(output, result.batch_latency_p95_ms);
+  output << ",\n      \"p99\": ";
+  WriteJsonNumber(output, result.batch_latency_p99_ms);
+  output << "\n    }";
   output << "\n  }\n}\n";
   output.close();
   if (output.fail()) {
@@ -351,6 +374,7 @@ int Run(const CommandLine& command) {
   options.k = command.k;
   options.warmup_runs = command.warmup_runs;
   options.measured_runs = command.measured_runs;
+  options.query_batch_size = command.query_batch_size;
   const hypervec::SearchEvaluationResult result =
       hypervec::EvaluateSearch(*index, input, options, parameters.get());
   const hypervec::SearchParameterDescriptor descriptor =
@@ -368,6 +392,11 @@ int Run(const CommandLine& command) {
   std::cout << "elapsed_seconds=" << result.elapsed_seconds << '\n';
   std::cout << "mean_latency_ms=" << result.mean_latency_ms << '\n';
   std::cout << "queries_per_second=" << result.queries_per_second << '\n';
+  std::cout << "query_batch_size=" << result.query_batch_size << '\n';
+  std::cout << "latency_sample_count=" << result.latency_sample_count << '\n';
+  std::cout << "batch_latency_p50_ms=" << result.batch_latency_p50_ms << '\n';
+  std::cout << "batch_latency_p95_ms=" << result.batch_latency_p95_ms << '\n';
+  std::cout << "batch_latency_p99_ms=" << result.batch_latency_p99_ms << '\n';
   if (!command.json_output_path.empty()) {
     std::cout << "json_output=" << command.json_output_path << '\n';
   }

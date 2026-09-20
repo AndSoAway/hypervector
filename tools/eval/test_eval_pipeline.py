@@ -90,6 +90,8 @@ def main():
             "--warmup-runs",
             0,
             "--measured-runs",
+            2,
+            "--query-batch-size",
             1,
             "--json-output",
             report_path,
@@ -117,9 +119,14 @@ def main():
         assert report["workload"]["semantic_metric"] == "l2"
         assert report["workload"]["k"] == 2
         assert report["execution"]["warmup_runs"] == 0
-        assert report["execution"]["measured_runs"] == 1
+        assert report["execution"]["measured_runs"] == 2
         assert report["execution"]["search_parameters"] == []
         assert report["metrics"]["recall_at_k"] == 1.0
+        latency = report["metrics"]["batch_latency_ms"]
+        assert latency["query_batch_size"] == 1
+        assert latency["sample_count"] == 2
+        assert latency["percentile_method"] == "nearest-rank"
+        assert 0.0 <= latency["p50"] <= latency["p95"] <= latency["p99"]
         assert Path(report["index"]["path"]).is_absolute()
         assert Path(report["workload"]["queries"]).is_absolute()
         assert_fingerprint(report["artifacts"]["index"], index)

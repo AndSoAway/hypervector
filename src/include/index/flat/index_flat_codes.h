@@ -79,7 +79,7 @@ struct IndexFlatCodes : Index {
                             const idx_t* xids) override;
 
   // PermuteEntries. perm of size n_total maps new to old positions
-  void PermuteEntries(const idx_t* perm);
+  virtual void PermuteEntries(const idx_t* perm);
 };
 
 }  // namespace hypervec

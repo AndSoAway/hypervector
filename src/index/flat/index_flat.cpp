@@ -417,6 +417,48 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
 }  // namespace
 
+void IndexFlatL2::Add(idx_t n, const float* x) {
+  IndexFlatCodes::Add(n, x);
+  if (n > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::AddSaCodes(idx_t n, const uint8_t* codes, const idx_t* xids) {
+  IndexFlatCodes::AddSaCodes(n, codes, xids);
+  if (n > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::Reset() {
+  IndexFlatCodes::Reset();
+  ClearL2Norms();
+}
+
+size_t IndexFlatL2::RemoveIds(const IDSelector& sel) {
+  const size_t removed = IndexFlatCodes::RemoveIds(sel);
+  if (removed > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+  return removed;
+}
+
+void IndexFlatL2::MergeFrom(Index& other, idx_t add_id) {
+  const idx_t old_total = n_total;
+  IndexFlatCodes::MergeFrom(other, add_id);
+  if (n_total != old_total && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::PermuteEntries(const idx_t* perm) {
+  IndexFlatCodes::PermuteEntries(perm);
+  if (n_total > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
 void IndexFlatL2::SyncL2Norms() {
   cached_l2norms.resize(n_total);
   if (IsDataAligned()) {

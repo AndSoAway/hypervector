@@ -83,6 +83,13 @@ struct IndexFlatL2 : IndexFlat {
   explicit IndexFlatL2(idx_t d) : IndexFlat(d, kMetricL2) {}
   IndexFlatL2() {}
 
+  void Add(idx_t n, const float* x) override;
+  void AddSaCodes(idx_t n, const uint8_t* codes, const idx_t* xids) override;
+  void Reset() override;
+  size_t RemoveIds(const IDSelector& sel) override;
+  void MergeFrom(Index& other, idx_t add_id = 0) override;
+  void PermuteEntries(const idx_t* perm) override;
+
   // override for l2 norms cache.
   FlatCodesDistanceComputer* GetFlatCodesDistanceComputer() const override;
 

@@ -1140,6 +1140,12 @@ std::unique_ptr<Index> ReadNSGFlatPayload(IOReader* reader, int io_flags) {
   return read_nsg_flat(header, reader);
 }
 
+std::unique_ptr<Index> ReadDiskANNFlatPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  const IndexHeaderData header = read_index_header_data(reader);
+  return read_diskann_flat(header, reader);
+}
+
 }  // namespace persistence_internal
 
 Index* ReadIndex(IOReader* f, int io_flags) {
@@ -1172,11 +1178,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
   if (registry.Contains(h)) {
     return registry.ReadPayload(h, f, io_flags).release();
-  }
-
-  if (h == fourcc("IDAf")) {
-    const IndexHeaderData header = read_index_header_data(f);
-    return read_diskann_flat(header, f).release();
   }
 
   if (h == fourcc("IHNf")) {

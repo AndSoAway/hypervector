@@ -6,6 +6,7 @@
  * source tree.
  */
 
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
@@ -73,6 +74,10 @@ class BuiltinIndexIOCodecs {
     registry.Register(
         {"nsg_flat", fourcc("INGf"), {}}, std::type_index(typeid(IndexNSGFlat)),
         WriteNSGFlatPayload, ReadNSGFlatPayload, ValidateNSGFlatForWrite);
+    registry.Register({"diskann_flat", fourcc("IDAf"), {}},
+                      std::type_index(typeid(IndexDiskANNFlat)),
+                      WriteDiskANNFlatPayload, ReadDiskANNFlatPayload,
+                      ValidateDiskANNFlatForWrite);
   }
 
   IndexIORegistry registry;

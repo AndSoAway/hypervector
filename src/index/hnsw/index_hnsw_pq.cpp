@@ -8,31 +8,10 @@
 
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw_pq.h>
-#include <index/hnsw/visited_table.h>
 #include <quantization/pq/index_pq.h>
-#include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
-#include <memory>
-
-#include "index/hnsw/hnsw_build_utils.h"
-
 namespace hypervec {
-
-namespace {
-
-/// Mirrors the file-private helper at index_hnsw.cpp:45-51. Wraps similarity
-/// metrics in NegativeDistanceComputer so HNSW always sees a "smaller is
-/// better" computer. T1 IndexHNSWPQ is L2-only, so the wrap is unreachable
-/// today; kept symmetric with IndexHNSW for future extension.
-DistanceComputer* StorageDistanceComputer(const Index* storage) {
-  if (IsSimilarityMetric(storage->metric_type)) {
-    return new NegativeDistanceComputer(storage->GetDistanceComputer());
-  }
-  return storage->GetDistanceComputer();
-}
-
-}  // namespace
 
 IndexHNSWPQ::IndexHNSWPQ() {
   // Deserialization-only ctor. ReadIndex populates d, n_total, storage, etc.
@@ -68,50 +47,15 @@ void IndexHNSWPQ::Train(idx_t n, const float* x) {
 }
 
 void IndexHNSWPQ::Add(idx_t n, const float* x) {
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSWPQ::Add: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSWPQ::Add: storage is null");
   HYPERVEC_THROW_IF_NOT_MSG(
     raw_storage != nullptr,
     "IndexHNSWPQ::Add: index is frozen (raw scaffold has been released or "
     "the index was deserialized) — Add not allowed");
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
                             "IndexHNSWPQ::Add: call Train before Add");
-  if (n == 0) {
-    return;
-  }
-
-  const idx_t n0 = n_total;
-  HYPERVEC_THROW_IF_NOT_MSG(
-      raw_storage->n_total == n0 && storage->n_total == n0,
-      "IndexHNSWPQ::Add: storage counts are inconsistent");
-
-  // Add to both stores; assert their counts agree.
-  raw_storage->Add(n, x);
-  storage->Add(n, x);
-  HYPERVEC_THROW_IF_NOT_MSG(
-      raw_storage->n_total == n0 + n && storage->n_total == n0 + n,
-      "IndexHNSWPQ::Add: storage did not add the requested vector count");
-  n_total = storage->n_total;
-
-  if (hnsw.ef_construction == 0) {
-    hnsw.ef_construction = 40;
-  }
-
-  hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
-
-  // Graph-construction distances come from the raw scaffold, NOT from
-  // PQ-decoded storage. This is the whole point of dual storage.
-  std::unique_ptr<DistanceComputer> dis(StorageDistanceComputer(raw_storage));
-
-  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
-
-  VisitedTable vt(static_cast<size_t>(n_total));
-
-  for (idx_t i = n0; i < n_total; ++i) {
-    const int pt_level = hnsw.levels[i] - 1;  // levels store level+1
-    dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
-                      false);
-  }
+  AddImpl(n, x, raw_storage, raw_storage);
 }
 
 void IndexHNSWPQ::Reset() {

@@ -13,9 +13,14 @@
 #include <utils/distances/distance_computer.h>
 #include <utils/selector/id_selector.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstddef>
+#include <cstdio>
+#include <functional>
 #include <limits>
+#include <queue>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -309,8 +314,8 @@ void ShrinkNeighborList(DistanceComputer& qdis,
 /// Add a link between two elements, possibly shrinking the list
 /// of links to make room for it.
 void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
-              storage_idx_t dest, int level,
-              bool keep_max_size_level0 = false) {
+              storage_idx_t dest, int level, bool keep_max_size_level0,
+              const std::function<void(storage_idx_t)>& before_node_mutation) {
   size_t begin, end;
   hnsw.NeighborRange(src, level, &begin, &end);
   if (hnsw.neighbors[end - 1] == -1) {
@@ -321,6 +326,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
         break;
       }
       i--;
+    }
+    if (before_node_mutation) {
+      before_node_mutation(src);
     }
     hnsw.neighbors[i] = dest;
     return;
@@ -339,6 +347,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
   ShrinkNeighborList(qdis, resultSet, end - begin, keep_max_size_level0);
 
   // ...and back
+  if (before_node_mutation) {
+    before_node_mutation(src);
+  }
   size_t i = begin;
   while (resultSet.size()) {
     hnsw.neighbors[i++] = resultSet.top().id;
@@ -466,11 +477,11 @@ void SearchNeighborsToAdd(HNSW& hnsw, DistanceComputer& qdis,
 
 /// Finds neighbors and builds links with them, starting from an entry
 /// point. The own neighbor list is assumed to be locked.
-void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
-                                   storage_idx_t nearest, float d_nearest,
-                                   int level, omp_lock_t* locks,
-                                   VisitedTable& vt,
-                                   bool keep_max_size_level0) {
+void HNSW::AddLinksStartingFrom(
+    DistanceComputer& ptdis, storage_idx_t pt_id, storage_idx_t nearest,
+    float d_nearest, int level, omp_lock_t* locks, VisitedTable& vt,
+    bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   std::priority_queue<NodeDistCloser> link_targets;
 
   SearchNeighborsToAdd(*this, ptdis, link_targets, nearest, d_nearest, level,
@@ -486,7 +497,8 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   neighbors_to_add.reserve(link_targets.size());
   while (!link_targets.empty()) {
     storage_idx_t other_id = link_targets.top().id;
-    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0);
+    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0,
+             before_node_mutation);
     neighbors_to_add.push_back(other_id);
     link_targets.pop();
   }
@@ -494,7 +506,14 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   omp_unset_lock(&locks[pt_id]);
   for (storage_idx_t other_id : neighbors_to_add) {
     omp_set_lock(&locks[other_id]);
-    add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0);
+    try {
+      add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0,
+               before_node_mutation);
+    } catch (...) {
+      omp_unset_lock(&locks[other_id]);
+      omp_set_lock(&locks[pt_id]);
+      throw;
+    }
     omp_unset_lock(&locks[other_id]);
   }
   omp_set_lock(&locks[pt_id]);
@@ -504,9 +523,10 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
  * Building, parallel
  **************************************************************/
 
-void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
-                          std::vector<omp_lock_t>& locks, VisitedTable& vt,
-                          bool keep_max_size_level0) {
+void HNSW::AddWithLocks(
+    DistanceComputer& ptdis, int pt_level, int pt_id,
+    std::vector<omp_lock_t>& locks, VisitedTable& vt, bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   storage_idx_t nearest = entry_point;
   if (nearest == -1) {  // avoid locking after the first point.
 #pragma omp critical
@@ -525,18 +545,23 @@ void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
   }
 
   omp_set_lock(&locks[pt_id]);
+  try {
+    int level = max_level;  // level at which we start adding neighbors
+    float d_nearest = ptdis(nearest);
 
-  int level = max_level;  // level at which we start adding neighbors
-  float d_nearest = ptdis(nearest);
+    //  greedy Search on upper levels
+    for (; level > pt_level; level--) {
+      GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
+    }
 
-  //  greedy Search on upper levels
-  for (; level > pt_level; level--) {
-    GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
-  }
-
-  for (; level >= 0; level--) {
-    AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
-                            locks.data(), vt, keep_max_size_level0);
+    for (; level >= 0; level--) {
+      AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
+                           locks.data(), vt, keep_max_size_level0,
+                           before_node_mutation);
+    }
+  } catch (...) {
+    omp_unset_lock(&locks[pt_id]);
+    throw;
   }
 
   omp_unset_lock(&locks[pt_id]);

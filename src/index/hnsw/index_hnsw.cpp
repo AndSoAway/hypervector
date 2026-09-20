@@ -20,6 +20,7 @@
 #include <utils/structures/random.h>
 #include <utils/structures/sorting.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <queue>
 #include <random>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -203,6 +205,193 @@ void ValidateSearchState(const IndexHNSW& index) {
       "IndexHNSW::Search: entry-point level is inconsistent");
 }
 
+void ValidateAppendState(const IndexHNSW& index, idx_t n, const float* x,
+                         const Index* secondary_storage) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::Add: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  if (n == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr, "IndexHNSW::Add: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(index.n_total >= 0,
+                            "IndexHNSW::Add: vector count is negative");
+  const idx_t capacity =
+      static_cast<idx_t>((std::numeric_limits<storage_idx_t>::max)());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total <= capacity && n <= capacity - index.n_total,
+      "IndexHNSW::Add: vector count exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->n_total == index.n_total,
+      "IndexHNSW::Add: storage and graph counts are inconsistent");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      secondary_storage == nullptr || secondary_storage != index.storage,
+      "IndexHNSW::Add: secondary storage aliases primary storage");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      secondary_storage == nullptr ||
+          secondary_storage->n_total == index.n_total,
+      "IndexHNSW::Add: secondary storage count is inconsistent");
+
+  const size_t count = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.neighbors.is_owned,
+      "IndexHNSW::Add: memory-mapped graph storage is read-only");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.levels.size() == count &&
+          index.hnsw.offsets.size() == count + 1 &&
+          index.hnsw.offsets.front() == 0 &&
+          index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
+      "IndexHNSW::Add: graph storage is inconsistent");
+  if (count == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
+        "IndexHNSW::Add: empty graph has an entry point or level");
+  } else {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point >= 0 &&
+            static_cast<size_t>(index.hnsw.entry_point) < count &&
+            index.hnsw.max_level >= 0 &&
+            index.hnsw.levels[index.hnsw.entry_point] > index.hnsw.max_level,
+        "IndexHNSW::Add: graph entry point is inconsistent");
+  }
+}
+
+class CodeStorageAppendGuard {
+ public:
+  explicit CodeStorageAppendGuard(Index* storage)
+      : storage_(storage), old_total_(storage->n_total) {
+    size_t code_size = 0;
+    if (auto* flat = dynamic_cast<IndexFlatCodes*>(storage)) {
+      codes_ = &flat->codes;
+      code_size = flat->code_size;
+      flat_l2_ = dynamic_cast<IndexFlatL2*>(storage);
+      flat_1d_ = dynamic_cast<IndexFlat1D*>(storage);
+    } else if (auto* pq = dynamic_cast<IndexPQ*>(storage)) {
+      codes_ = &pq->codes;
+      code_size = pq->pq.code_size;
+    } else if (auto* lvq = dynamic_cast<IndexLVQ*>(storage)) {
+      codes_ = &lvq->codes;
+      code_size = lvq->lvq.code_size;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_ != nullptr,
+        "IndexHNSW::Add: storage does not support transactional append");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_->is_owned,
+        "IndexHNSW::Add: memory-mapped vector storage is read-only");
+    old_code_size_ = mul_no_overflow(static_cast<size_t>(old_total_), code_size,
+                                     "IndexHNSW::Add existing storage size");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_->size() == old_code_size_,
+        "IndexHNSW::Add: vector storage size is inconsistent");
+    if (flat_l2_ != nullptr) {
+      old_norms_ = flat_l2_->cached_l2norms;
+    }
+    if (flat_1d_ != nullptr) {
+      old_permutation_ = flat_1d_->perm;
+    }
+  }
+
+  CodeStorageAppendGuard(const CodeStorageAppendGuard&) = delete;
+  CodeStorageAppendGuard& operator=(const CodeStorageAppendGuard&) = delete;
+
+  ~CodeStorageAppendGuard() {
+    if (committed_) {
+      return;
+    }
+    codes_->resize(old_code_size_);
+    storage_->n_total = old_total_;
+    if (flat_l2_ != nullptr) {
+      flat_l2_->cached_l2norms.swap(old_norms_);
+    }
+    if (flat_1d_ != nullptr) {
+      flat_1d_->perm.swap(old_permutation_);
+    }
+  }
+
+  void Commit() noexcept { committed_ = true; }
+
+ private:
+  Index* storage_;
+  idx_t old_total_;
+  MaybeOwnedVector<uint8_t>* codes_ = nullptr;
+  size_t old_code_size_ = 0;
+  IndexFlatL2* flat_l2_ = nullptr;
+  IndexFlat1D* flat_1d_ = nullptr;
+  std::vector<float> old_norms_;
+  std::vector<idx_t> old_permutation_;
+  bool committed_ = false;
+};
+
+class GraphAppendGuard {
+ public:
+  GraphAppendGuard(HNSW* graph, size_t old_count)
+      : graph_(graph),
+        old_count_(old_count),
+        old_neighbor_size_(graph->neighbors.size()),
+        old_entry_point_(graph->entry_point),
+        old_max_level_(graph->max_level),
+        old_ef_construction_(graph->ef_construction),
+        old_rng_(graph->rng.mt) {}
+
+  GraphAppendGuard(const GraphAppendGuard&) = delete;
+  GraphAppendGuard& operator=(const GraphAppendGuard&) = delete;
+
+  ~GraphAppendGuard() {
+    if (committed_) {
+      return;
+    }
+    for (const NodeSnapshot& snapshot : snapshots_) {
+      std::copy(snapshot.neighbors.begin(), snapshot.neighbors.end(),
+                graph_->neighbors.data() + snapshot.begin);
+    }
+    graph_->neighbors.resize(old_neighbor_size_);
+    graph_->levels.resize(old_count_);
+    graph_->offsets.resize(old_count_ + 1);
+    graph_->entry_point = old_entry_point_;
+    graph_->max_level = old_max_level_;
+    graph_->ef_construction = old_ef_construction_;
+    graph_->rng.mt = old_rng_;
+  }
+
+  void CaptureNode(storage_idx_t node) {
+    if (node < 0 || static_cast<size_t>(node) >= old_count_) {
+      return;
+    }
+    const size_t index = static_cast<size_t>(node);
+    if (!captured_.insert(index).second) {
+      return;
+    }
+    const size_t begin = graph_->offsets[index];
+    const size_t end = graph_->offsets[index + 1];
+    NodeSnapshot snapshot;
+    snapshot.begin = begin;
+    snapshot.neighbors.assign(graph_->neighbors.data() + begin,
+                              graph_->neighbors.data() + end);
+    snapshots_.push_back(std::move(snapshot));
+  }
+
+  void Commit() noexcept { committed_ = true; }
+
+ private:
+  struct NodeSnapshot {
+    size_t begin = 0;
+    std::vector<storage_idx_t> neighbors;
+  };
+
+  HNSW* graph_;
+  size_t old_count_;
+  size_t old_neighbor_size_;
+  storage_idx_t old_entry_point_;
+  int old_max_level_;
+  int old_ef_construction_;
+  std::mt19937 old_rng_;
+  std::unordered_set<size_t> captured_;
+  std::vector<NodeSnapshot> snapshots_;
+  bool committed_ = false;
+};
+
 }  // namespace
 
 /**************************************************************
@@ -249,48 +438,59 @@ void IndexHNSW::Add(idx_t n, const float* x) {
                             "IndexHNSW::Add: storage is null");
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
                             "IndexHNSW::Add: call Train before Add");
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSW::Add: n must be non-negative");
+  AddImpl(n, x, storage, nullptr);
+}
+
+void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
+                        Index* secondary_storage) {
+  const idx_t n0 = n_total;
+  ValidateAppendState(*this, n, x, secondary_storage);
   if (n == 0) {
     return;
   }
-
-  const idx_t n0 = n_total;
   HYPERVEC_THROW_IF_NOT_MSG(
-      storage->n_total == n0,
-      "IndexHNSW::Add: storage and graph counts are inconsistent");
+      construction_storage == storage ||
+          construction_storage == secondary_storage,
+      "IndexHNSW::Add: construction storage is not managed by this index");
+  const idx_t new_total = n0 + n;
+  GraphAppendGuard graph_guard(&hnsw, static_cast<size_t>(n0));
+  CodeStorageAppendGuard storage_guard(storage);
+  std::optional<CodeStorageAppendGuard> secondary_guard;
+  if (secondary_storage != nullptr) {
+    secondary_guard.emplace(secondary_storage);
+    secondary_storage->Add(n, x);
+  }
 
-  // Add vectors to storage
   storage->Add(n, x);
   HYPERVEC_THROW_IF_NOT_MSG(
-      storage->n_total == n0 + n,
+      storage->n_total == new_total &&
+          (secondary_storage == nullptr ||
+           secondary_storage->n_total == new_total),
       "IndexHNSW::Add: storage did not add the requested number of vectors");
-  n_total = storage->n_total;
 
-  // Build HNSW graph structure
-  // Initialize HNSW parameters if first Add
   if (hnsw.ef_construction == 0) {
     hnsw.ef_construction = 40;
   }
-
-  // PrepareLevelTab appends graph metadata, so only pass this batch's size.
   hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
-
-  // Create distance computer for building.
-  // Must go through storage_distance_computer() so similarity metrics (IP,
-  // Jaccard) are negated — HNSW graph traversal assumes "smaller is better".
-  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
-
-  // For single-threaded building, Add vectors one by one
-  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
-
-  VisitedTable vt(n_total);
-
-  // Add each new vector to the HNSW graph
-  for (idx_t i = n0; i < n_total; i++) {
+  std::unique_ptr<DistanceComputer> dis(
+      storage_distance_computer(construction_storage));
+  OmpLockArray lock_array(static_cast<size_t>(new_total) + 1);
+  VisitedTable vt(new_total);
+  const std::function<void(storage_idx_t)> before_node_mutation =
+      [&graph_guard](storage_idx_t node) { graph_guard.CaptureNode(node); };
+  for (idx_t i = n0; i < new_total; i++) {
     int pt_level = hnsw.levels[i] - 1;  // levels store level+1 (1-based)
     dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, i, lock_array.Get(), vt, false);
+    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
+                      false, before_node_mutation);
   }
+
+  n_total = new_total;
+  storage_guard.Commit();
+  if (secondary_guard.has_value()) {
+    secondary_guard->Commit();
+  }
+  graph_guard.Commit();
 }
 
 void IndexHNSW::Reset() {

@@ -20,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -66,6 +67,65 @@ class ThrowingSearchStorage final : public hypervec::Index {
 
  private:
   int* destruction_count_;
+};
+
+class FailingAddDistanceComputer final : public hypervec::DistanceComputer {
+ public:
+  FailingAddDistanceComputer(
+      std::unique_ptr<hypervec::DistanceComputer> delegate, int fail_on_query)
+      : delegate_(std::move(delegate)), fail_on_query_(fail_on_query) {}
+
+  void SetQuery(const float* query) override {
+    if (query_count_++ == fail_on_query_) {
+      throw std::runtime_error("injected graph-build failure");
+    }
+    delegate_->SetQuery(query);
+  }
+
+  float operator()(hypervec::idx_t index) override {
+    return (*delegate_)(index);
+  }
+
+  float symmetric_dis(hypervec::idx_t first, hypervec::idx_t second) override {
+    return delegate_->symmetric_dis(first, second);
+  }
+
+ private:
+  std::unique_ptr<hypervec::DistanceComputer> delegate_;
+  int fail_on_query_;
+  int query_count_ = 0;
+};
+
+class FailingAddStorage final : public hypervec::IndexFlatL2 {
+ public:
+  explicit FailingAddStorage(hypervec::idx_t dimension)
+      : IndexFlatL2(dimension) {}
+
+  bool fail_graph_build = false;
+
+  hypervec::DistanceComputer* GetDistanceComputer() const override {
+    std::unique_ptr<hypervec::DistanceComputer> delegate(
+        IndexFlatL2::GetDistanceComputer());
+    if (!fail_graph_build) {
+      return delegate.release();
+    }
+    return new FailingAddDistanceComputer(std::move(delegate), 1);
+  }
+};
+
+class FailingAfterAddPQ final : public hypervec::IndexPQ {
+ public:
+  explicit FailingAfterAddPQ(const hypervec::IndexPQ& source)
+      : IndexPQ(source) {}
+
+  bool fail_after_add = true;
+
+  void Add(hypervec::idx_t n, const float* x) override {
+    IndexPQ::Add(n, x);
+    if (fail_after_add) {
+      throw std::runtime_error("injected compressed-storage failure");
+    }
+  }
 };
 
 std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
@@ -302,6 +362,107 @@ TEST(IndexHNSWCorrectness, RepeatedAddLVQKeepsGraphAligned) {
   EXPECT_EQ(index.n_total, batch * 2);
   ExpectConsistentGraph(index);
   ExpectSearchLabelsValid(index, data.data());
+}
+
+TEST(IndexHNSWCorrectness, FailedGraphBuildRollsBackStorageAndGraph) {
+  constexpr hypervec::idx_t dimension = 4;
+  constexpr hypervec::idx_t initial_count = 24;
+  constexpr hypervec::idx_t extra_count = 4;
+  const auto data = RandomVectors(initial_count + extra_count, dimension, 1004);
+  FailingAddStorage storage(dimension);
+  hypervec::IndexHNSW index(&storage, 4);
+  index.Add(initial_count, data.data());
+  storage.SyncL2Norms();
+
+  const auto codes_before = storage.codes.owned_data;
+  const auto norms_before = storage.cached_l2norms;
+  const auto levels_before = index.hnsw.levels;
+  const auto offsets_before = index.hnsw.offsets;
+  const std::vector<hypervec::HNSW::storage_idx_t> neighbors_before(
+      index.hnsw.neighbors.data(),
+      index.hnsw.neighbors.data() + index.hnsw.neighbors.size());
+  const auto entry_before = index.hnsw.entry_point;
+  const auto max_level_before = index.hnsw.max_level;
+  const auto rng_before = index.hnsw.rng.mt;
+
+  storage.fail_graph_build = true;
+  EXPECT_THROW(index.Add(extra_count, data.data() + initial_count * dimension),
+               std::runtime_error);
+  EXPECT_EQ(index.n_total, initial_count);
+  EXPECT_EQ(storage.n_total, initial_count);
+  EXPECT_EQ(storage.codes.owned_data, codes_before);
+  EXPECT_EQ(storage.cached_l2norms, norms_before);
+  EXPECT_EQ(index.hnsw.levels, levels_before);
+  EXPECT_EQ(index.hnsw.offsets, offsets_before);
+  EXPECT_EQ(std::vector<hypervec::HNSW::storage_idx_t>(
+                index.hnsw.neighbors.data(),
+                index.hnsw.neighbors.data() + index.hnsw.neighbors.size()),
+            neighbors_before);
+  EXPECT_EQ(index.hnsw.entry_point, entry_before);
+  EXPECT_EQ(index.hnsw.max_level, max_level_before);
+  EXPECT_EQ(index.hnsw.rng.mt, rng_before);
+
+  storage.fail_graph_build = false;
+  index.Add(extra_count, data.data() + initial_count * dimension);
+  EXPECT_EQ(index.n_total, initial_count + extra_count);
+  ExpectConsistentGraph(index);
+  ExpectSearchLabelsValid(index, data.data());
+}
+
+TEST(IndexHNSWCorrectness, AddRejectsInvalidInputAndMappedGraph) {
+  constexpr hypervec::idx_t dimension = 2;
+  const std::array<float, dimension> vector = {1.0F, 2.0F};
+  hypervec::IndexHNSWFlat index(dimension, 4);
+
+  EXPECT_THROW(index.Add(-1, nullptr), hypervec::HypervecException);
+  EXPECT_THROW(index.Add(1, nullptr), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 0);
+  index.Add(1, vector.data());
+
+  std::vector<hypervec::HNSW::storage_idx_t> mapped_neighbors(
+      index.hnsw.neighbors.data(),
+      index.hnsw.neighbors.data() + index.hnsw.neighbors.size());
+  index.hnsw.neighbors =
+      hypervec::MaybeOwnedVector<hypervec::HNSW::storage_idx_t>::create_view(
+          mapped_neighbors.data(), mapped_neighbors.size(), nullptr);
+  EXPECT_THROW(index.Add(1, vector.data()), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 1);
+  EXPECT_EQ(index.storage->n_total, 1);
+}
+
+TEST(IndexHNSWCorrectness, CompressedStorageFailureRollsBackBothStores) {
+  constexpr hypervec::idx_t dimension = 8;
+  constexpr hypervec::idx_t count = 32;
+  const auto data = RandomVectors(count, dimension, 1005);
+  hypervec::IndexHNSWPQ index(dimension, 2, 3, 8);
+  index.Train(count, data.data());
+
+  auto* original = dynamic_cast<hypervec::IndexPQ*>(index.storage);
+  ASSERT_NE(original, nullptr);
+  auto* failing = new FailingAfterAddPQ(*original);
+  delete original;
+  index.storage = failing;
+  const auto rng_before = index.hnsw.rng.mt;
+
+  EXPECT_THROW(index.Add(count, data.data()), std::runtime_error);
+  EXPECT_EQ(index.n_total, 0);
+  EXPECT_EQ(index.storage->n_total, 0);
+  EXPECT_EQ(index.raw_storage->n_total, 0);
+  EXPECT_EQ(failing->codes.size(), 0U);
+  auto* raw = dynamic_cast<hypervec::IndexFlatL2*>(index.raw_storage);
+  ASSERT_NE(raw, nullptr);
+  EXPECT_EQ(raw->codes.size(), 0U);
+  EXPECT_TRUE(index.hnsw.levels.empty());
+  EXPECT_EQ(index.hnsw.offsets, std::vector<size_t>{0});
+  EXPECT_EQ(index.hnsw.neighbors.size(), 0U);
+  EXPECT_EQ(index.hnsw.rng.mt, rng_before);
+
+  failing->fail_after_add = false;
+  index.Add(count, data.data());
+  EXPECT_EQ(index.n_total, count);
+  EXPECT_EQ(index.storage->n_total, count);
+  EXPECT_EQ(index.raw_storage->n_total, count);
+  ExpectConsistentGraph(index);
 }
 
 TEST(IndexHNSWCorrectness, PermuteEntriesRemapsFlatStorageAndGraph) {

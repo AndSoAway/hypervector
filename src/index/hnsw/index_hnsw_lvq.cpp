@@ -8,26 +8,9 @@
 
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw_lvq.h>
-#include <index/hnsw/visited_table.h>
-#include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
-#include <memory>
-
-#include "index/hnsw/hnsw_build_utils.h"
-
 namespace hypervec {
-
-namespace {
-
-DistanceComputer* StorageDistanceComputer(const Index* storage) {
-  if (IsSimilarityMetric(storage->metric_type)) {
-    return new NegativeDistanceComputer(storage->GetDistanceComputer());
-  }
-  return storage->GetDistanceComputer();
-}
-
-}  // namespace
 
 IndexHNSWLVQ::IndexHNSWLVQ() {
   is_trained = false;
@@ -59,44 +42,14 @@ void IndexHNSWLVQ::Train(idx_t n, const float* x) {
 }
 
 void IndexHNSWLVQ::Add(idx_t n, const float* x) {
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
-                            "IndexHNSWLVQ::Add: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSWLVQ::Add: storage is null");
   HYPERVEC_THROW_IF_NOT_MSG(
     raw_storage != nullptr,
     "IndexHNSWLVQ::Add: index is frozen or deserialized");
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
                             "IndexHNSWLVQ::Add: call Train before Add");
-  if (n == 0) {
-    return;
-  }
-
-  const idx_t n0 = n_total;
-  HYPERVEC_THROW_IF_NOT_MSG(
-      raw_storage->n_total == n0 && storage->n_total == n0,
-      "IndexHNSWLVQ::Add: storage counts are inconsistent");
-
-  raw_storage->Add(n, x);
-  storage->Add(n, x);
-  HYPERVEC_THROW_IF_NOT_MSG(
-      raw_storage->n_total == n0 + n && storage->n_total == n0 + n,
-      "IndexHNSWLVQ::Add: storage did not add the requested vector count");
-  n_total = storage->n_total;
-
-  if (hnsw.ef_construction == 0) {
-    hnsw.ef_construction = 40;
-  }
-  hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
-
-  std::unique_ptr<DistanceComputer> dis(StorageDistanceComputer(raw_storage));
-  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
-
-  VisitedTable vt(static_cast<size_t>(n_total));
-  for (idx_t i = n0; i < n_total; ++i) {
-    const int pt_level = hnsw.levels[i] - 1;
-    dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
-                      false);
-  }
+  AddImpl(n, x, raw_storage, raw_storage);
 }
 
 void IndexHNSWLVQ::Reset() {

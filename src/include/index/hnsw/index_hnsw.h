@@ -58,6 +58,8 @@ struct IndexHNSW : Index {
 
   IndexCapabilities GetCapabilities() const override;
 
+  /** Transactional append for the built-in FlatCodes, PQ, and LVQ stores.
+   *  Other storage implementations are rejected before mutation. */
   void Add(idx_t n, const float* x) override;
 
   /// Trains the storage if needed
@@ -110,6 +112,10 @@ struct IndexHNSW : Index {
   DistanceComputer* GetDistanceComputer() const override;
 
  protected:
+  /** Append storage and graph state as one rollback-capable operation. */
+  void AddImpl(idx_t n, const float* x, Index* construction_storage,
+               Index* secondary_storage = nullptr);
+
   /** Permute the graph, encoded storage, and an optional build-time store as
    * one validated operation. */
   void PermuteEntriesImpl(const idx_t* perm, Index* secondary_storage);

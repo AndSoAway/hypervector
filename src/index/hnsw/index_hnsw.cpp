@@ -572,9 +572,117 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   }
 }
 
-void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
-                             RangeSearchResult* result,
+void IndexHNSW::SearchLevel0(idx_t n, const float* x, idx_t k,
+                             const storage_idx_t* nearest,
+                             const float* nearest_d, float* distances,
+                             idx_t* labels, int nprobe, int search_type,
                              const SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::SearchLevel0: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  HYPERVEC_THROW_IF_NOT_FMT(
+      k > 0, "IndexHNSW::SearchLevel0: k must be positive, got %" PRId64,
+      static_cast<int64_t>(k));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k <= (std::numeric_limits<int>::max)(),
+      "IndexHNSW::SearchLevel0: k exceeds the supported graph-search range");
+  HYPERVEC_THROW_IF_NOT_MSG(nprobe > 0,
+                            "IndexHNSW::SearchLevel0: nprobe must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      search_type == 1 || search_type == 2,
+      "IndexHNSW::SearchLevel0: search_type must be 1 or 2");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexHNSW::SearchLevel0: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || nearest != nullptr,
+      "IndexHNSW::SearchLevel0: nearest must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || nearest_d != nullptr,
+      "IndexHNSW::SearchLevel0: nearest_d must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || distances != nullptr,
+      "IndexHNSW::SearchLevel0: distances must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || labels != nullptr,
+      "IndexHNSW::SearchLevel0: labels must not be null when n is positive");
+  ValidateSearchState(*this);
+  if (n == 0) {
+    return;
+  }
+
+  (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                        "IndexHNSW::SearchLevel0 output size");
+  (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(nprobe),
+                        "IndexHNSW::SearchLevel0 entry-point size");
+  if (n_total > 0) {
+    int ef_search = hnsw.ef_search;
+    if (const auto* hnsw_params =
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
+      ef_search = hnsw_params->ef_search;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ef_search > 0, "IndexHNSW::SearchLevel0: ef_search must be positive");
+    for (idx_t query = 0; query < n; ++query) {
+      const size_t offset =
+          static_cast<size_t>(query) * static_cast<size_t>(nprobe);
+      for (int probe = 0; probe < nprobe; ++probe) {
+        const storage_idx_t entry = nearest[offset + probe];
+        if (entry < 0) {
+          break;
+        }
+        HYPERVEC_THROW_IF_NOT_MSG(
+            static_cast<idx_t>(entry) < n_total,
+            "IndexHNSW::SearchLevel0: entry point is outside the index");
+      }
+    }
+  }
+
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  using RH = HeapBlockResultHandler<HNSW::C>;
+  RH block(n, distances, labels, k);
+  typename RH::SingleResultHandler result(block);
+  VisitedTable visited(n_total, use_visited_hashset);
+  HNSWStats search_stats;
+  const bool similarity = IsSimilarityMetric(metric_type);
+  std::vector<float> internal_nearest_distances(
+      similarity ? static_cast<size_t>(nprobe) : 0);
+
+  for (idx_t query = 0; query < n; ++query) {
+    result.begin(query);
+    if (n_total > 0) {
+      const size_t entry_offset =
+          static_cast<size_t>(query) * static_cast<size_t>(nprobe);
+      const float* query_nearest_distances = nearest_d + entry_offset;
+      if (similarity) {
+        for (int probe = 0; probe < nprobe; ++probe) {
+          internal_nearest_distances[static_cast<size_t>(probe)] =
+              -query_nearest_distances[probe];
+        }
+        query_nearest_distances = internal_nearest_distances.data();
+      }
+      dis->SetQuery(x + query * d);
+      hnsw.SearchLevel0(*dis, result, nprobe, nearest + entry_offset,
+                        query_nearest_distances, search_type, search_stats,
+                        visited, params);
+    }
+    result.end();
+    visited.advance();
+
+    if (similarity) {
+      const size_t output_offset =
+          static_cast<size_t>(query) * static_cast<size_t>(k);
+      for (idx_t output = 0; output < k; ++output) {
+        distances[output_offset + static_cast<size_t>(output)] =
+            -distances[output_offset + static_cast<size_t>(output)];
+      }
+    }
+  }
+}
+
+void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
+                            RangeSearchResult* result,
+                            const SearchParameters* params) const {
   storage->RangeSearch(n, x, radius, result, params);
 }
 

@@ -20,6 +20,7 @@
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <index/vamana/index_vamana.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/index_io_builtins.h>
@@ -771,6 +772,85 @@ static std::unique_ptr<IndexDiskANNFlat> read_diskann_flat(
   return index;
 }
 
+static std::unique_ptr<IndexVamanaFlat> read_vamana_flat(
+    const IndexHeaderData& header, IOReader* f) {
+  constexpr size_t kGraphCapacity =
+      static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexVamanaFlat deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total <= kGraphCapacity,
+      "IndexVamanaFlat deserialize: n_total exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexVamanaFlat deserialize: n_total exceeds loop limit (%zu > %zu)",
+      total, deserialization_loop_limit_);
+
+  VamanaIndexOptions options;
+  READ1(options.max_degree);
+  READ1(options.build_search_width);
+  READ1(options.candidate_pool_size);
+  READ1(options.alpha);
+  READ1(options.build_passes);
+  READ1(options.random_seed);
+  READ1(options.search_width);
+  options.check_relative_distance =
+      read_bool(f, "IndexVamanaFlat check_relative_distance");
+  GraphId entry_point;
+  READ1(entry_point);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      (total == 0 && entry_point == kInvalidGraphId) ||
+          (total > 0 && entry_point >= 0 &&
+           static_cast<size_t>(entry_point) < total),
+      "IndexVamanaFlat deserialize: entry point is inconsistent with n_total");
+
+  auto index =
+      std::make_unique<IndexVamanaFlat>(header.d, header.metric_type, options);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained && header.metric_arg == 0.0F,
+      "IndexVamanaFlat deserialize: header metadata is inconsistent");
+  const size_t code_count = mul_no_overflow(
+      total, index->CodeStore().CodeSize(), "IndexVamanaFlat codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexVamanaFlat codes");
+
+  const size_t offset_count =
+      add_no_overflow(total, 1, "IndexVamanaFlat offsets");
+  std::vector<size_t> offsets;
+  ReadVectorExact(offsets, offset_count, f, "IndexVamanaFlat offsets");
+  HYPERVEC_THROW_IF_NOT_MSG(offsets.front() == 0,
+                            "IndexVamanaFlat offsets must start at zero");
+  for (size_t node = 0; node < total; ++node) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        offsets[node] <= offsets[node + 1] &&
+            offsets[node + 1] - offsets[node] <= options.max_degree,
+        "IndexVamanaFlat offsets contain an invalid neighbor span");
+  }
+  const size_t max_edges = mul_no_overflow(
+      total, options.max_degree, "IndexVamanaFlat maximum edge count");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      offsets.back() <= max_edges,
+      "IndexVamanaFlat edge count exceeds the configured degree bound");
+  std::vector<GraphId> edges;
+  ReadVectorExact(edges, offsets.back(), f, "IndexVamanaFlat edges");
+
+  FixedDegreeGraph graph(total, options.max_degree);
+  for (size_t node = 0; node < total; ++node) {
+    const size_t degree = offsets[node + 1] - offsets[node];
+    const GraphId* neighbors =
+        degree == 0 ? nullptr : edges.data() + offsets[node];
+    graph.SetNeighbors(static_cast<GraphId>(node),
+                       GraphNeighborView(neighbors, degree));
+  }
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  index->RestoreState(std::move(code_store), std::move(graph), entry_point);
+  return index;
+}
+
 static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
     const IndexHeaderData& header, IOReader* f) {
   constexpr size_t kGraphCapacity =
@@ -1186,6 +1266,12 @@ std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags) {
       "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
   ValidateHnswStorage(*index);
   return index;
+}
+
+std::unique_ptr<Index> ReadVamanaFlatPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  const IndexHeaderData header = read_index_header_data(reader);
+  return read_vamana_flat(header, reader);
 }
 
 }  // namespace persistence_internal

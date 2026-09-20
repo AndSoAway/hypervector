@@ -20,6 +20,7 @@
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <index/vamana/index_vamana.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/index_io_builtins.h>
@@ -732,6 +733,54 @@ void ValidateHNSWLVQForWrite(const Index& index, int io_flags) {
 void WriteHNSWLVQPayload(const Index& index, IOWriter* f, int io_flags) {
   (void)io_flags;
   WriteHNSWPayload(static_cast<const IndexHNSWLVQ&>(index), f);
+}
+
+void ValidateVamanaFlatForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& vamana = static_cast<const IndexVamanaFlat&>(index);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      vamana.n_total >= 0 && vamana.is_trained &&
+          vamana.metric_type == kMetricL2 &&
+          vamana.QuantizerModel().TypeName() == "flat" &&
+          vamana.QuantizerModel().Dimension() == vamana.d &&
+          vamana.QuantizerModel().Metric() == vamana.metric_type &&
+          vamana.CodeStore().CodeSize() == vamana.QuantizerModel().CodeSize() &&
+          vamana.CodeStore().Size() == vamana.n_total &&
+          vamana.Graph().NodeCount() == static_cast<size_t>(vamana.n_total) &&
+          vamana.Graph().MaxDegree() == vamana.Options().max_degree,
+      "IndexVamanaFlat serialize: index metadata is inconsistent");
+  const GraphValidationReport report =
+      ValidateGraph(vamana.Graph(), vamana.EntryPoint());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      report.IsStructurallyValid() &&
+          report.reachable_nodes == static_cast<size_t>(vamana.n_total),
+      "IndexVamanaFlat serialize: graph is invalid or unreachable");
+}
+
+void WriteVamanaFlatPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& vamana = static_cast<const IndexVamanaFlat&>(index);
+  write_index_header(vamana, f);
+  const VamanaIndexOptions& options = vamana.Options();
+  WRITE1(options.max_degree);
+  WRITE1(options.build_search_width);
+  WRITE1(options.candidate_pool_size);
+  WRITE1(options.alpha);
+  WRITE1(options.build_passes);
+  WRITE1(options.random_seed);
+  WRITE1(options.search_width);
+  const uint8_t check_relative_distance = options.check_relative_distance;
+  WRITE1(check_relative_distance);
+  const GraphId entry_point = vamana.EntryPoint();
+  WRITE1(entry_point);
+  const size_t code_bytes =
+      mul_no_overflow(static_cast<size_t>(vamana.n_total),
+                      vamana.CodeStore().CodeSize(), "IndexVamanaFlat codes");
+  WRITE1(code_bytes);
+  WRITEANDCHECK(vamana.CodeStore().Data(), code_bytes);
+  const CsrGraph graph(vamana.Graph());
+  WRITEVECTOR(graph.Offsets());
+  WRITEVECTOR(graph.Edges());
 }
 
 }  // namespace persistence_internal

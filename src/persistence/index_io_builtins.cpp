@@ -17,6 +17,7 @@
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <index/vamana/index_vamana.h>
 #include <persistence/index_io_builtins.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
@@ -91,6 +92,10 @@ class BuiltinIndexIOCodecs {
     registry.Register(
         {"hnsw_lvq", fourcc("IHNl"), {}}, std::type_index(typeid(IndexHNSWLVQ)),
         WriteHNSWLVQPayload, ReadHNSWLVQPayload, ValidateHNSWLVQForWrite);
+    registry.Register({"vamana_flat", fourcc("IVAf"), {}},
+                      std::type_index(typeid(IndexVamanaFlat)),
+                      WriteVamanaFlatPayload, ReadVamanaFlatPayload,
+                      ValidateVamanaFlatForWrite);
   }
 
   IndexIORegistry registry;

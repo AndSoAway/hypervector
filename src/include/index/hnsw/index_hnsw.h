@@ -116,6 +116,8 @@ struct IndexHNSW : Index {
    * Similarity metrics are ordered from highest to lowest similarity. */
   void ReorderLinks();
 
+  /** Transactionally reconnect level-0 nodes with zero incoming degree.
+   * Existing upper levels are preserved. */
   void LinkSingletons();
 
   virtual void PermuteEntries(const idx_t* perm);

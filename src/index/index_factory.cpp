@@ -18,6 +18,7 @@
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <index/vamana/index_vamana.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -231,6 +232,32 @@ std::unique_ptr<Index> MakeDiskANN(const IndexConfig& config) {
                                             config.metric_type, options);
 }
 
+std::unique_ptr<Index> MakeVamana(const IndexConfig& config) {
+  RequireL2(config, "vamana");
+  VamanaIndexOptions options;
+  options.max_degree =
+      static_cast<size_t>(PositiveIntParameter(config, "max_degree", 32));
+  options.build_search_width = static_cast<size_t>(
+      PositiveIntParameter(config, "build_search_width", 64));
+  options.candidate_pool_size = static_cast<size_t>(
+      PositiveIntParameter(config, "candidate_pool_size", 200));
+  options.alpha = static_cast<float>(config.GetDouble("alpha", 1.2));
+  options.build_passes =
+      static_cast<size_t>(PositiveIntParameter(config, "build_passes", 2));
+  if (config.HasParameter("random_seed")) {
+    const int64_t random_seed = config.GetInteger("random_seed", 0);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        random_seed >= 0, "index parameter 'random_seed' must be non-negative");
+    options.random_seed = static_cast<uint64_t>(random_seed);
+  }
+  options.search_width =
+      static_cast<size_t>(PositiveIntParameter(config, "search_width", 64));
+  options.check_relative_distance =
+      config.GetBoolean("check_relative_distance", true);
+  return std::make_unique<IndexVamanaFlat>(config.dimension, config.metric_type,
+                                           options);
+}
+
 std::unique_ptr<Index> MakeNSWFlat(const IndexConfig& config) {
   NSWIndexOptions options;
   options.max_degree =
@@ -383,6 +410,13 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"table_count", "bits_per_table", "probe_count",
                        "candidate_limit", "random_seed"}},
                      MakeLSH);
+  registry->Register(
+      {"vamana_flat",
+       {"vamana", "vamanaflat", "IndexVamana", "IndexVamanaFlat"},
+       {"max_degree", "build_search_width", "candidate_pool_size", "alpha",
+        "build_passes", "random_seed", "search_width",
+        "check_relative_distance"}},
+      MakeVamana);
 }
 
 }  // namespace

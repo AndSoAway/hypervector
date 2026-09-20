@@ -43,6 +43,12 @@ struct GraphSearchResult {
   float distance;
 };
 
+/** An entry point whose distance to the current query is already known. */
+struct GraphSearchSeed {
+  GraphId id;
+  float distance;
+};
+
 /** Best-first search over one graph layer.
  *
  * DistanceComputer must be configured with the current query before Search.
@@ -58,7 +64,23 @@ class GraphSearcher {
       const GraphSearchOptions& options, VisitedTable* visited,
       GraphSearchStats* stats = nullptr) const;
 
+  /** Search from entry points with caller-computed distances.
+   *
+   * Seed distances are not included in distance_computations because this
+   * call does not compute them. If an ID occurs more than once, the first
+   * seed is used.
+   */
+  std::vector<GraphSearchResult> Search(
+      DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+      const GraphSearchOptions& options, VisitedTable* visited,
+      GraphSearchStats* stats = nullptr) const;
+
  private:
+  std::vector<GraphSearchResult> SearchPrepared(
+      DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+      size_t seed_distance_computations, const GraphSearchOptions& options,
+      VisitedTable* visited, GraphSearchStats* stats) const;
+
   const GraphStorage& graph_;
 };
 

@@ -31,6 +31,7 @@ class ScalarDistanceComputer final : public hypervec::DistanceComputer {
   }
 
   float operator()(hypervec::idx_t index) override {
+    ++calls_;
     const float difference = values_.at(static_cast<size_t>(index)) - query_;
     return difference * difference;
   }
@@ -41,9 +42,12 @@ class ScalarDistanceComputer final : public hypervec::DistanceComputer {
     return difference * difference;
   }
 
+  size_t Calls() const noexcept { return calls_; }
+
  private:
   std::vector<float> values_;
   float query_ = 0.0F;
+  size_t calls_ = 0;
 };
 
 void PopulateChain(hypervec::MutableGraphStorage* graph) {
@@ -165,6 +169,32 @@ TEST(GraphSearcher, EqualDistancesUseNodeIdAsStableTieBreak) {
   EXPECT_FLOAT_EQ(results[0].distance, 1.0F);
 }
 
+TEST(GraphSearcher, PrecomputedSeedsAvoidDuplicateDistanceComputations) {
+  hypervec::MutableBoundedGraph graph(1);
+  PopulateChain(&graph);
+  const hypervec::GraphSearcher searcher(graph);
+  const std::array<hypervec::GraphSearchSeed, 2> seeds = {
+      hypervec::GraphSearchSeed{0, 100.0F},
+      hypervec::GraphSearchSeed{0, -1.0F}};
+  ScalarDistanceComputer distance({10.0F, 8.0F, 0.0F, 1.0F, 20.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  hypervec::VisitedTable visited(graph.NodeCount(), false);
+  hypervec::GraphSearchStats stats;
+
+  const auto results = searcher.Search(
+      distance, seeds, hypervec::GraphSearchOptions{3, false, nullptr},
+      &visited, &stats);
+
+  ASSERT_EQ(results.size(), 3U);
+  EXPECT_EQ(results[0].id, 2);
+  EXPECT_EQ(results[1].id, 3);
+  EXPECT_EQ(results[2].id, 1);
+  EXPECT_EQ(distance.Calls(), 4U);
+  EXPECT_EQ(stats.distance_computations, 4U);
+  EXPECT_EQ(stats.visited_nodes, 5U);
+}
+
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   hypervec::MutableBoundedGraph graph(2, 1);
   ScalarDistanceComputer distance({0.0F, 1.0F});
@@ -173,6 +203,8 @@ TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   const hypervec::GraphSearcher searcher(graph);
   const std::array<hypervec::GraphId, 1> valid_entry = {0};
   const std::array<hypervec::GraphId, 1> invalid_entry = {2};
+  const std::array<hypervec::GraphSearchSeed, 1> invalid_seed = {
+      hypervec::GraphSearchSeed{2, 0.0F}};
   hypervec::VisitedTable visited(graph.NodeCount(), false);
   hypervec::VisitedTable wrong_size(1, false);
 
@@ -185,5 +217,7 @@ TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   EXPECT_THROW(searcher.Search(distance, valid_entry, {}, &wrong_size),
                hypervec::HypervecException);
   EXPECT_THROW(searcher.Search(distance, valid_entry, {}, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(searcher.Search(distance, invalid_seed, {}, &visited),
                hypervec::HypervecException);
 }

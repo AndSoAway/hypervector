@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <queue>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -46,6 +47,24 @@ bool ResultOrder(const GraphSearchResult& lhs,
   return lhs.id < rhs.id;
 }
 
+void ValidateSearchRequest(const GraphStorage& graph,
+                           const GraphSearchOptions& options,
+                           const VisitedTable* visited) {
+  HYPERVEC_THROW_IF_NOT_MSG(options.ef_search > 0,
+                            "GraphSearcher: ef_search must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(visited != nullptr,
+                            "GraphSearcher: visited table must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      visited->Size() == graph.NodeCount(),
+      "GraphSearcher: visited table size does not match graph");
+}
+
+void ValidateEntry(const GraphStorage& graph, GraphId entry) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      entry >= 0 && static_cast<size_t>(entry) < graph.NodeCount(),
+      "GraphSearcher: entry point is outside the graph");
+}
+
 }  // namespace
 
 void GraphSearchStats::Reset() noexcept { *this = {}; }
@@ -63,21 +82,51 @@ std::vector<GraphSearchResult> GraphSearcher::Search(
     DistanceComputer& distance, std::span<const GraphId> entry_points,
     const GraphSearchOptions& options, VisitedTable* visited,
     GraphSearchStats* stats) const {
-  HYPERVEC_THROW_IF_NOT_MSG(options.ef_search > 0,
-                            "GraphSearcher: ef_search must be positive");
-  HYPERVEC_THROW_IF_NOT_MSG(visited != nullptr,
-                            "GraphSearcher: visited table must not be null");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      visited->Size() == graph_.NodeCount(),
-      "GraphSearcher: visited table size does not match graph");
+  ValidateSearchRequest(graph_, options, visited);
   for (GraphId entry : entry_points) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-        entry >= 0 && static_cast<size_t>(entry) < graph_.NodeCount(),
-        "GraphSearcher: entry point is outside the graph");
+    ValidateEntry(graph_, entry);
   }
 
+  std::vector<GraphSearchSeed> seeds;
+  seeds.reserve(entry_points.size());
+  std::unordered_set<GraphId> unique_entries;
+  unique_entries.reserve(entry_points.size());
+  for (GraphId entry : entry_points) {
+    if (unique_entries.insert(entry).second) {
+      seeds.push_back({entry, distance(entry)});
+    }
+  }
+  return SearchPrepared(distance, seeds, seeds.size(), options, visited, stats);
+}
+
+std::vector<GraphSearchResult> GraphSearcher::Search(
+    DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+    const GraphSearchOptions& options, VisitedTable* visited,
+    GraphSearchStats* stats) const {
+  ValidateSearchRequest(graph_, options, visited);
+  for (const GraphSearchSeed& seed : seeds) {
+    ValidateEntry(graph_, seed.id);
+  }
+
+  std::vector<GraphSearchSeed> unique_seeds;
+  unique_seeds.reserve(seeds.size());
+  std::unordered_set<GraphId> unique_entries;
+  unique_entries.reserve(seeds.size());
+  for (const GraphSearchSeed& seed : seeds) {
+    if (unique_entries.insert(seed.id).second) {
+      unique_seeds.push_back(seed);
+    }
+  }
+  return SearchPrepared(distance, unique_seeds, 0, options, visited, stats);
+}
+
+std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
+    DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+    size_t seed_distance_computations, const GraphSearchOptions& options,
+    VisitedTable* visited, GraphSearchStats* stats) const {
   GraphSearchStats local_stats;
   local_stats.queries = 1;
+  local_stats.distance_computations = seed_distance_computations;
   visited->advance();
 
   std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
@@ -98,16 +147,13 @@ std::vector<GraphSearchResult> GraphSearcher::Search(
     }
   };
 
-  for (GraphId entry : entry_points) {
-    if (!visited->set(static_cast<size_t>(entry))) {
-      continue;
-    }
-    const GraphSearchResult seed{entry, distance(entry)};
-    ++local_stats.distance_computations;
+  for (const GraphSearchSeed& seed : seeds) {
+    visited->set(static_cast<size_t>(seed.id));
     ++local_stats.visited_nodes;
-    candidates.push(seed);
-    add_result(seed);
-    graph_.Prefetch(entry);
+    const GraphSearchResult candidate{seed.id, seed.distance};
+    candidates.push(candidate);
+    add_result(candidate);
+    graph_.Prefetch(seed.id);
   }
 
   bool stopped_early = false;

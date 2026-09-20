@@ -285,6 +285,23 @@ TEST(IndexHNSWCorrectness, SearchValidatesInputsAndAlignedState) {
                hypervec::HypervecException);
 }
 
+TEST(IndexHNSWCorrectness, SearchRejectsUnsupportedPanoramaMode) {
+  const std::array<float, 2> vector = {0.0F, 1.0F};
+  hypervec::IndexHNSWFlat index(2, 4);
+  index.Add(1, vector.data());
+  index.hnsw.is_panorama = true;
+
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+
+  hypervec::SearchParametersHNSW params;
+  params.bounded_queue = false;
+  EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label, &params),
+               hypervec::HypervecException);
+}
+
 TEST(IndexHNSWCorrectness, SearchReturnsExternalSimilarityScores) {
   constexpr hypervec::idx_t dimension = 2;
   constexpr hypervec::idx_t count = 3;

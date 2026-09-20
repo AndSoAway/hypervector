@@ -726,14 +726,6 @@ int SearchFromCandidates(const HNSW& hnsw, DistanceComputer& qdis,
   return nres;
 }
 
-int search_from_candidates_panorama(const HNSW& hnsw, const IndexHNSW* index,
-                                    DistanceComputer& qdis, ResultHandler& res,
-                                    MinimaxHeap& candidates, VisitedTable& vt,
-                                    HNSWStats& stats, int level, int nres_in,
-                                    const SearchParameters* params) {
-  return nres_in;
-}
-
 std::priority_queue<HNSW::Node> SearchFromCandidateUnbounded(
   const HNSW& hnsw, const Node& node, DistanceComputer& qdis, int ef,
   VisitedTable* vt, HNSWStats& stats) {
@@ -909,9 +901,12 @@ int extract_k_from_ResultHandler(ResultHandler& res) {
 
 }  // namespace
 
-HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
+HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* /*index*/,
                        ResultHandler& res, VisitedTable& vt,
                        const SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !is_panorama,
+      "HNSW::Search: panorama mode is not implemented in Hypervector");
   HNSWStats stats;
   if (entry_point == -1) {
     return stats;
@@ -943,42 +938,33 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
   }
 
   int ef = std::max(ef_search, k);
-  if (bounded_queue && is_panorama) {
-    MinimaxHeap candidates(ef);
-    candidates.push(nearest, d_nearest);
-    search_from_candidates_panorama(*this, index, qdis, res, candidates, vt,
-                                    stats, 0, 0, params);
-  } else {
-    const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
-    const GraphSearcher searcher(graph);
-    const std::array<GraphSearchSeed, 1> seeds = {
-        GraphSearchSeed{nearest, d_nearest}};
-    GraphSearchOptions options;
-    options.ef_search = static_cast<size_t>(ef);
-    options.check_relative_distance = check_relative_distance;
-    options.selector = params == nullptr ? nullptr : params->sel;
-    options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
-    options.max_expansions =
-        check_relative_distance
-            ? 0
-            : static_cast<size_t>(std::max(ef_search, 0)) + 1;
-    options.max_candidates = bounded_queue ? static_cast<size_t>(ef) : 0;
-    options.relative_distance_limit = static_cast<size_t>(ef_search);
-    options.advance_visited = false;
-    GraphSearchStats graph_stats;
-    const std::vector<GraphSearchResult> results =
-        searcher.Search(qdis, seeds, options, &vt, &graph_stats);
+  const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
+  const GraphSearcher searcher(graph);
+  const std::array<GraphSearchSeed, 1> seeds = {
+      GraphSearchSeed{nearest, d_nearest}};
+  GraphSearchOptions options;
+  options.ef_search = static_cast<size_t>(ef);
+  options.check_relative_distance = check_relative_distance;
+  options.selector = params == nullptr ? nullptr : params->sel;
+  options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+  options.max_expansions =
+      check_relative_distance ? 0
+                              : static_cast<size_t>(std::max(ef_search, 0)) + 1;
+  options.max_candidates = bounded_queue ? static_cast<size_t>(ef) : 0;
+  options.relative_distance_limit = static_cast<size_t>(ef_search);
+  options.advance_visited = false;
+  GraphSearchStats graph_stats;
+  const std::vector<GraphSearchResult> results =
+      searcher.Search(qdis, seeds, options, &vt, &graph_stats);
 
-    const size_t result_count =
-        std::min(results.size(), static_cast<size_t>(k));
-    for (size_t result = 0; result < result_count; ++result) {
-      res.AddResult(results[result].distance, results[result].id);
-    }
-    stats.n1 += graph_stats.queries;
-    stats.n2 += graph_stats.exhausted_queries;
-    stats.ndis += graph_stats.distance_computations;
-    stats.nhops += graph_stats.expanded_nodes;
+  const size_t result_count = std::min(results.size(), static_cast<size_t>(k));
+  for (size_t result = 0; result < result_count; ++result) {
+    res.AddResult(results[result].distance, results[result].id);
   }
+  stats.n1 += graph_stats.queries;
+  stats.n2 += graph_stats.exhausted_queries;
+  stats.ndis += graph_stats.distance_computations;
+  stats.nhops += graph_stats.expanded_nodes;
 
   vt.advance();
 

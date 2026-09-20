@@ -12,7 +12,14 @@ target_link_libraries(hypervec_dataset PRIVATE hypervec)
 add_executable(hypervec_ground_truth ground_truth_main.cpp)
 target_link_libraries(hypervec_ground_truth PRIVATE hypervec)
 
-install(TARGETS hypervec_eval hypervec_dataset hypervec_ground_truth
+add_executable(hypervec_build index_build_main.cpp)
+target_link_libraries(hypervec_build PRIVATE hypervec)
+
+install(TARGETS
+  hypervec_eval
+  hypervec_dataset
+  hypervec_ground_truth
+  hypervec_build
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
@@ -20,4 +27,6 @@ if(BUILD_TESTING)
   add_test(NAME HypervecEval.Help COMMAND hypervec_eval --help)
   add_test(NAME HypervecDataset.Help COMMAND hypervec_dataset --help)
   add_test(NAME HypervecGroundTruth.Help COMMAND hypervec_ground_truth --help)
+  add_test(NAME HypervecBuild.Help COMMAND hypervec_build --help)
+  add_test(NAME HypervecBuild.ListIndexes COMMAND hypervec_build --list-indexes)
 endif()

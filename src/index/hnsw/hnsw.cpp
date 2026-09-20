@@ -920,11 +920,13 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
 
   bool bounded_queue = this->search_bounded_queue;
   int ef_search = this->ef_search;
+  bool check_relative_distance = this->check_relative_distance;
   if (params) {
     if (const SearchParametersHNSW* hnsw_params =
           dynamic_cast<const SearchParametersHNSW*>(params)) {
       bounded_queue = hnsw_params->bounded_queue;
       ef_search = hnsw_params->ef_search;
+      check_relative_distance = hnsw_params->check_relative_distance;
     }
   }
 
@@ -939,18 +941,11 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
   }
 
   int ef = std::max(ef_search, k);
-  if (bounded_queue) {  // this is the most common branch, for now we only
+  if (bounded_queue && is_panorama) {
     MinimaxHeap candidates(ef);
-
     candidates.push(nearest, d_nearest);
-
-    if (!is_panorama) {
-      SearchFromCandidates(*this, qdis, res, candidates, vt, stats, 0, 0,
-                             params);
-    } else {
-      search_from_candidates_panorama(*this, index, qdis, res, candidates, vt,
-                                      stats, 0, 0, params);
-    }
+    search_from_candidates_panorama(*this, index, qdis, res, candidates, vt,
+                                    stats, 0, 0, params);
   } else {
     const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
     const GraphSearcher searcher(graph);
@@ -958,9 +953,14 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
         GraphSearchSeed{nearest, d_nearest}};
     GraphSearchOptions options;
     options.ef_search = static_cast<size_t>(ef);
-    options.check_relative_distance = true;
+    options.check_relative_distance = check_relative_distance;
     options.selector = params == nullptr ? nullptr : params->sel;
     options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+    options.max_expansions =
+        check_relative_distance
+            ? 0
+            : static_cast<size_t>(std::max(ef_search, 0)) + 1;
+    options.max_candidates = bounded_queue ? static_cast<size_t>(ef) : 0;
     GraphSearchStats graph_stats;
     const std::vector<GraphSearchResult> results =
         searcher.Search(qdis, seeds, options, &vt, &graph_stats);

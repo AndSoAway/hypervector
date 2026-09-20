@@ -35,6 +35,8 @@ struct GraphSearchOptions {
       GraphSearchFrontierPolicy::kResultBound;
   /** Maximum expanded nodes per search, or zero for no explicit limit. */
   size_t max_expansions = 0;
+  /** Maximum pending candidates, or zero for an unbounded candidate queue. */
+  size_t max_candidates = 0;
 };
 
 struct GraphSearchStats {
@@ -44,6 +46,7 @@ struct GraphSearchStats {
   size_t visited_nodes = 0;
   size_t expanded_nodes = 0;
   size_t traversed_edges = 0;
+  size_t peak_candidates = 0;
 
   void Reset() noexcept;
   void Combine(const GraphSearchStats& other) noexcept;

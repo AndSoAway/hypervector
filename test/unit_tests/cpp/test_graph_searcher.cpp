@@ -290,6 +290,33 @@ TEST(GraphSearcher, ExpansionBudgetStopsOtherwiseExhaustiveSearch) {
   EXPECT_EQ(stats.visited_nodes, 3U);
 }
 
+TEST(GraphSearcher, CandidateCapacityBoundsPendingExpansions) {
+  hypervec::MutableBoundedGraph graph(7, 6);
+  const std::array<hypervec::GraphId, 6> neighbors = {1, 2, 3, 4, 5, 6};
+  graph.SetNeighbors(0, neighbors);
+  ScalarDistanceComputer distance({10.0F, 6.0F, 5.0F, 4.0F, 3.0F, 2.0F, 1.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  const std::array<hypervec::GraphId, 1> entry = {0};
+  hypervec::VisitedTable visited(graph.NodeCount(), false);
+  hypervec::GraphSearchStats stats;
+  const hypervec::GraphSearcher searcher(graph);
+
+  const auto results = searcher.Search(
+      distance, entry,
+      hypervec::GraphSearchOptions{
+          7, false, nullptr,
+          hypervec::GraphSearchFrontierPolicy::kNavigationBound, 0, 2},
+      &visited, &stats);
+
+  ASSERT_EQ(results.size(), 7U);
+  EXPECT_EQ(results[0].id, 6);
+  EXPECT_EQ(stats.peak_candidates, 2U);
+  EXPECT_EQ(stats.expanded_nodes, 3U);
+  EXPECT_EQ(stats.visited_nodes, 7U);
+  EXPECT_EQ(stats.exhausted_queries, 1U);
+}
+
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   hypervec::MutableBoundedGraph graph(2, 1);
   ScalarDistanceComputer distance({0.0F, 1.0F});

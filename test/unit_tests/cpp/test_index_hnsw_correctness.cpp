@@ -348,6 +348,33 @@ TEST(IndexHNSWCorrectness, UnboundedQueueUsesSharedFilteredTraversal) {
   }
 }
 
+TEST(IndexHNSWCorrectness, BoundedQueueUsesSharedFilteredTraversal) {
+  constexpr hypervec::idx_t count = 32;
+  constexpr hypervec::idx_t k = 5;
+  std::array<float, count> database{};
+  for (size_t index = 0; index < database.size(); ++index) {
+    database[index] = static_cast<float>(index);
+  }
+  hypervec::IndexHNSWFlat index(1, 4);
+  index.Add(count, database.data());
+
+  hypervec::IDSelectorRange selector(10, 20);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.bounded_queue = true;
+  params.sel = &selector;
+  const float query = 12.25F;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+
+  index.Search(1, &query, k, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, k>{12, 13, 11, 14, 10}));
+  for (hypervec::idx_t label : labels) {
+    EXPECT_TRUE(selector.IsMember(label));
+  }
+}
+
 TEST(IndexHNSWCorrectness, RepeatedAddFlatKeepsGraphAligned) {
   constexpr hypervec::idx_t d = 8;
   constexpr hypervec::idx_t batch = 32;

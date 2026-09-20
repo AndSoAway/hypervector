@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <index/graph/graph_searcher.h>
 #include <index/hnsw/hnsw_graph_storage.h>
+#include <utils/common/result_handler.h>
 #include <utils/log/exception.h>
 
 #include <algorithm>
@@ -161,6 +162,86 @@ TEST(HNSWGraphStorage, NavigationBoundMatchesNativeUnboundedSearch) {
   EXPECT_EQ(common_stats.distance_computations, native_stats.ndis);
   EXPECT_EQ(common_stats.expanded_nodes, native_stats.nhops);
   EXPECT_EQ(common_stats.exhausted_queries, native_stats.n2);
+}
+
+TEST(HNSWGraphStorage, CandidateBoundMatchesNativeBoundedSearch) {
+  hypervec::HNSW hnsw = MakeLayeredGraph();
+  LineDistance distance({0.0F, 2.0F, 5.0F, 9.0F});
+  const float query = 4.0F;
+  distance.SetQuery(&query);
+  constexpr int ef_search = 2;
+  constexpr int k = 2;
+  constexpr hypervec::GraphId entry = 0;
+  const float entry_distance = distance(entry);
+
+  std::array<float, k> native_distances{};
+  std::array<hypervec::idx_t, k> native_labels{};
+  using ResultHandler = hypervec::HeapBlockResultHandler<hypervec::HNSW::C>;
+  ResultHandler block(1, native_distances.data(), native_labels.data(), k);
+  ResultHandler::SingleResultHandler result(block);
+  hypervec::HNSW::MinimaxHeap native_candidates(ef_search);
+  native_candidates.push(entry, entry_distance);
+  hypervec::VisitedTable native_visited(hnsw.levels.size());
+  hypervec::HNSWStats native_stats;
+  hypervec::SearchParametersHNSW native_options;
+  native_options.ef_search = ef_search;
+  result.begin(0);
+  hypervec::SearchFromCandidates(hnsw, distance, result, native_candidates,
+                                 native_visited, native_stats, 0, 0,
+                                 &native_options);
+  result.end();
+
+  const hypervec::HNSWGraphStorage graph(
+      hnsw, 0, hypervec::HNSWGraphValidation::kOnAccess);
+  const hypervec::GraphSearcher searcher(graph);
+  const std::array<hypervec::GraphSearchSeed, 1> seeds = {
+      hypervec::GraphSearchSeed{entry, entry_distance}};
+  hypervec::VisitedTable common_visited(graph.NodeCount());
+  hypervec::GraphSearchStats common_stats;
+  const auto common_results = searcher.Search(
+      distance, seeds,
+      hypervec::GraphSearchOptions{
+          ef_search, true, nullptr,
+          hypervec::GraphSearchFrontierPolicy::kNavigationBound, 0, ef_search},
+      &common_visited, &common_stats);
+
+  ASSERT_EQ(common_results.size(), static_cast<size_t>(k));
+  for (size_t index = 0; index < common_results.size(); ++index) {
+    EXPECT_EQ(common_results[index].id, native_labels[index]);
+    EXPECT_FLOAT_EQ(common_results[index].distance, native_distances[index]);
+  }
+  EXPECT_EQ(common_stats.distance_computations, native_stats.ndis);
+  EXPECT_EQ(common_stats.expanded_nodes, native_stats.nhops);
+  EXPECT_EQ(common_stats.exhausted_queries, native_stats.n2);
+  EXPECT_LE(common_stats.peak_candidates, static_cast<size_t>(ef_search));
+}
+
+TEST(HNSWGraphStorage, DisabledRelativeCheckUsesRuntimeExpansionBudget) {
+  hypervec::HNSW hnsw = MakeLayeredGraph();
+  hnsw.entry_point = 0;
+  hnsw.max_level = 0;
+  LineDistance distance({0.0F, 2.0F, 5.0F, 9.0F});
+  const float query = 4.0F;
+  distance.SetQuery(&query);
+
+  constexpr int k = 3;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+  using ResultHandler = hypervec::HeapBlockResultHandler<hypervec::HNSW::C>;
+  ResultHandler block(1, distances.data(), labels.data(), k);
+  ResultHandler::SingleResultHandler result(block);
+  hypervec::VisitedTable visited(hnsw.levels.size());
+  hypervec::SearchParametersHNSW options;
+  options.ef_search = 1;
+  options.check_relative_distance = false;
+  options.bounded_queue = true;
+
+  result.begin(0);
+  const hypervec::HNSWStats stats =
+      hnsw.Search(distance, nullptr, result, visited, &options);
+  result.end();
+
+  EXPECT_EQ(stats.nhops, 2U);
 }
 
 TEST(HNSWGraphStorage, RejectsInvalidLayersAndMutatedLayouts) {

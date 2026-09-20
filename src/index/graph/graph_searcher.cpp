@@ -9,6 +9,7 @@
 #include <index/graph/graph_searcher.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
+#include <utils/structures/heap.h>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +49,84 @@ bool ResultOrder(const GraphSearchResult& lhs,
   return lhs.id < rhs.id;
 }
 
+/** Candidate queue with an optional hard bound on pending graph expansions.
+ *
+ * The bounded representation mirrors HNSW's MinimaxHeap: insertion keeps the
+ * closest max_candidates entries in a max heap, while PopClosest scans the
+ * small fixed-capacity buffer. This preserves the memory contract of HNSW's
+ * default search without coupling the common graph layer to HNSW internals.
+ */
+class CandidateQueue {
+ public:
+  explicit CandidateQueue(size_t capacity)
+      : capacity_(capacity), ids_(capacity), distances_(capacity) {}
+
+  bool Push(const GraphSearchResult& candidate) {
+    if (capacity_ == 0) {
+      unbounded_.push(candidate);
+      return true;
+    }
+    if (size_ == capacity_) {
+      if (candidate.distance >= distances_[0]) {
+        return false;
+      }
+      if (ids_[0] != kInvalidGraphId) {
+        --valid_size_;
+      }
+      heap_pop<HeapOrder>(size_--, distances_.data(), ids_.data());
+    }
+    heap_push<HeapOrder>(++size_, distances_.data(), ids_.data(),
+                         candidate.distance, candidate.id);
+    ++valid_size_;
+    return true;
+  }
+
+  bool Empty() const noexcept {
+    return capacity_ == 0 ? unbounded_.empty() : valid_size_ == 0;
+  }
+
+  size_t Size() const noexcept {
+    return capacity_ == 0 ? unbounded_.size() : valid_size_;
+  }
+
+  GraphSearchResult PopClosest() {
+    if (capacity_ == 0) {
+      const GraphSearchResult closest = unbounded_.top();
+      unbounded_.pop();
+      return closest;
+    }
+
+    size_t closest = size_;
+    for (size_t index = 0; index < size_; ++index) {
+      if (ids_[index] == kInvalidGraphId) {
+        continue;
+      }
+      const GraphSearchResult candidate{ids_[index], distances_[index]};
+      if (closest == size_ ||
+          ResultOrder(candidate,
+                      GraphSearchResult{ids_[closest], distances_[closest]})) {
+        closest = index;
+      }
+    }
+    const GraphSearchResult result{ids_[closest], distances_[closest]};
+    ids_[closest] = kInvalidGraphId;
+    --valid_size_;
+    return result;
+  }
+
+ private:
+  using HeapOrder = CMax<float, GraphId>;
+
+  size_t capacity_;
+  size_t size_ = 0;
+  size_t valid_size_ = 0;
+  std::vector<GraphId> ids_;
+  std::vector<float> distances_;
+  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
+                      CloserFirst>
+      unbounded_;
+};
+
 void ValidateSearchRequest(const GraphStorage& graph,
                            const GraphSearchOptions& options,
                            const VisitedTable* visited) {
@@ -77,6 +156,7 @@ void GraphSearchStats::Combine(const GraphSearchStats& other) noexcept {
   visited_nodes += other.visited_nodes;
   expanded_nodes += other.expanded_nodes;
   traversed_edges += other.traversed_edges;
+  peak_candidates = std::max(peak_candidates, other.peak_candidates);
 }
 
 std::vector<GraphSearchResult> GraphSearcher::Search(
@@ -130,9 +210,7 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
   local_stats.distance_computations = seed_distance_computations;
   visited->advance();
 
-  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
-                      CloserFirst>
-      candidates;
+  CandidateQueue candidates(options.max_candidates);
   std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
                       FartherFirst>
       results;
@@ -161,8 +239,12 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
       if (!within_frontier) {
         return;
       }
-      candidates.push(candidate);
       add_result(candidate);
+      if (!candidates.Push(candidate)) {
+        return;
+      }
+      local_stats.peak_candidates =
+          std::max(local_stats.peak_candidates, candidates.Size());
       graph_.Prefetch(id);
       return;
     }
@@ -174,7 +256,11 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
     if (!within_frontier) {
       return;
     }
-    candidates.push(candidate);
+    if (!candidates.Push(candidate)) {
+      return;
+    }
+    local_stats.peak_candidates =
+        std::max(local_stats.peak_candidates, candidates.Size());
     navigation_bound.push(candidate);
     if (navigation_bound.size() > options.ef_search) {
       navigation_bound.pop();
@@ -190,20 +276,22 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
       add_candidate(seed.id, seed.distance);
     } else {
       const GraphSearchResult candidate{seed.id, seed.distance};
-      candidates.push(candidate);
+      candidates.Push(candidate);
+      local_stats.peak_candidates =
+          std::max(local_stats.peak_candidates, candidates.Size());
       add_result(candidate);
       graph_.Prefetch(seed.id);
     }
   }
 
   bool stopped_early = false;
-  while (!candidates.empty()) {
+  while (!candidates.Empty()) {
     if (options.max_expansions > 0 &&
         local_stats.expanded_nodes >= options.max_expansions) {
       stopped_early = true;
       break;
     }
-    const GraphSearchResult current = candidates.top();
+    const GraphSearchResult current = candidates.PopClosest();
     const auto& frontier =
         options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound
             ? navigation_bound
@@ -214,8 +302,6 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
       stopped_early = true;
       break;
     }
-    candidates.pop();
-
     const GraphNeighborList neighbors = graph_.Neighbors(current.id);
     ++local_stats.expanded_nodes;
     local_stats.traversed_edges += neighbors.size();
@@ -250,7 +336,7 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
     }
   }
 
-  if (!stopped_early && candidates.empty()) {
+  if (!stopped_early && candidates.Empty()) {
     local_stats.exhausted_queries = 1;
   }
 

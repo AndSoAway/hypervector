@@ -41,6 +41,7 @@ set(HYPERVEC_SRC
   index/pretransform/index_pre_transform.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
+  persistence/index_io_registry.cpp
   utils/common/interrupt_callback.cpp
   utils/common/buffer_list.cpp
   utils/common/range_search_result.cpp

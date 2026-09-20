@@ -321,4 +321,57 @@ void WriteFvecsRowsFile(const std::string& filename,
   WriteFvecsRows(filename, dataset, &rows);
 }
 
+void WriteIvecsFile(const std::string& filename,
+                    const IntegerVectorDataset& dataset) {
+  HYPERVEC_THROW_IF_NOT_MSG(!filename.empty(),
+                            "evaluation dataset filename must not be empty");
+  HYPERVEC_THROW_IF_NOT_MSG(dataset.vector_count > 0,
+                            "evaluation dataset must contain vectors");
+  HYPERVEC_THROW_IF_NOT_MSG(dataset.dimension > 0,
+                            "evaluation dataset dimension must be positive");
+  const uint64_t rows = static_cast<uint64_t>(dataset.vector_count);
+  const uint64_t dimension = static_cast<uint64_t>(dataset.dimension);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      rows <= (std::numeric_limits<size_t>::max)() / dimension,
+      "evaluation dataset size exceeds addressable memory");
+  const size_t value_count = static_cast<size_t>(rows * dimension);
+  HYPERVEC_THROW_IF_NOT_MSG(dataset.values.size() == value_count,
+                            "evaluation dataset values do not match its shape");
+  for (idx_t value : dataset.values) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        value >= (std::numeric_limits<int32_t>::min)() &&
+            value <= (std::numeric_limits<int32_t>::max)(),
+        "ivecs value exceeds the signed 32-bit format range");
+  }
+
+  const size_t dimension_size = static_cast<size_t>(dataset.dimension);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      dimension_size <=
+          (std::numeric_limits<size_t>::max)() / sizeof(uint32_t) - 1,
+      "evaluation dataset output row is too large");
+  const size_t row_size = sizeof(uint32_t) * (dimension_size + 1);
+  std::vector<uint8_t> row_bytes(row_size);
+  EncodeUint32(static_cast<uint32_t>(dataset.dimension), row_bytes.data());
+  std::ofstream output(filename, std::ios::binary | std::ios::trunc);
+  HYPERVEC_THROW_IF_NOT_FMT(output.is_open(),
+                            "cannot open evaluation dataset output '%s'",
+                            filename.c_str());
+  for (idx_t row = 0; row < dataset.vector_count; ++row) {
+    const size_t offset =
+        static_cast<size_t>(row) * static_cast<size_t>(dataset.dimension);
+    for (int32_t column = 0; column < dataset.dimension; ++column) {
+      const int32_t value =
+          static_cast<int32_t>(dataset.values[offset + column]);
+      EncodeUint32(std::bit_cast<uint32_t>(value),
+                   row_bytes.data() +
+                       sizeof(uint32_t) * (static_cast<size_t>(column) + 1));
+    }
+    WriteExact(&output, row_bytes.data(), row_bytes.size(), filename);
+  }
+  output.close();
+  HYPERVEC_THROW_IF_NOT_FMT(!output.fail(),
+                            "cannot finalize evaluation dataset '%s'",
+                            filename.c_str());
+}
+
 }  // namespace hypervec

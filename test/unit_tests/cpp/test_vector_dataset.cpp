@@ -233,3 +233,26 @@ TEST(VectorDataset, CreatesDeterministicDisjointDatasetSplits) {
   EXPECT_THROW(hypervec::MakeDatasetRowSplit(10, 10, 42),
                hypervec::HypervecException);
 }
+
+TEST(VectorDataset, WritesIvecRowsAndRejectsInvalidValues) {
+  const hypervec::IntegerVectorDataset source{2, 3, {4, 2, 0, 3, 1, -1}};
+  TemporaryDatasetFile output(".ivecs");
+  hypervec::WriteIvecsFile(output.Path().string(), source);
+  const auto result = hypervec::ReadIvecsFile(output.Path().string());
+  EXPECT_EQ(result.vector_count, source.vector_count);
+  EXPECT_EQ(result.dimension, source.dimension);
+  EXPECT_EQ(result.values, source.values);
+
+  hypervec::IntegerVectorDataset wrong_shape = source;
+  wrong_shape.values.pop_back();
+  EXPECT_THROW(hypervec::WriteIvecsFile(output.Path().string(), wrong_shape),
+               hypervec::HypervecException);
+
+  const hypervec::IntegerVectorDataset oversized{
+      1,
+      1,
+      {static_cast<hypervec::idx_t>((std::numeric_limits<int32_t>::max)()) +
+       1}};
+  EXPECT_THROW(hypervec::WriteIvecsFile(output.Path().string(), oversized),
+               hypervec::HypervecException);
+}

@@ -66,4 +66,8 @@ void WriteFvecsRowsFile(const std::string& filename,
                         const FloatVectorDataset& dataset,
                         const std::vector<idx_t>& rows);
 
+/** Write all rows in standard ANN ivecs format. */
+void WriteIvecsFile(const std::string& filename,
+                    const IntegerVectorDataset& dataset);
+
 }  // namespace hypervec

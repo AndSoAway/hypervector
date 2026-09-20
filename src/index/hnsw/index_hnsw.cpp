@@ -605,6 +605,87 @@ void IndexHNSW::ShrinkLevel0Neighbors(int size) {
   hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
 }
 
+void IndexHNSW::InitLevel0FromKnngraph(int k, const float* distances,
+                                       const idx_t* labels) {
+  constexpr const char* operation = "IndexHNSW::InitLevel0FromKnngraph";
+  ValidateHNSWState(*this, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(k > 0, "%s: k must be positive, got %d", operation,
+                            k);
+  if (n_total == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_FMT(distances != nullptr,
+                            "%s: distances must not be null", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(labels != nullptr, "%s: labels must not be null",
+                            operation);
+  (void)mul_no_overflow(static_cast<size_t>(n_total), static_cast<size_t>(k),
+                        "IndexHNSW::InitLevel0FromKnngraph input size");
+
+  const int capacity = hnsw.NbNeighbors(0);
+  const bool similarity = IsSimilarityMetric(metric_type);
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    const size_t row_offset =
+        static_cast<size_t>(node) * static_cast<size_t>(k);
+    std::priority_queue<NodeDistFarther> candidates;
+    std::unordered_set<idx_t> seen;
+    bool reached_end = false;
+    for (int column = 0; column < k; ++column) {
+      const size_t input_offset = row_offset + static_cast<size_t>(column);
+      const idx_t neighbor = labels[input_offset];
+      if (neighbor < 0) {
+        HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
+                                  "%s: node %" PRId64
+                                  " has an invalid neighbor sentinel",
+                                  operation, static_cast<int64_t>(node));
+        reached_end = true;
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
+                                "%s: node %" PRId64
+                                " has a neighbor after the end sentinel",
+                                operation, static_cast<int64_t>(node));
+      HYPERVEC_THROW_IF_NOT_FMT(neighbor < n_total,
+                                "%s: node %" PRId64
+                                " has an out-of-range neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      if (neighbor == node) {
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT_FMT(seen.insert(neighbor).second,
+                                "%s: node %" PRId64
+                                " contains duplicate neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      const float public_value = distances[input_offset];
+      HYPERVEC_THROW_IF_NOT_FMT(!std::isnan(public_value),
+                                "%s: node %" PRId64
+                                " has a NaN value for neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      candidates.emplace(similarity ? -public_value : public_value,
+                         static_cast<storage_idx_t>(neighbor));
+    }
+
+    std::vector<NodeDistFarther> selected;
+    HNSW::ShrinkNeighborList(*dis, candidates, selected, capacity);
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    for (size_t offset = begin; offset < end; ++offset) {
+      const size_t selected_offset = offset - begin;
+      updated[offset] = selected_offset < selected.size()
+                            ? selected[selected_offset].id
+                            : storage_idx_t{-1};
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
 void IndexHNSW::ReorderLinks() {
   constexpr const char* operation = "IndexHNSW::ReorderLinks";
   ValidateHNSWState(*this, operation);

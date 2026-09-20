@@ -100,8 +100,11 @@ struct IndexHNSW : Index {
                     int search_type = 1,
                     const SearchParameters* params = nullptr) const;
 
-  /// alternative graph building
-  void InitLevel0FromKnngraph(int k, const float* D, const idx_t* I);
+  /** Replace level 0 from an external row-major k-NN graph. Distances use
+   * public metric direction: smaller for distances, larger for similarities.
+   * Existing upper levels are preserved and the update is transactional. */
+  void InitLevel0FromKnngraph(int k, const float* distances,
+                              const idx_t* labels);
 
   /// alternative graph building
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,

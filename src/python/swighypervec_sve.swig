@@ -24,6 +24,7 @@
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <persistence/index_io.h>
+#include <utils/selector/id_selector.h>
 #include <persistence/io.h>
 #include <utils/structures/sparse_row.h>
 #include <utils/structures/term_dictionary.h>
@@ -369,6 +370,11 @@ enum MetricType {
   kMetricJaccard,
   kMetricNaNEuclidean,
   kMetricGower,
+};
+
+struct IDSelector {
+  virtual bool IsMember(idx_t id) const = 0;
+  virtual ~IDSelector();
 };
 
 %nodefaultctor Index;

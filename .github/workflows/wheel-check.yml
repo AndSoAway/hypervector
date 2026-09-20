@@ -44,7 +44,8 @@ jobs:
             -DHYPERVEC_ENABLE_EXTRAS=OFF \
             -DHYPERVEC_OPT_LEVEL=generic \
             -DPython_EXECUTABLE=/tmp/hv-venv/bin/python
-          /tmp/hv-venv/bin/cmake --build build-wheel --target swighypervec
+          /tmp/hv-venv/bin/cmake --build build-wheel \
+            --target swighypervec hypervec_example_external_module
 
       - name: Assemble wheel from the clean build dir snapshot
         run: |
@@ -59,19 +60,21 @@ jobs:
           /tmp/hv-venv/bin/pip install --force-reinstall --no-deps build-wheel/src/python/dist/*.whl
           /tmp/hv-venv/bin/python - <<'PY'
           import hypervec
+          import hypervec.Hypervec_example_external_module as external_module
           import hypervec.hypervec_server_engine
           import hypervec.hypervec_http_server
           index = hypervec.create_index("flat", 2, hypervec.kMetricL2, {})
           assert index.d == 2
+          selector = external_module.IDSelectorModulo(3)
+          assert selector.IsMember(3) and not selector.IsMember(1)
           print("import-ok")
           PY
 
       - name: Run maintained Python unit tests
         run: |
-          # These legacy suites are tracked separately: the external
-          # module is not part of the wheel target, test_io imports a missing
-          # common_Hypervec_tests fixture, and the OpenMP/SIMD utility APIs are
-          # not currently exposed through SWIG.
+          # These legacy suites are tracked separately: external_module_test
+          # and test_io require the old swig_ptr/common_Hypervec_tests helpers,
+          # while the OpenMP/SIMD utility APIs are not exposed through SWIG.
           /tmp/hv-venv/bin/python -m pytest -q test/unit_tests/python \
             --ignore=test/unit_tests/python/external_module_test.py \
             --ignore=test/unit_tests/python/test_io.py \

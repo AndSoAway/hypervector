@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@
 
 #include "eval/artifact_fingerprint.h"
 #include "eval/json_util.h"
+#include "eval/process_memory.h"
 
 namespace {
 
@@ -282,7 +284,8 @@ std::string_view IndexMetricName(hypervec::MetricType metric) {
 void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
                        const hypervec::FloatVectorDataset& base,
                        hypervec::idx_t training_query_count,
-                       double build_seconds, double write_seconds) {
+                       double build_seconds, double write_seconds,
+                       const std::optional<uint64_t>& peak_rss_bytes) {
   if (command.json_output_path.empty()) {
     return;
   }
@@ -365,6 +368,19 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
                                         index_fingerprint, "    ");
   output << "\n"
          << "  },\n"
+         << "  \"resources\": {\n"
+         << "    \"memory_scope\": \"process\",\n"
+         << "    \"peak_rss_bytes\": ";
+  if (peak_rss_bytes.has_value()) {
+    output << *peak_rss_bytes;
+  } else {
+    output << "null";
+  }
+  output << ",\n"
+         << "    \"peak_rss_source\": \""
+         << hypervec::eval_cli::PeakResidentSetSource() << "\",\n"
+         << "    \"measurement_point\": \"after_index_write\"\n"
+         << "  },\n"
          << "  \"timing\": {\n"
          << "    \"build_seconds\": " << build_seconds << ",\n"
          << "    \"write_seconds\": " << write_seconds << "\n"
@@ -422,8 +438,10 @@ int Run(const CommandLine& command) {
       std::chrono::duration<double>(build_end - build_start).count();
   const double write_seconds =
       std::chrono::duration<double>(write_end - write_start).count();
+  const std::optional<uint64_t> peak_rss_bytes =
+      hypervec::eval_cli::PeakResidentSetBytes();
   WriteJsonManifest(command, *index, base, training_queries.vector_count,
-                    build_seconds, write_seconds);
+                    build_seconds, write_seconds, peak_rss_bytes);
   std::cout << std::setprecision(10);
   std::cout << "index_type=" << command.index_type << '\n';
   std::cout << "metric="
@@ -437,6 +455,13 @@ int Run(const CommandLine& command) {
   std::cout << "training_query_count=" << training_queries.vector_count << '\n';
   std::cout << "build_seconds=" << build_seconds << '\n';
   std::cout << "write_seconds=" << write_seconds << '\n';
+  std::cout << "peak_rss_bytes=";
+  if (peak_rss_bytes.has_value()) {
+    std::cout << *peak_rss_bytes;
+  } else {
+    std::cout << "unsupported";
+  }
+  std::cout << '\n';
   if (!command.json_output_path.empty()) {
     std::cout << "json_output=" << command.json_output_path << '\n';
   }

@@ -22,6 +22,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -30,6 +31,7 @@
 
 #include "eval/artifact_fingerprint.h"
 #include "eval/json_util.h"
+#include "eval/process_memory.h"
 
 namespace {
 
@@ -241,7 +243,8 @@ void WriteJsonNumber(std::ostream& output, double value) {
 void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
                      const hypervec::SearchParameterDescriptor& descriptor,
                      const hypervec::IntegerVectorDataset& ground_truth,
-                     const hypervec::SearchEvaluationResult& result) {
+                     const hypervec::SearchEvaluationResult& result,
+                     const std::optional<uint64_t>& peak_rss_bytes) {
   if (command.json_output_path.empty()) {
     return;
   }
@@ -317,6 +320,19 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
                                         ground_truth_fingerprint, "    ");
   output << "\n"
          << "  },\n"
+         << "  \"resources\": {\n"
+         << "    \"memory_scope\": \"process\",\n"
+         << "    \"peak_rss_bytes\": ";
+  if (peak_rss_bytes.has_value()) {
+    output << *peak_rss_bytes;
+  } else {
+    output << "null";
+  }
+  output << ",\n"
+         << "    \"peak_rss_source\": \""
+         << hypervec::eval_cli::PeakResidentSetSource() << "\",\n"
+         << "    \"measurement_point\": \"after_search\"\n"
+         << "  },\n"
          << "  \"metrics\": {\n"
          << "    \"recall_at_k\": ";
   WriteJsonNumber(output, result.recall_at_k);
@@ -379,7 +395,10 @@ int Run(const CommandLine& command) {
       hypervec::EvaluateSearch(*index, input, options, parameters.get());
   const hypervec::SearchParameterDescriptor descriptor =
       hypervec::DescribeSearchParameters(*index);
-  WriteJsonReport(command, *index, descriptor, ground_truth, result);
+  const std::optional<uint64_t> peak_rss_bytes =
+      hypervec::eval_cli::PeakResidentSetBytes();
+  WriteJsonReport(command, *index, descriptor, ground_truth, result,
+                  peak_rss_bytes);
 
   std::cout << std::setprecision(10);
   std::cout << "index_family=" << descriptor.name << '\n';
@@ -397,6 +416,13 @@ int Run(const CommandLine& command) {
   std::cout << "batch_latency_p50_ms=" << result.batch_latency_p50_ms << '\n';
   std::cout << "batch_latency_p95_ms=" << result.batch_latency_p95_ms << '\n';
   std::cout << "batch_latency_p99_ms=" << result.batch_latency_p99_ms << '\n';
+  std::cout << "peak_rss_bytes=";
+  if (peak_rss_bytes.has_value()) {
+    std::cout << *peak_rss_bytes;
+  } else {
+    std::cout << "unsupported";
+  }
+  std::cout << '\n';
   if (!command.json_output_path.empty()) {
     std::cout << "json_output=" << command.json_output_path << '\n';
   }

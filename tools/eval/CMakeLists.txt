@@ -3,7 +3,9 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the "License") found in the
 # LICENSE file in the root directory of this source tree.
 
-add_library(hypervec_eval_support STATIC artifact_fingerprint.cpp)
+add_library(hypervec_eval_support STATIC
+  artifact_fingerprint.cpp
+  process_memory.cpp)
 target_include_directories(hypervec_eval_support
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 

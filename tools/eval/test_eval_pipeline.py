@@ -34,6 +34,21 @@ def assert_fingerprint(artifact, path):
     assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def assert_process_memory(resources, measurement_point):
+    assert resources["memory_scope"] == "process"
+    assert resources["measurement_point"] == measurement_point
+    peak_rss = resources["peak_rss_bytes"]
+    if peak_rss is None:
+        assert resources["peak_rss_source"] in (
+            "unsupported",
+            "getrusage.ru_maxrss",
+        )
+    else:
+        assert isinstance(peak_rss, int)
+        assert peak_rss > 0
+        assert resources["peak_rss_source"] == "getrusage.ru_maxrss"
+
+
 def main():
     ground_truth_tool = Path(sys.argv[1]).resolve()
     build_tool = Path(sys.argv[2]).resolve()
@@ -109,6 +124,9 @@ def main():
         assert_fingerprint(build_report["artifacts"]["base"], base)
         assert build_report["artifacts"]["training_queries"] is None
         assert_fingerprint(build_report["artifacts"]["index"], index)
+        assert_process_memory(
+            build_report["resources"], "after_index_write"
+        )
 
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["format"] == "hypervec-eval-report-v1"
@@ -134,6 +152,7 @@ def main():
         assert_fingerprint(
             report["artifacts"]["ground_truth"], ground_truth
         )
+        assert_process_memory(report["resources"], "after_search")
 
         cosine_base = directory / "cosine-base.fvecs"
         cosine_queries = directory / "cosine-queries.fvecs"

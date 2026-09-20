@@ -129,8 +129,21 @@ size_t IndexFlatCodes::RemoveIds(const IDSelector& sel) {
 }
 
 void IndexFlatCodes::ReconstructN(idx_t i0, idx_t ni, float* recons) const {
-  HYPERVEC_THROW_IF_NOT(ni == 0 || (i0 >= 0 && i0 + ni <= n_total));
-  SaDecode(ni, codes.data() + i0 * code_size, recons);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      ni >= 0,
+      "IndexFlatCodes::ReconstructN: count must be non-negative, got %" PRId64,
+      static_cast<int64_t>(ni));
+  ValidateStorageState("IndexFlatCodes::ReconstructN");
+  if (ni == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      i0 >= 0 && i0 <= n_total - ni,
+      "IndexFlatCodes::ReconstructN: requested range is out of bounds");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      recons != nullptr,
+      "IndexFlatCodes::ReconstructN: output must not be null");
+  SaDecode(ni, codes.data() + static_cast<size_t>(i0) * code_size, recons);
 }
 
 void IndexFlatCodes::Reconstruct(idx_t key, float* recons) const {
@@ -288,9 +301,69 @@ FlatCodesDistanceComputer* IndexFlatCodes::GetFlatCodesDistanceComputer()
     });
 }
 
+void IndexFlatCodes::ValidateStorageState(const char* operation) const {
+  HYPERVEC_THROW_IF_NOT_FMT(n_total >= 0, "%s: vector count is negative",
+                            operation);
+  const size_t expected_size =
+      mul_no_overflow(static_cast<size_t>(n_total), code_size, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(codes.size() == expected_size,
+                            "%s: code storage size is inconsistent", operation);
+}
+
+void IndexFlatCodes::ValidateSearchInputs(idx_t n, const float* x, idx_t k,
+                                          const float* distances,
+                                          const idx_t* labels) const {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexFlatCodes::Search: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  HYPERVEC_THROW_IF_NOT_FMT(
+      k > 0, "IndexFlatCodes::Search: k must be positive, got %" PRId64,
+      static_cast<int64_t>(k));
+  ValidateStorageState("IndexFlatCodes::Search");
+  (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                        "IndexFlatCodes::Search output size");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexFlatCodes::Search: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || distances != nullptr,
+      "IndexFlatCodes::Search: distances must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || labels != nullptr,
+      "IndexFlatCodes::Search: labels must not be null when n is positive");
+}
+
+void IndexFlatCodes::ValidateRangeSearchInputs(
+    idx_t n, const float* x, const RangeSearchResult* result) const {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0,
+      "IndexFlatCodes::RangeSearch: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  ValidateStorageState("IndexFlatCodes::RangeSearch");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexFlatCodes::RangeSearch: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || result != nullptr,
+      "IndexFlatCodes::RangeSearch: result must not be null when n is "
+      "positive");
+  if (n > 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        result->nq == static_cast<size_t>(n),
+        "IndexFlatCodes::RangeSearch: result query count does not match n");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        result->lims != nullptr,
+        "IndexFlatCodes::RangeSearch: result limits must not be null");
+  }
+}
+
 void IndexFlatCodes::Search(idx_t n, const float* x, idx_t k, float* distances,
                             idx_t* labels,
                             const SearchParameters* params) const {
+  ValidateSearchInputs(n, x, k, distances, labels);
+  if (n == 0) {
+    return;
+  }
   Run_search_with_decompress_res r;
   const IDSelector* sel = params ? params->sel : nullptr;
   dispatch_knn_ResultHandler(n, distances, labels, k, metric_type, sel, r, this,
@@ -300,6 +373,10 @@ void IndexFlatCodes::Search(idx_t n, const float* x, idx_t k, float* distances,
 void IndexFlatCodes::RangeSearch(idx_t n, const float* x, float radius,
                                   RangeSearchResult* result,
                                   const SearchParameters* params) const {
+  ValidateRangeSearchInputs(n, x, result);
+  if (n == 0) {
+    return;
+  }
   const IDSelector* sel = params ? params->sel : nullptr;
   Run_search_with_decompress_res r;
   dispatch_range_ResultHandler(result, radius, metric_type, sel, r, this, x);
@@ -307,6 +384,9 @@ void IndexFlatCodes::RangeSearch(idx_t n, const float* x, float radius,
 
 void IndexFlatCodes::Search1(const float* x, ResultHandler& handler,
                              SearchParameters* params) const {
+  ValidateStorageState("IndexFlatCodes::Search1");
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "IndexFlatCodes::Search1: x must not be null");
   const IDSelector* sel = params ? params->sel : nullptr;
   Run_search_with_decompress_res r;
   if (sel) {

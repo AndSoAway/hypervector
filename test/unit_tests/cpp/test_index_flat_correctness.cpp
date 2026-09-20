@@ -8,10 +8,12 @@
 
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <utils/common/range_search_result.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/selector/id_selector.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -162,4 +164,137 @@ TEST(IndexFlatCorrectness, MappedStorageRejectsAppendWithoutAborting) {
   EXPECT_EQ(index.n_total, 1);
   EXPECT_FALSE(index.codes.is_owned);
   EXPECT_EQ(index.codes.data(), mapped_bytes.data());
+}
+
+TEST(IndexFlatCorrectness, SearchValidatesInputsAndAllowsEmptyBatch) {
+  hypervec::IndexFlatL2 index(2);
+  const std::array<float, 2> vector = {1.0F, 2.0F};
+  std::array<float, 1> distances{};
+  std::array<hypervec::idx_t, 1> labels{};
+  index.Add(1, vector.data());
+
+  EXPECT_THROW(
+      index.Search(-1, vector.data(), 1, distances.data(), labels.data()),
+      hypervec::HypervecException);
+  EXPECT_THROW(
+      index.Search(1, vector.data(), 0, distances.data(), labels.data()),
+      hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, distances.data(), labels.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, vector.data(), 1, nullptr, labels.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, vector.data(), 1, distances.data(), nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
+
+  index.Search(1, vector.data(), 1, distances.data(), labels.data());
+  EXPECT_FLOAT_EQ(distances[0], 0.0F);
+  EXPECT_EQ(labels[0], 0);
+}
+
+TEST(IndexFlatCorrectness, RangeSearchValidatesInputsAndAllowsEmptyBatch) {
+  hypervec::IndexFlatL2 index(2);
+  const std::array<float, 2> vector = {1.0F, 2.0F};
+  index.Add(1, vector.data());
+  hypervec::RangeSearchResult result(1);
+  hypervec::RangeSearchResult wrong_count(2);
+  hypervec::RangeSearchResult missing_limits(1, false);
+
+  EXPECT_THROW(index.RangeSearch(-1, vector.data(), 1.0F, &result),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, nullptr, 1.0F, &result),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, vector.data(), 1.0F, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, vector.data(), 1.0F, &wrong_count),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, vector.data(), 1.0F, &missing_limits),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.RangeSearch(0, nullptr, 1.0F, nullptr));
+}
+
+TEST(IndexFlatCorrectness, ReconstructValidatesBoundsAndOutput) {
+  hypervec::IndexFlatL2 index(2);
+  const std::array<float, 2> vector = {1.0F, 2.0F};
+  std::array<float, 2> reconstructed{};
+  index.Add(1, vector.data());
+
+  EXPECT_THROW(index.Reconstruct(-1, reconstructed.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(1, reconstructed.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(0, nullptr), hypervec::HypervecException);
+  index.Reconstruct(0, reconstructed.data());
+  EXPECT_EQ(reconstructed, vector);
+
+  hypervec::IndexFlatCodes* codes = &index;
+  EXPECT_THROW(codes->ReconstructN(0, -1, reconstructed.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(codes->ReconstructN(-1, 1, reconstructed.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(codes->ReconstructN(1, 1, reconstructed.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(codes->ReconstructN(0, 1, nullptr), hypervec::HypervecException);
+  EXPECT_NO_THROW(codes->ReconstructN(-1, 0, nullptr));
+}
+
+TEST(IndexFlatCorrectness, DistanceSubsetHandlesPaddingAndInvalidLabels) {
+  const std::array<float, 4> database = {1.0F, 2.0F, 3.0F, 4.0F};
+  const std::array<float, 2> query = {1.0F, 1.0F};
+  const std::array<hypervec::idx_t, 2> padded_labels = {0, -1};
+  const std::array<hypervec::idx_t, 1> invalid_labels = {2};
+
+  for (hypervec::MetricType metric :
+       {hypervec::kMetricL2, hypervec::kMetricInnerProduct}) {
+    hypervec::IndexFlat index(2, metric);
+    index.Add(2, database.data());
+    std::array<float, 2> distances{};
+
+    index.ComputeDistanceSubset(1, query.data(), 2, distances.data(),
+                                padded_labels.data());
+    EXPECT_FLOAT_EQ(distances[0], metric == hypervec::kMetricL2 ? 1.0F : 3.0F);
+    EXPECT_TRUE(std::isinf(distances[1]));
+    EXPECT_EQ(std::signbit(distances[1]),
+              metric == hypervec::kMetricInnerProduct);
+
+    EXPECT_THROW(
+        index.ComputeDistanceSubset(1, query.data(), 1, distances.data(),
+                                    invalid_labels.data()),
+        hypervec::HypervecException);
+    EXPECT_THROW(
+        index.ComputeDistanceSubset(-1, query.data(), 1, distances.data(),
+                                    padded_labels.data()),
+        hypervec::HypervecException);
+    EXPECT_THROW(
+        index.ComputeDistanceSubset(1, query.data(), -1, distances.data(),
+                                    padded_labels.data()),
+        hypervec::HypervecException);
+    EXPECT_THROW(index.ComputeDistanceSubset(1, nullptr, 1, distances.data(),
+                                             padded_labels.data()),
+                 hypervec::HypervecException);
+    EXPECT_THROW(index.ComputeDistanceSubset(1, query.data(), 1, nullptr,
+                                             padded_labels.data()),
+                 hypervec::HypervecException);
+    EXPECT_THROW(index.ComputeDistanceSubset(1, query.data(), 1,
+                                             distances.data(), nullptr),
+                 hypervec::HypervecException);
+    EXPECT_NO_THROW(
+        index.ComputeDistanceSubset(0, nullptr, 1, nullptr, nullptr));
+    EXPECT_NO_THROW(
+        index.ComputeDistanceSubset(1, nullptr, 0, nullptr, nullptr));
+  }
+}
+
+TEST(IndexFlatCorrectness, OneDimensionalSearchUsesSharedValidation) {
+  hypervec::IndexFlat1D index;
+  const float vector = 1.0F;
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  index.Add(1, &vector);
+
+  EXPECT_THROW(index.Search(-1, &vector, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
 }

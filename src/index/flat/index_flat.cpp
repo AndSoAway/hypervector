@@ -20,6 +20,7 @@
 #include <utils/structures/prefetch.h>
 #include <utils/structures/sorting.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -64,8 +65,11 @@ void IndexFlat::Search(idx_t n, const float* x, idx_t k, float* distances,
     IndexFlatCodes::Search(n, x, k, distances, labels, params);
     return;
   }
+  ValidateSearchInputs(n, x, k, distances, labels);
+  if (n == 0) {
+    return;
+  }
   IDSelector* sel = params ? params->sel : nullptr;
-  HYPERVEC_THROW_IF_NOT(k > 0);
 
   // we see the distances and labels as heaps
   if (metric_type == kMetricInnerProduct) {
@@ -85,6 +89,10 @@ void IndexFlat::RangeSearch(idx_t n, const float* x, float radius,
                             const SearchParameters* params) const {
   if (!IsDataAligned()) {
     IndexFlatCodes::RangeSearch(n, x, radius, result, params);
+    return;
+  }
+  ValidateRangeSearchInputs(n, x, result);
+  if (n == 0) {
     return;
   }
   IDSelector* sel = params ? params->sel : nullptr;
@@ -108,6 +116,40 @@ void IndexFlat::ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
   HYPERVEC_THROW_IF_NOT_MSG(
       metric_type == kMetricInnerProduct || metric_type == kMetricL2,
       "metric type not supported");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n >= 0, "IndexFlat::ComputeDistanceSubset: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k >= 0, "IndexFlat::ComputeDistanceSubset: k must be non-negative");
+  ValidateStorageState("IndexFlat::ComputeDistanceSubset");
+  const size_t result_size =
+      mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                      "IndexFlat::ComputeDistanceSubset output size");
+  if (result_size == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr, "IndexFlat::ComputeDistanceSubset: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      distances != nullptr,
+      "IndexFlat::ComputeDistanceSubset: distances must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      labels != nullptr,
+      "IndexFlat::ComputeDistanceSubset: labels must not be null");
+
+  bool has_padding = false;
+  for (size_t offset = 0; offset < result_size; ++offset) {
+    if (labels[offset] < 0) {
+      has_padding = true;
+      continue;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        labels[offset] < n_total,
+        "IndexFlat::ComputeDistanceSubset: label is out of bounds");
+  }
+
+  const float padding_distance = metric_type == kMetricInnerProduct
+                                     ? -std::numeric_limits<float>::infinity()
+                                     : std::numeric_limits<float>::infinity();
   if (!IsDataAligned()) {
     std::unique_ptr<FlatCodesDistanceComputer> computer(
         IndexFlatCodes::GetFlatCodesDistanceComputer());
@@ -118,9 +160,7 @@ void IndexFlat::ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
       for (idx_t neighbor = 0; neighbor < k; ++neighbor) {
         const size_t offset = query_offset + static_cast<size_t>(neighbor);
         if (labels[offset] < 0) {
-          distances[offset] = metric_type == kMetricInnerProduct
-                                  ? -std::numeric_limits<float>::infinity()
-                                  : std::numeric_limits<float>::infinity();
+          distances[offset] = padding_distance;
         } else {
           distances[offset] = (*computer)(labels[offset]);
         }
@@ -128,15 +168,39 @@ void IndexFlat::ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
     }
     return;
   }
+
+  const idx_t* effective_labels = labels;
+  std::vector<idx_t> sanitized_labels;
+  if (has_padding) {
+    if (n_total == 0) {
+      std::fill_n(distances, result_size, padding_distance);
+      return;
+    }
+    sanitized_labels.assign(labels, labels + result_size);
+    for (idx_t& label : sanitized_labels) {
+      if (label < 0) {
+        label = 0;
+      }
+    }
+    effective_labels = sanitized_labels.data();
+  }
   switch (metric_type) {
     case kMetricInnerProduct:
-      fvec_inner_products_by_idx(distances, x, GetXb(), labels, d, n, k);
+      fvec_inner_products_by_idx(distances, x, GetXb(), effective_labels, d, n,
+                                 k);
       break;
     case kMetricL2:
-      fvec_L2sqr_by_idx(distances, x, GetXb(), labels, d, n, k);
+      fvec_L2sqr_by_idx(distances, x, GetXb(), effective_labels, d, n, k);
       break;
     default:
       HYPERVEC_THROW_MSG("metric type not supported");
+  }
+  if (has_padding) {
+    for (size_t offset = 0; offset < result_size; ++offset) {
+      if (labels[offset] < 0) {
+        distances[offset] = padding_distance;
+      }
+    }
   }
 }
 
@@ -308,8 +372,13 @@ FlatCodesDistanceComputer* IndexFlat::GetFlatCodesDistanceComputer() const {
 }
 
 void IndexFlat::Reconstruct(idx_t key, float* recons) const {
-  HYPERVEC_THROW_IF_NOT(key < n_total);
-  memcpy(recons, &(codes[key * code_size]), code_size);
+  ValidateStorageState("IndexFlat::Reconstruct");
+  HYPERVEC_THROW_IF_NOT_MSG(key >= 0 && key < n_total,
+                            "IndexFlat::Reconstruct: key is out of bounds");
+  HYPERVEC_THROW_IF_NOT_MSG(recons != nullptr,
+                            "IndexFlat::Reconstruct: output must not be null");
+  memcpy(recons, codes.data() + static_cast<size_t>(key) * code_size,
+         code_size);
 }
 
 void IndexFlat::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
@@ -526,7 +595,10 @@ void IndexFlat1D::Search(idx_t n, const float* x, idx_t k, float* distances,
                          idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(!params,
                             "Search params not supported for this index");
-  HYPERVEC_THROW_IF_NOT(k > 0);
+  ValidateSearchInputs(n, x, k, distances, labels);
+  if (n == 0) {
+    return;
+  }
   HYPERVEC_THROW_IF_NOT_MSG(perm.size() == n_total,
                             "Call UpdatePermutation before Search");
   const float* xb = GetXb();

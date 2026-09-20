@@ -80,6 +80,13 @@ struct IndexFlatCodes : Index {
 
   // PermuteEntries. perm of size n_total maps new to old positions
   virtual void PermuteEntries(const idx_t* perm);
+
+ protected:
+  void ValidateStorageState(const char* operation) const;
+  void ValidateSearchInputs(idx_t n, const float* x, idx_t k,
+                            const float* distances, const idx_t* labels) const;
+  void ValidateRangeSearchInputs(idx_t n, const float* x,
+                                 const RangeSearchResult* result) const;
 };
 
 }  // namespace hypervec

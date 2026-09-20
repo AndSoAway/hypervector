@@ -11,6 +11,7 @@
 #include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_validation.h>
+#include <index/hnsw/hnsw_graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
@@ -646,27 +647,11 @@ void ValidateHNSWGraphForWrite(const IndexHNSW& index) {
           hnsw.offsets.back() == hnsw.neighbors.size(),
       "IndexHNSW serialize: graph metadata is inconsistent");
 
-  for (size_t node = 0; node < total; ++node) {
-    for (int level = 0; level < hnsw.levels[node]; ++level) {
-      const size_t begin =
-          hnsw.offsets[node] +
-          static_cast<size_t>(hnsw.cum_nneighbor_per_level[level]);
-      const size_t end =
-          hnsw.offsets[node] +
-          static_cast<size_t>(hnsw.cum_nneighbor_per_level[level + 1]);
-      bool reached_padding = false;
-      for (size_t position = begin; position < end; ++position) {
-        const HNSW::storage_idx_t neighbor = hnsw.neighbors[position];
-        if (neighbor == -1) {
-          reached_padding = true;
-          continue;
-        }
-        HYPERVEC_THROW_IF_NOT_MSG(
-            !reached_padding && neighbor >= 0 &&
-                static_cast<size_t>(neighbor) < total &&
-                static_cast<size_t>(neighbor) != node &&
-                hnsw.levels[static_cast<size_t>(neighbor)] > level,
-            "IndexHNSW serialize: neighbor entry is invalid");
+  for (int level = 0; level <= hnsw.max_level; ++level) {
+    const HNSWGraphStorage graph(hnsw, level);
+    for (size_t node = 0; node < total; ++node) {
+      if (hnsw.levels[node] > level) {
+        (void)graph.Neighbors(static_cast<GraphId>(node));
       }
     }
   }

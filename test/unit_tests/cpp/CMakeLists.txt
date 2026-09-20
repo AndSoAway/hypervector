@@ -20,6 +20,7 @@ set(HYPERVEC_TEST_SRC
   test_index_vamana.cpp
   test_index_nsw.cpp
   test_hnsw.cpp
+  test_hnsw_graph_storage.cpp
   test_inverted_list_scanner.cpp
   test_index_build.cpp
   test_index_capabilities.cpp

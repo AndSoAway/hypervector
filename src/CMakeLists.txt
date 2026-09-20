@@ -33,6 +33,7 @@ set(HYPERVEC_SRC
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/hnsw.cpp
+  index/hnsw/hnsw_graph_storage.cpp
   index/idmap/index_id_map.cpp
   index/lsh/index_lsh.cpp
   index/nsg/index_nsg.cpp

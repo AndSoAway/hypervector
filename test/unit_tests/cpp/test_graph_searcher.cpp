@@ -265,6 +265,31 @@ TEST(GraphSearcher, NavigationBoundIsIndependentOfResultFiltering) {
   EXPECT_TRUE(navigation_bound.empty());
 }
 
+TEST(GraphSearcher, ExpansionBudgetStopsOtherwiseExhaustiveSearch) {
+  hypervec::MutableBoundedGraph graph(1);
+  PopulateChain(&graph);
+  ScalarDistanceComputer distance({10.0F, 8.0F, 0.0F, 1.0F, 20.0F});
+  const float query = 0.0F;
+  distance.SetQuery(&query);
+  const std::array<hypervec::GraphId, 1> entry = {0};
+  hypervec::VisitedTable visited(graph.NodeCount(), false);
+  hypervec::GraphSearchStats stats;
+  const hypervec::GraphSearcher searcher(graph);
+
+  const auto results =
+      searcher.Search(distance, entry,
+                      hypervec::GraphSearchOptions{
+                          5, false, nullptr,
+                          hypervec::GraphSearchFrontierPolicy::kResultBound, 2},
+                      &visited, &stats);
+
+  ASSERT_EQ(results.size(), 3U);
+  EXPECT_EQ(results[0].id, 2);
+  EXPECT_EQ(stats.expanded_nodes, 2U);
+  EXPECT_EQ(stats.exhausted_queries, 0U);
+  EXPECT_EQ(stats.visited_nodes, 3U);
+}
+
 TEST(GraphSearcher, ValidatesOptionsEntryPointsAndVisitedSize) {
   hypervec::MutableBoundedGraph graph(2, 1);
   ScalarDistanceComputer distance({0.0F, 1.0F});

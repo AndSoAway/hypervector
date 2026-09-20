@@ -33,6 +33,8 @@ struct GraphSearchOptions {
   const IDSelector* selector = nullptr;
   GraphSearchFrontierPolicy frontier_policy =
       GraphSearchFrontierPolicy::kResultBound;
+  /** Maximum expanded nodes per search, or zero for no explicit limit. */
+  size_t max_expansions = 0;
 };
 
 struct GraphSearchStats {

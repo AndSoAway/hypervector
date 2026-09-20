@@ -198,6 +198,11 @@ std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
 
   bool stopped_early = false;
   while (!candidates.empty()) {
+    if (options.max_expansions > 0 &&
+        local_stats.expanded_nodes >= options.max_expansions) {
+      stopped_early = true;
+      break;
+    }
     const GraphSearchResult current = candidates.top();
     const auto& frontier =
         options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound

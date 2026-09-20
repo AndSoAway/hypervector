@@ -350,6 +350,46 @@ void WriteIVFRaBitQPayload(const Index& index, IOWriter* f, int io_flags) {
   WriteInvertedLists(ivf, ivf.rabitq->CodeSize(), f);
 }
 
+void ValidateIDMapForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  static_cast<const IndexIDMap&>(index).check_consistency();
+}
+
+void WriteIDMapPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& id_map = static_cast<const IndexIDMap&>(index);
+  write_index_header(id_map, f);
+  WRITEVECTOR(id_map.rev_map);
+  WriteIndex(id_map.index, f, 0);
+}
+
+void ValidatePreTransformForWrite(const Index& index, int io_flags) {
+  (void)io_flags;
+  const auto& wrapper = static_cast<const IndexPreTransform&>(index);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      wrapper.transform != nullptr && wrapper.index != nullptr,
+      "IndexPreTransform serialize: components must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      wrapper.is_trained && wrapper.transform->is_trained &&
+          wrapper.index->is_trained,
+      "IndexPreTransform serialize: all components must be trained");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      wrapper.d == wrapper.transform->d_in &&
+          wrapper.transform->d_out == wrapper.index->d &&
+          wrapper.n_total == wrapper.index->n_total &&
+          wrapper.metric_type == wrapper.index->metric_type &&
+          wrapper.metric_arg == wrapper.index->metric_arg,
+      "IndexPreTransform serialize: wrapper metadata is inconsistent");
+}
+
+void WritePreTransformPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& wrapper = static_cast<const IndexPreTransform&>(index);
+  write_index_header(wrapper, f);
+  write_transform(*wrapper.transform, f);
+  WriteIndex(wrapper.index.get(), f, 0);
+}
+
 }  // namespace persistence_internal
 
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
@@ -358,42 +398,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
   if (registry.Contains(std::type_index(typeid(*index)))) {
     registry.Write(*index, f, io_flags);
-    return;
-  }
-
-  const auto* id_map = dynamic_cast<const IndexIDMap*>(index);
-  if (id_map) {
-    id_map->check_consistency();
-    uint32_t h = fourcc("IxMp");
-    WRITE1(h);
-    write_index_header(*id_map, f);
-    WRITEVECTOR(id_map->rev_map);
-    WriteIndex(id_map->index, f, 0);
-    return;
-  }
-
-  const auto* pretransform = dynamic_cast<const IndexPreTransform*>(index);
-  if (pretransform) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-        pretransform->transform != nullptr && pretransform->index != nullptr,
-        "IndexPreTransform serialize: components must not be null");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        pretransform->is_trained && pretransform->transform->is_trained &&
-            pretransform->index->is_trained,
-        "IndexPreTransform serialize: all components must be trained");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        pretransform->d == pretransform->transform->d_in &&
-            pretransform->transform->d_out == pretransform->index->d &&
-            pretransform->n_total == pretransform->index->n_total &&
-            pretransform->metric_type == pretransform->index->metric_type &&
-            pretransform->metric_arg == pretransform->index->metric_arg,
-        "IndexPreTransform serialize: wrapper metadata is inconsistent");
-
-    uint32_t h = fourcc("IPTr");
-    WRITE1(h);
-    write_index_header(*pretransform, f);
-    write_transform(*pretransform->transform, f);
-    WriteIndex(pretransform->index.get(), f, 0);
     return;
   }
 

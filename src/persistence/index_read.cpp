@@ -1092,6 +1092,36 @@ std::unique_ptr<Index> ReadIVFRaBitQPayload(IOReader* reader, int io_flags) {
   return index;
 }
 
+std::unique_ptr<Index> ReadIDMapPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexIDMap>();
+  read_index_header(*index, reader);
+  ReadVectorExact(index->rev_map, static_cast<size_t>(index->n_total), reader,
+                  "IndexIDMap external IDs");
+  index->index = ReadIndex(reader, 0);
+  index->own_fields = true;
+  RestoreIdMap(*index);
+  return index;
+}
+
+std::unique_ptr<Index> ReadPreTransformPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  const PreTransformReadGuard depth_guard;
+  const IndexHeaderData header = read_index_header_data(reader);
+  std::unique_ptr<VectorTransform> transform = read_transform(reader);
+  std::unique_ptr<Index> inner(ReadIndex(reader, 0));
+  auto index = std::make_unique<IndexPreTransform>(std::move(transform),
+                                                   std::move(inner));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->d == header.d && index->n_total == header.n_total &&
+          index->is_trained == header.is_trained &&
+          index->metric_type == header.metric_type &&
+          index->metric_arg == header.metric_arg,
+      "IndexPreTransform deserialize: component metadata does not match "
+      "the wrapper");
+  return index;
+}
+
 }  // namespace persistence_internal
 
 Index* ReadIndex(IOReader* f, int io_flags) {
@@ -1144,34 +1174,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("INGf")) {
     const IndexHeaderData header = read_index_header_data(f);
     return read_nsg_flat(header, f).release();
-  }
-
-  if (h == fourcc("IPTr")) {
-    const PreTransformReadGuard depth_guard;
-    const IndexHeaderData header = read_index_header_data(f);
-    std::unique_ptr<VectorTransform> transform = read_transform(f);
-    std::unique_ptr<Index> inner(ReadIndex(f, 0));
-    auto index = std::make_unique<IndexPreTransform>(std::move(transform),
-                                                     std::move(inner));
-    HYPERVEC_THROW_IF_NOT_MSG(
-        index->d == header.d && index->n_total == header.n_total &&
-            index->is_trained == header.is_trained &&
-            index->metric_type == header.metric_type &&
-            index->metric_arg == header.metric_arg,
-        "IndexPreTransform deserialize: component metadata does not match "
-        "the wrapper");
-    return index.release();
-  }
-
-  if (h == fourcc("IxMp")) {
-    auto idx = std::make_unique<IndexIDMap>();
-    read_index_header(*idx, f);
-    ReadVectorExact(idx->rev_map, static_cast<size_t>(idx->n_total), f,
-                    "IndexIDMap external IDs");
-    idx->index = ReadIndex(f, 0);
-    idx->own_fields = true;
-    RestoreIdMap(*idx);
-    return idx.release();
   }
 
   if (h == fourcc("IHNf")) {

@@ -7,7 +7,9 @@
  */
 
 #include <index/flat/index_flat.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <persistence/index_io_builtins.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
@@ -52,6 +54,13 @@ class BuiltinIndexIOCodecs {
                       std::type_index(typeid(IndexIVFRaBitQ)),
                       WriteIVFRaBitQPayload, ReadIVFRaBitQPayload,
                       ValidateIVFRaBitQForWrite);
+    registry.Register({"id_map", fourcc("IxMp"), {}},
+                      std::type_index(typeid(IndexIDMap)), WriteIDMapPayload,
+                      ReadIDMapPayload, ValidateIDMapForWrite);
+    registry.Register({"pre_transform", fourcc("IPTr"), {}},
+                      std::type_index(typeid(IndexPreTransform)),
+                      WritePreTransformPayload, ReadPreTransformPayload,
+                      ValidatePreTransformForWrite);
   }
 
   IndexIORegistry registry;

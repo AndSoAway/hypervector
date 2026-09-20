@@ -30,6 +30,11 @@ void WriteIVFPQPayload(const Index& index, IOWriter* writer, int io_flags);
 void WriteIVFLVQPayload(const Index& index, IOWriter* writer, int io_flags);
 void WriteIVFRaBitQPayload(const Index& index, IOWriter* writer, int io_flags);
 void ValidateIVFRaBitQForWrite(const Index& index, int io_flags);
+void WriteIDMapPayload(const Index& index, IOWriter* writer, int io_flags);
+void ValidateIDMapForWrite(const Index& index, int io_flags);
+void WritePreTransformPayload(const Index& index, IOWriter* writer,
+                              int io_flags);
+void ValidatePreTransformForWrite(const Index& index, int io_flags);
 
 std::unique_ptr<Index> ReadFlatL2Payload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadFlatIPPayload(IOReader* reader, int io_flags);
@@ -39,6 +44,8 @@ std::unique_ptr<Index> ReadIVFFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadIVFPQPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadIVFLVQPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadIVFRaBitQPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadIDMapPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadPreTransformPayload(IOReader* reader, int io_flags);
 
 }  // namespace persistence_internal
 

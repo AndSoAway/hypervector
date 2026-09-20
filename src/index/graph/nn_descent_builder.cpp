@@ -199,19 +199,25 @@ MutableBoundedGraph NNDescentBuilder::Build(DistanceComputer& distance,
         }
       }
 
-      NeighborList& replacement = refined[node];
-      replacement.reserve(candidates.size());
+      NeighborList evaluated;
+      evaluated.reserve(candidates.size());
       for (GraphId candidate : candidates) {
         const float candidate_distance =
             distance.symmetric_dis(static_cast<GraphId>(node), candidate);
         ValidateDistance(candidate_distance);
-        replacement.push_back({candidate, candidate_distance});
+        evaluated.push_back({candidate, candidate_distance});
         ++local_stats.refinement_distance_computations;
       }
-      std::sort(replacement.begin(), replacement.end(), CandidateOrder);
-      if (replacement.size() > degree) {
-        replacement.resize(degree);
+      if (evaluated.size() > degree) {
+        std::partial_sort(evaluated.begin(), evaluated.begin() + degree,
+                          evaluated.end(), CandidateOrder);
+        evaluated.resize(degree);
+      } else {
+        std::sort(evaluated.begin(), evaluated.end(), CandidateOrder);
       }
+      NeighborList& replacement = refined[node];
+      replacement.reserve(degree);
+      replacement.assign(evaluated.begin(), evaluated.end());
       iteration_updates += CountNewNeighbors(neighborhoods[node], replacement);
       seen.advance();
     }

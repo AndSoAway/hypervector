@@ -29,6 +29,7 @@ struct IndexIORegistry::Impl {
     std::type_index index_type;
     IndexPayloadWriter writer;
     IndexPayloadReader reader;
+    IndexWriteValidator write_validator;
   };
 
   mutable std::shared_mutex mutex;
@@ -44,7 +45,8 @@ IndexIORegistry::~IndexIORegistry() = default;
 void IndexIORegistry::Register(IndexIODescriptor descriptor,
                                std::type_index index_type,
                                IndexPayloadWriter writer,
-                               IndexPayloadReader reader) {
+                               IndexPayloadReader reader,
+                               IndexWriteValidator write_validator) {
   HYPERVEC_THROW_IF_NOT_MSG(!descriptor.name.empty(),
                             "registered index codec name must not be empty");
   HYPERVEC_THROW_IF_NOT_MSG(descriptor.write_tag != 0,
@@ -84,7 +86,7 @@ void IndexIORegistry::Register(IndexIODescriptor descriptor,
   const std::string name = descriptor.name;
   impl_->entries.emplace(
       name, Impl::Entry{std::move(descriptor), index_type, std::move(writer),
-                        std::move(reader)});
+                        std::move(reader), std::move(write_validator)});
   impl_->types.emplace(index_type, name);
   for (uint32_t tag : impl_->entries.at(name).descriptor.read_tags) {
     impl_->tags.emplace(tag, name);
@@ -119,6 +121,7 @@ void IndexIORegistry::Write(const Index& index, IOWriter* writer,
 
   uint32_t tag = 0;
   IndexPayloadWriter payload_writer;
+  IndexWriteValidator write_validator;
   {
     std::shared_lock lock(impl_->mutex);
     const auto type = impl_->types.find(std::type_index(typeid(index)));
@@ -128,8 +131,12 @@ void IndexIORegistry::Write(const Index& index, IOWriter* writer,
     const Impl::Entry& entry = impl_->entries.at(type->second);
     tag = entry.descriptor.write_tag;
     payload_writer = entry.writer;
+    write_validator = entry.write_validator;
   }
 
+  if (write_validator) {
+    write_validator(index, io_flags);
+  }
   HYPERVEC_THROW_IF_NOT_FMT((*writer)(&tag, sizeof(tag), 1) == 1,
                             "write error in %s", writer->name.c_str());
   payload_writer(index, writer, io_flags);

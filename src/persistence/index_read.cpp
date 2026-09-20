@@ -968,6 +968,130 @@ std::unique_ptr<Index> ReadLVQPayload(IOReader* reader, int io_flags) {
   return index;
 }
 
+std::unique_ptr<Index> ReadIVFFlatPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  IOReader* f = reader;
+  auto index = std::make_unique<IndexIVFFlat>();
+  read_index_header(*index, reader);
+  READ1(index->nlist);
+  READ1(index->nprobe);
+  const size_t centroid_count = ValidateIvfMetadata(*index);
+  ReadVectorExact(index->centroids, centroid_count, reader,
+                  "IndexIVFFlat centroids");
+  const size_t code_size = mul_no_overflow(
+      static_cast<size_t>(index->d), sizeof(float), "IndexIVFFlat code size");
+  ReadInvertedLists(*index, code_size, reader);
+  return index;
+}
+
+std::unique_ptr<Index> ReadIVFPQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  IOReader* f = reader;
+  auto index = std::make_unique<IndexIVFPQ>();
+  read_index_header(*index, reader);
+  READ1(index->nlist);
+  READ1(index->nprobe);
+  const size_t centroid_count = ValidateIvfMetadata(*index);
+  ReadVectorExact(index->centroids, centroid_count, reader,
+                  "IndexIVFPQ centroids");
+  int8_t by_residual_raw;
+  int precomputed_mode;
+  READ1(by_residual_raw);
+  READ1(precomputed_mode);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      by_residual_raw == 0 || by_residual_raw == 1,
+      "IndexIVFPQ deserialize: by_residual must be encoded as 0 or 1");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      precomputed_mode == 0 || precomputed_mode == 1,
+      "IndexIVFPQ deserialize: invalid precomputed-table mode");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      precomputed_mode == 0 || by_residual_raw == 1,
+      "IndexIVFPQ deserialize: precomputed tables require residual codes");
+  index->by_residual = (by_residual_raw != 0);
+  index->use_precomputed_table = precomputed_mode;
+  read_pq(index->pq, reader);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      index->pq.d == index->d,
+      "IndexIVFPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+      static_cast<int64_t>(index->pq.d), static_cast<int64_t>(index->d));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->metric_type == kMetricL2,
+      "IndexIVFPQ deserialize: only kMetricL2 is supported");
+  index->pq.is_trained = index->is_trained;
+  size_t precomputed_count = 0;
+  if (index->is_trained && index->use_precomputed_table != 0) {
+    const size_t entries_per_list = mul_no_overflow(
+        static_cast<size_t>(index->pq.M), static_cast<size_t>(index->pq.ksub),
+        "IndexIVFPQ precomputed table");
+    precomputed_count =
+        mul_no_overflow(static_cast<size_t>(index->nlist), entries_per_list,
+                        "IndexIVFPQ precomputed table");
+  }
+  ReadVectorExact(index->precomputed_table, precomputed_count, reader,
+                  "IndexIVFPQ precomputed table");
+  ReadInvertedLists(*index, index->pq.code_size, reader);
+  return index;
+}
+
+std::unique_ptr<Index> ReadIVFLVQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  IOReader* f = reader;
+  auto index = std::make_unique<IndexIVFLVQ>();
+  read_index_header(*index, reader);
+  READ1(index->nlist);
+  READ1(index->nprobe);
+  const size_t centroid_count = ValidateIvfMetadata(*index);
+  ReadVectorExact(index->centroids, centroid_count, reader,
+                  "IndexIVFLVQ centroids");
+  int8_t by_residual_raw;
+  READ1(by_residual_raw);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      by_residual_raw == 0 || by_residual_raw == 1,
+      "IndexIVFLVQ deserialize: by_residual must be encoded as 0 or 1");
+  index->by_residual = (by_residual_raw != 0);
+  read_lvq(index->lvq, reader);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      index->lvq.d == index->d,
+      "IndexIVFLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+      static_cast<int64_t>(index->lvq.d), static_cast<int64_t>(index->d));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->metric_type == kMetricL2,
+      "IndexIVFLVQ deserialize: only kMetricL2 is supported");
+  index->lvq.is_trained = index->is_trained;
+  ReadInvertedLists(*index, index->lvq.code_size, reader);
+  return index;
+}
+
+std::unique_ptr<Index> ReadIVFRaBitQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  IOReader* f = reader;
+  auto index = std::make_unique<IndexIVFRaBitQ>();
+  read_index_header(*index, reader);
+  READ1(index->nlist);
+  READ1(index->nprobe);
+  const size_t centroid_count = ValidateIvfMetadata(*index);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->is_trained && index->metric_type == kMetricL2,
+      "IndexIVFRaBitQ deserialize: index must be trained with kMetricL2");
+  ReadVectorExact(index->centroids, centroid_count, reader,
+                  "IndexIVFRaBitQ centroids");
+  for (float centroid : index->centroids) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        std::isfinite(centroid),
+        "IndexIVFRaBitQ deserialize: centroids must be finite");
+  }
+  index->by_residual = read_bool(reader, "IndexIVFRaBitQ by_residual");
+  uint64_t random_seed;
+  int rotation_rounds;
+  READ1(random_seed);
+  READ1(rotation_rounds);
+  index->rabitq =
+      std::make_unique<RaBitQQuantizer>(index->d, random_seed, rotation_rounds);
+  ReadInvertedLists(*index, index->rabitq->CodeSize(), reader);
+  ValidateRaBitQCodes(*index);
+  return index;
+}
+
 }  // namespace persistence_internal
 
 Index* ReadIndex(IOReader* f, int io_flags) {
@@ -1087,122 +1211,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
         "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
     ValidateHnswStorage(*idxhnsw);
     return idxhnsw.release();
-  }
-
-  if (h == fourcc("IVFf")) {
-    auto idx = std::make_unique<IndexIVFFlat>();
-    read_index_header(*idx, f);
-    READ1(idx->nlist);
-    READ1(idx->nprobe);
-    const size_t centroid_count = ValidateIvfMetadata(*idx);
-    ReadVectorExact(idx->centroids, centroid_count, f,
-                    "IndexIVFFlat centroids");
-
-    const size_t code_size = static_cast<size_t>(idx->d) * sizeof(float);
-    ReadInvertedLists(*idx, code_size, f);
-    return idx.release();
-  }
-
-  if (h == fourcc("IVPQ")) {
-    auto idx = std::make_unique<IndexIVFPQ>();
-    read_index_header(*idx, f);
-    READ1(idx->nlist);
-    READ1(idx->nprobe);
-    const size_t centroid_count = ValidateIvfMetadata(*idx);
-    ReadVectorExact(idx->centroids, centroid_count, f, "IndexIVFPQ centroids");
-    int8_t by_residual_raw;
-    int upt;
-    READ1(by_residual_raw);
-    READ1(upt);
-    HYPERVEC_THROW_IF_NOT_MSG(
-        by_residual_raw == 0 || by_residual_raw == 1,
-        "IndexIVFPQ deserialize: by_residual must be encoded as 0 or 1");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        upt == 0 || upt == 1,
-        "IndexIVFPQ deserialize: invalid precomputed-table mode");
-    HYPERVEC_THROW_IF_NOT_MSG(
-        upt == 0 || by_residual_raw == 1,
-        "IndexIVFPQ deserialize: precomputed tables require residual codes");
-    idx->by_residual = (by_residual_raw != 0);
-    idx->use_precomputed_table = upt;
-    read_pq(idx->pq, f);
-    HYPERVEC_THROW_IF_NOT_FMT(
-        idx->pq.d == idx->d,
-        "IndexIVFPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
-        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idx->metric_type == kMetricL2,
-        "IndexIVFPQ deserialize: only kMetricL2 is supported");
-    idx->pq.is_trained = idx->is_trained;
-    size_t precomputed_count = 0;
-    if (idx->is_trained && idx->use_precomputed_table != 0) {
-      const size_t entries_per_list = mul_no_overflow(
-          static_cast<size_t>(idx->pq.M), static_cast<size_t>(idx->pq.ksub),
-          "IndexIVFPQ precomputed table");
-      precomputed_count =
-          mul_no_overflow(static_cast<size_t>(idx->nlist), entries_per_list,
-                          "IndexIVFPQ precomputed table");
-    }
-    ReadVectorExact(idx->precomputed_table, precomputed_count, f,
-                    "IndexIVFPQ precomputed table");
-
-    ReadInvertedLists(*idx, idx->pq.code_size, f);
-    return idx.release();
-  }
-
-  if (h == fourcc("IVLQ")) {
-    auto idx = std::make_unique<IndexIVFLVQ>();
-    read_index_header(*idx, f);
-    READ1(idx->nlist);
-    READ1(idx->nprobe);
-    const size_t centroid_count = ValidateIvfMetadata(*idx);
-    ReadVectorExact(idx->centroids, centroid_count, f, "IndexIVFLVQ centroids");
-    int8_t by_residual_raw;
-    READ1(by_residual_raw);
-    HYPERVEC_THROW_IF_NOT_MSG(
-        by_residual_raw == 0 || by_residual_raw == 1,
-        "IndexIVFLVQ deserialize: by_residual must be encoded as 0 or 1");
-    idx->by_residual = (by_residual_raw != 0);
-    read_lvq(idx->lvq, f);
-    HYPERVEC_THROW_IF_NOT_FMT(
-        idx->lvq.d == idx->d,
-        "IndexIVFLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
-        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idx->metric_type == kMetricL2,
-        "IndexIVFLVQ deserialize: only kMetricL2 is supported");
-    idx->lvq.is_trained = idx->is_trained;
-
-    ReadInvertedLists(*idx, idx->lvq.code_size, f);
-    return idx.release();
-  }
-
-  if (h == fourcc("IVRQ")) {
-    auto idx = std::make_unique<IndexIVFRaBitQ>();
-    read_index_header(*idx, f);
-    READ1(idx->nlist);
-    READ1(idx->nprobe);
-    const size_t centroid_count = ValidateIvfMetadata(*idx);
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idx->is_trained && idx->metric_type == kMetricL2,
-        "IndexIVFRaBitQ deserialize: index must be trained with kMetricL2");
-    ReadVectorExact(idx->centroids, centroid_count, f,
-                    "IndexIVFRaBitQ centroids");
-    for (float centroid : idx->centroids) {
-      HYPERVEC_THROW_IF_NOT_MSG(
-          std::isfinite(centroid),
-          "IndexIVFRaBitQ deserialize: centroids must be finite");
-    }
-    idx->by_residual = read_bool(f, "IndexIVFRaBitQ by_residual");
-    uint64_t random_seed;
-    int rotation_rounds;
-    READ1(random_seed);
-    READ1(rotation_rounds);
-    idx->rabitq =
-        std::make_unique<RaBitQQuantizer>(idx->d, random_seed, rotation_rounds);
-    ReadInvertedLists(*idx, idx->rabitq->CodeSize(), f);
-    ValidateRaBitQCodes(*idx);
-    return idx.release();
   }
 
   HYPERVEC_THROW_MSG("unknown index type");

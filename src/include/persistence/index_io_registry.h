@@ -37,6 +37,7 @@ struct IndexIODescriptor {
 using IndexPayloadWriter = std::function<void(const Index&, IOWriter*, int)>;
 using IndexPayloadResult = std::unique_ptr<Index>;
 using IndexPayloadReader = std::function<IndexPayloadResult(IOReader*, int)>;
+using IndexWriteValidator = std::function<void(const Index&, int)>;
 
 /** Thread-safe pairing of an exact C++ index type with its binary codec.
  *
@@ -53,7 +54,8 @@ class IndexIORegistry {
   IndexIORegistry& operator=(const IndexIORegistry&) = delete;
 
   void Register(IndexIODescriptor descriptor, std::type_index index_type,
-                IndexPayloadWriter writer, IndexPayloadReader reader);
+                IndexPayloadWriter writer, IndexPayloadReader reader,
+                IndexWriteValidator write_validator = {});
 
   bool Contains(std::type_index index_type) const;
   bool Contains(uint32_t read_tag) const;

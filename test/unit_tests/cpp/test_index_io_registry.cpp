@@ -203,3 +203,28 @@ TEST(IndexIORegistry, RejectsUnknownTypesTagsAndMismatchedReaders) {
   EXPECT_THROW(mismatched.Read(&mismatched_reader),
                hypervec::HypervecException);
 }
+
+TEST(IndexIORegistry, ValidatesBeforeWritingTheFormatTag) {
+  hypervec::IndexIORegistry registry;
+  bool validated = false;
+  bool payload_written = false;
+  registry.Register(
+      {"validated", hypervec::fourcc("Va01"), {}},
+      std::type_index(typeid(TestIndex)),
+      [&](const hypervec::Index&, hypervec::IOWriter*, int) {
+        payload_written = true;
+      },
+      TestReader(),
+      [&](const hypervec::Index&, int io_flags) {
+        EXPECT_EQ(io_flags, 23);
+        validated = true;
+        HYPERVEC_THROW_MSG("validation failed");
+      });
+
+  hypervec::VectorIOWriter writer;
+  EXPECT_THROW(registry.Write(TestIndex(), &writer, 23),
+               hypervec::HypervecException);
+  EXPECT_TRUE(validated);
+  EXPECT_FALSE(payload_written);
+  EXPECT_TRUE(writer.data.empty());
+}

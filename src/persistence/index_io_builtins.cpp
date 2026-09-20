@@ -7,11 +7,15 @@
  */
 
 #include <index/flat/index_flat.h>
+#include <index/ivf/index_ivf_flat.h>
 #include <persistence/index_io_builtins.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
+#include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
+#include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
 
 #include <typeindex>
 
@@ -35,6 +39,19 @@ class BuiltinIndexIOCodecs {
     registry.Register({"lvq", fourcc("ILVQ"), {}},
                       std::type_index(typeid(IndexLVQ)), WriteLVQPayload,
                       ReadLVQPayload);
+    registry.Register({"ivf_flat", fourcc("IVFf"), {}},
+                      std::type_index(typeid(IndexIVFFlat)),
+                      WriteIVFFlatPayload, ReadIVFFlatPayload);
+    registry.Register({"ivf_pq", fourcc("IVPQ"), {}},
+                      std::type_index(typeid(IndexIVFPQ)), WriteIVFPQPayload,
+                      ReadIVFPQPayload);
+    registry.Register({"ivf_lvq", fourcc("IVLQ"), {}},
+                      std::type_index(typeid(IndexIVFLVQ)), WriteIVFLVQPayload,
+                      ReadIVFLVQPayload);
+    registry.Register({"ivf_rabitq", fourcc("IVRQ"), {}},
+                      std::type_index(typeid(IndexIVFRaBitQ)),
+                      WriteIVFRaBitQPayload, ReadIVFRaBitQPayload,
+                      ValidateIVFRaBitQForWrite);
   }
 
   IndexIORegistry registry;

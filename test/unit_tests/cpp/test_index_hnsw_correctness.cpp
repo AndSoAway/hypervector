@@ -159,6 +159,18 @@ void ExpectConsistentGraph(const hypervec::IndexHNSW& index) {
   }
 }
 
+size_t CountLevel0Neighbors(const hypervec::IndexHNSW& index,
+                            hypervec::idx_t node) {
+  size_t begin = 0;
+  size_t end = 0;
+  index.hnsw.NeighborRange(node, 0, &begin, &end);
+  size_t count = 0;
+  while (begin + count < end && index.hnsw.neighbors[begin + count] >= 0) {
+    ++count;
+  }
+  return count;
+}
+
 void ExpectSearchLabelsValid(const hypervec::Index& index, const float* query) {
   constexpr hypervec::idx_t k = 5;
   std::vector<float> distances(k);
@@ -733,6 +745,68 @@ TEST(IndexHNSWCorrectness, CompressedStorageFailureRollsBackBothStores) {
   EXPECT_EQ(index.storage->n_total, count);
   EXPECT_EQ(index.raw_storage->n_total, count);
   ExpectConsistentGraph(index);
+}
+
+TEST(IndexHNSWCorrectness, ShrinkLevel0NeighborsPrunesTransactionally) {
+  constexpr hypervec::idx_t dimension = 4;
+  constexpr hypervec::idx_t count = 48;
+  constexpr int target_neighbors = 3;
+  const auto data = RandomVectors(count, dimension, 2000);
+  hypervec::IndexHNSWFlat index(dimension, 8);
+  index.Add(count, data.data());
+
+  size_t begin = 0;
+  size_t end = 0;
+  index.hnsw.NeighborRange(0, 0, &begin, &end);
+  ASSERT_GE(end - begin, 6U);
+  for (size_t offset = 0; offset < 6; ++offset) {
+    index.hnsw.neighbors[begin + offset] =
+        static_cast<hypervec::HNSW::storage_idx_t>(offset + 1);
+  }
+  for (size_t offset = begin + 6; offset < end; ++offset) {
+    index.hnsw.neighbors[offset] = -1;
+  }
+
+  const std::vector<hypervec::HNSW::storage_idx_t> neighbors_before(
+      index.hnsw.neighbors.data(),
+      index.hnsw.neighbors.data() + index.hnsw.neighbors.size());
+  index.ShrinkLevel0Neighbors(target_neighbors);
+
+  for (hypervec::idx_t node = 0; node < count; ++node) {
+    EXPECT_LE(CountLevel0Neighbors(index, node),
+              static_cast<size_t>(target_neighbors));
+    size_t level0_begin = 0;
+    size_t level0_end = 0;
+    index.hnsw.NeighborRange(node, 0, &level0_begin, &level0_end);
+    const size_t node_end = index.hnsw.offsets[static_cast<size_t>(node) + 1];
+    for (size_t offset = level0_end; offset < node_end; ++offset) {
+      EXPECT_EQ(index.hnsw.neighbors[offset], neighbors_before[offset]);
+    }
+  }
+  EXPECT_LE(CountLevel0Neighbors(index, 0),
+            static_cast<size_t>(target_neighbors));
+  ExpectConsistentGraph(index);
+
+  index.hnsw.NeighborRange(count - 1, 0, &begin, &end);
+  ASSERT_LT(begin, end);
+  index.hnsw.neighbors[begin] =
+      static_cast<hypervec::HNSW::storage_idx_t>(count);
+  const std::vector<hypervec::HNSW::storage_idx_t> corrupted_graph(
+      index.hnsw.neighbors.data(),
+      index.hnsw.neighbors.data() + index.hnsw.neighbors.size());
+  EXPECT_THROW(index.ShrinkLevel0Neighbors(2), hypervec::HypervecException);
+  EXPECT_EQ(std::vector<hypervec::HNSW::storage_idx_t>(
+                index.hnsw.neighbors.data(),
+                index.hnsw.neighbors.data() + index.hnsw.neighbors.size()),
+            corrupted_graph);
+}
+
+TEST(IndexHNSWCorrectness, ShrinkLevel0NeighborsValidatesSizeAndEmptyState) {
+  hypervec::IndexHNSWFlat empty(2, 4);
+  EXPECT_NO_THROW(empty.ShrinkLevel0Neighbors(1));
+  EXPECT_THROW(empty.ShrinkLevel0Neighbors(0), hypervec::HypervecException);
+  EXPECT_THROW(empty.ShrinkLevel0Neighbors(empty.hnsw.NbNeighbors(0) + 1),
+               hypervec::HypervecException);
 }
 
 TEST(IndexHNSWCorrectness, PermuteEntriesRemapsFlatStorageAndGraph) {

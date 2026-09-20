@@ -81,6 +81,8 @@ struct IndexHNSW : Index {
 
   void Reset() override;
 
+  /** Transactionally prune each level-0 neighbor list to at most size
+   * entries. Higher graph levels are preserved. */
   void ShrinkLevel0Neighbors(int size);
 
   /** Perform Search only on level 0, given the starting points for

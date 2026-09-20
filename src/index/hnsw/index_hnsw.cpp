@@ -170,39 +170,37 @@ void CommitStoragePermutation(PreparedStoragePermutation* prepared) {
   }
 }
 
-void ValidateSearchState(const IndexHNSW& index) {
-  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
-                            "IndexHNSW::Search: storage must not be null");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index.n_total >= 0,
-      "IndexHNSW::Search: vector count must not be negative");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index.storage->n_total == index.n_total,
-      "IndexHNSW::Search: storage and index counts differ");
+void ValidateHNSWState(const IndexHNSW& index, const char* operation) {
+  HYPERVEC_THROW_IF_NOT_FMT(index.storage != nullptr,
+                            "%s: storage must not be null", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(index.n_total >= 0,
+                            "%s: vector count must not be negative", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(index.storage->n_total == index.n_total,
+                            "%s: storage and index counts differ", operation);
 
   const size_t count = static_cast<size_t>(index.n_total);
-  HYPERVEC_THROW_IF_NOT_MSG(
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.levels.size() == count &&
           index.hnsw.offsets.size() == count + 1 &&
           index.hnsw.offsets.front() == 0 &&
           index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
-      "IndexHNSW::Search: graph storage is inconsistent");
+      "%s: graph storage is inconsistent", operation);
   if (count == 0) {
-    HYPERVEC_THROW_IF_NOT_MSG(
+    HYPERVEC_THROW_IF_NOT_FMT(
         index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
-        "IndexHNSW::Search: empty graph has an entry point or level");
+        "%s: empty graph has an entry point or level", operation);
     return;
   }
 
-  HYPERVEC_THROW_IF_NOT_MSG(
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.entry_point >= 0 &&
           static_cast<size_t>(index.hnsw.entry_point) < count,
-      "IndexHNSW::Search: entry point is outside the index");
-  HYPERVEC_THROW_IF_NOT_MSG(
+      "%s: entry point is outside the index", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.max_level >= 0 &&
           index.hnsw.levels[static_cast<size_t>(index.hnsw.entry_point)] >
               index.hnsw.max_level,
-      "IndexHNSW::Search: entry-point level is inconsistent");
+      "%s: entry-point level is inconsistent", operation);
 }
 
 void ValidateRuntimeEfSearch(const IndexHNSW& index,
@@ -530,6 +528,60 @@ void IndexHNSW::Reset() {
   n_total = 0;
 }
 
+void IndexHNSW::ShrinkLevel0Neighbors(int size) {
+  constexpr const char* operation = "IndexHNSW::ShrinkLevel0Neighbors";
+  ValidateHNSWState(*this, operation);
+  const int capacity = hnsw.NbNeighbors(0);
+  HYPERVEC_THROW_IF_NOT_FMT(size > 0 && size <= capacity,
+                            "%s: size must be in [1, %d], got %d", operation,
+                            capacity, size);
+  if (n_total == 0) {
+    return;
+  }
+
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    std::priority_queue<NodeDistFarther> candidates;
+    bool reached_end = false;
+    for (size_t offset = begin; offset < end; ++offset) {
+      const storage_idx_t neighbor = hnsw.neighbors[offset];
+      if (neighbor < 0) {
+        HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
+                                  "%s: node %" PRId64
+                                  " has an invalid neighbor sentinel",
+                                  operation, static_cast<int64_t>(node));
+        reached_end = true;
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
+                                "%s: node %" PRId64
+                                " has a neighbor after the end sentinel",
+                                operation, static_cast<int64_t>(node));
+      HYPERVEC_THROW_IF_NOT_FMT(
+          static_cast<idx_t>(neighbor) < n_total,
+          "%s: node %" PRId64 " has an out-of-range neighbor %d", operation,
+          static_cast<int64_t>(node), neighbor);
+      candidates.emplace(dis->symmetric_dis(node, neighbor), neighbor);
+    }
+
+    std::vector<NodeDistFarther> selected;
+    HNSW::ShrinkNeighborList(*dis, candidates, selected, size);
+    for (size_t offset = begin; offset < end; ++offset) {
+      const size_t selected_offset = offset - begin;
+      updated[offset] = selected_offset < selected.size()
+                            ? selected[selected_offset].id
+                            : storage_idx_t{-1};
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_FMT(
@@ -550,7 +602,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   HYPERVEC_THROW_IF_NOT_MSG(
       n == 0 || labels != nullptr,
       "IndexHNSW::Search: labels must not be null when n is positive");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::Search");
   if (n == 0) {
     return;
   }
@@ -629,7 +681,7 @@ void IndexHNSW::SearchLevel0(idx_t n, const float* x, idx_t k,
   HYPERVEC_THROW_IF_NOT_MSG(
       n == 0 || labels != nullptr,
       "IndexHNSW::SearchLevel0: labels must not be null when n is positive");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::SearchLevel0");
   if (n == 0) {
     return;
   }
@@ -717,7 +769,7 @@ void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
         result->lims != nullptr,
         "IndexHNSW::RangeSearch: result limits must not be null");
   }
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::RangeSearch");
   if (n == 0) {
     return;
   }
@@ -750,7 +802,7 @@ void IndexHNSW::Search1(const float* x, ResultHandler& handler,
                         SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
                             "IndexHNSW::Search1: x must not be null");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::Search1");
   ValidateRuntimeEfSearch(*this, params, "IndexHNSW::Search1");
 
   std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));

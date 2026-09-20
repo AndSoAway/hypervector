@@ -37,6 +37,9 @@ namespace {
 class BuiltinIndexIOCodecs {
  public:
   BuiltinIndexIOCodecs() {
+    registry.Register({"flat", fourcc("IFlx"), {}},
+                      std::type_index(typeid(IndexFlat)), WriteFlatPayload,
+                      ReadFlatPayload);
     registry.Register({"flat_l2", fourcc("IFlm"), {fourcc("IFll")}},
                       std::type_index(typeid(IndexFlatL2)), WriteFlatL2Payload,
                       ReadFlatL2Payload);

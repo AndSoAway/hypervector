@@ -21,6 +21,7 @@ namespace persistence_internal {
 
 IndexIORegistry& GetBuiltinIndexIORegistry();
 
+void WriteFlatPayload(const Index& index, IOWriter* writer, int io_flags);
 void WriteFlatL2Payload(const Index& index, IOWriter* writer, int io_flags);
 void WriteFlatIPPayload(const Index& index, IOWriter* writer, int io_flags);
 void WritePQPayload(const Index& index, IOWriter* writer, int io_flags);
@@ -53,6 +54,7 @@ void ValidateHNSWLVQForWrite(const Index& index, int io_flags);
 void WriteVamanaFlatPayload(const Index& index, IOWriter* writer, int io_flags);
 void ValidateVamanaFlatForWrite(const Index& index, int io_flags);
 
+std::unique_ptr<Index> ReadFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadFlatL2Payload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadFlatIPPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadPQPayload(IOReader* reader, int io_flags);

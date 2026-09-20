@@ -270,7 +270,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   // Get distance computer from storage.
   // Must go through storage_distance_computer() so similarity metrics are
   // negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
 
   // Do not mutate the process-global OpenMP thread count here. Concurrent
   // Python callers may run Search() after the SWIG layer releases the GIL, so
@@ -292,9 +292,6 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
     hnsw.Search(*dis, this, res, vt, params);
     res.end();
   }
-
-  // Cleanup
-  delete dis;
 }
 
 void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,

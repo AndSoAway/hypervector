@@ -10,14 +10,60 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/structures/random.h>
 
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 namespace {
+
+class ThrowingSearchDistanceComputer final : public hypervec::DistanceComputer {
+ public:
+  explicit ThrowingSearchDistanceComputer(int* destruction_count)
+      : destruction_count_(destruction_count) {}
+
+  ~ThrowingSearchDistanceComputer() override { ++*destruction_count_; }
+
+  void SetQuery(const float*) override {}
+
+  float operator()(hypervec::idx_t) override {
+    throw std::runtime_error("injected search failure");
+  }
+
+  float symmetric_dis(hypervec::idx_t, hypervec::idx_t) override {
+    return 0.0F;
+  }
+
+ private:
+  int* destruction_count_;
+};
+
+class ThrowingSearchStorage final : public hypervec::Index {
+ public:
+  explicit ThrowingSearchStorage(int* destruction_count)
+      : Index(1, hypervec::kMetricL2), destruction_count_(destruction_count) {
+    n_total = 1;
+  }
+
+  void Add(hypervec::idx_t, const float*) override {}
+
+  void Search(hypervec::idx_t, const float*, hypervec::idx_t, float*,
+              hypervec::idx_t*,
+              const hypervec::SearchParameters*) const override {}
+
+  void Reset() override { n_total = 0; }
+
+  hypervec::DistanceComputer* GetDistanceComputer() const override {
+    return new ThrowingSearchDistanceComputer(destruction_count_);
+  }
+
+ private:
+  int* destruction_count_;
+};
 
 std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
                                  int64_t seed) {
@@ -114,6 +160,22 @@ void ExpectCompressedPermutation(hypervec::IndexHNSW* index,
 }
 
 }  // namespace
+
+TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {
+  int destruction_count = 0;
+  ThrowingSearchStorage storage(&destruction_count);
+  hypervec::IndexHNSW index(&storage, 4);
+  index.n_total = 1;
+  index.hnsw.entry_point = 0;
+  index.hnsw.max_level = 0;
+
+  const float query = 0.0F;
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  EXPECT_THROW(index.Search(1, &query, 1, &distance, &label),
+               std::runtime_error);
+  EXPECT_EQ(destruction_count, 1);
+}
 
 TEST(IndexHNSWCorrectness, RepeatedAddFlatKeepsGraphAligned) {
   constexpr hypervec::idx_t d = 8;

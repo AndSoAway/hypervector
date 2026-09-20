@@ -23,6 +23,7 @@ set(HYPERVEC_TEST_SRC
   test_inverted_list_scanner.cpp
   test_index_build.cpp
   test_index_capabilities.cpp
+  test_index_clone.cpp
   test_index_factory.cpp
   test_search_parameters_factory.cpp
   test_search_evaluator.cpp

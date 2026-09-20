@@ -7,6 +7,8 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/flat/index_flat.h>
+#include <persistence/index_io.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
 #include <utils/log/assert.h>
@@ -87,6 +89,15 @@ TEST(IndexIORegistry, RoundtripsCanonicalTagAndReadsLegacyAlias) {
   ASSERT_NE(current_test, nullptr);
   EXPECT_EQ(current_test->value, 42);
 
+  hypervec::VectorIOReader payload_reader;
+  payload_reader.data = writer.data;
+  payload_reader.rp = sizeof(uint32_t);
+  std::unique_ptr<hypervec::Index> payload =
+      registry.ReadPayload(hypervec::fourcc(kCurrentTag), &payload_reader, 19);
+  auto* payload_test = dynamic_cast<TestIndex*>(payload.get());
+  ASSERT_NE(payload_test, nullptr);
+  EXPECT_EQ(payload_test->value, 42);
+
   const uint32_t legacy_tag = hypervec::fourcc(kLegacyTag);
   std::memcpy(writer.data.data(), &legacy_tag, sizeof(legacy_tag));
   hypervec::VectorIOReader legacy_reader;
@@ -101,6 +112,39 @@ TEST(IndexIORegistry, RoundtripsCanonicalTagAndReadsLegacyAlias) {
   EXPECT_EQ(descriptors.front().name, "test");
   EXPECT_EQ(descriptors.front().write_tag, hypervec::fourcc(kCurrentTag));
   EXPECT_EQ(descriptors.front().read_tags.size(), 2);
+}
+
+TEST(IndexIORegistry, GlobalEntrypointsUseFixedCodeRegistry) {
+  hypervec::IndexFlatL2 source(2);
+  const float vectors[] = {1.0F, 2.0F, 3.0F, 4.0F};
+  source.Add(2, vectors);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  ASSERT_GE(writer.data.size(), sizeof(uint32_t));
+  uint32_t tag = 0;
+  std::memcpy(&tag, writer.data.data(), sizeof(tag));
+  EXPECT_EQ(tag, hypervec::fourcc("IFlm"));
+
+  const uint32_t legacy_tag = hypervec::fourcc("IFll");
+  std::memcpy(writer.data.data(), &legacy_tag, sizeof(legacy_tag));
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
+  auto* flat = dynamic_cast<hypervec::IndexFlatL2*>(loaded.get());
+  ASSERT_NE(flat, nullptr);
+  ASSERT_EQ(flat->n_total, 2);
+  float reconstructed[2] = {};
+  flat->Reconstruct(1, reconstructed);
+  EXPECT_FLOAT_EQ(reconstructed[0], 3.0F);
+  EXPECT_FLOAT_EQ(reconstructed[1], 4.0F);
+}
+
+TEST(IndexIORegistry, GlobalWriterRejectsUnregisteredDerivedTypes) {
+  hypervec::IndexFlat1D derived;
+  hypervec::VectorIOWriter writer;
+  EXPECT_THROW(hypervec::WriteIndex(&derived, &writer),
+               hypervec::HypervecException);
 }
 
 TEST(IndexIORegistry, RejectsAmbiguousOrIncompleteRegistrations) {

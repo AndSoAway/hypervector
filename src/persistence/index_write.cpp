@@ -22,6 +22,8 @@
 #include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
+#include <persistence/index_io_builtins.h>
+#include <persistence/index_io_registry.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -42,6 +44,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <typeindex>
 #include <vector>
 
 namespace hypervec {
@@ -179,8 +182,48 @@ static void write_random_access_payload(const RandomAccessReader& reader,
   }
 }
 
-void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
+namespace persistence_internal {
+
+void WriteFlatL2Payload(const Index& index, IOWriter* f, int io_flags) {
   (void)io_flags;
+  const auto& flat = static_cast<const IndexFlatL2&>(index);
+  write_index_header(flat, f);
+  WRITEVECTOR(flat.codes);
+}
+
+void WriteFlatIPPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& flat = static_cast<const IndexFlatIP&>(index);
+  write_index_header(flat, f);
+  WRITEVECTOR(flat.codes);
+}
+
+void WritePQPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& pq = static_cast<const IndexPQ&>(index);
+  write_index_header(pq, f);
+  write_pq(pq.pq, f);
+  WRITEVECTOR(pq.codes);
+}
+
+void WriteLVQPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& lvq = static_cast<const IndexLVQ&>(index);
+  write_index_header(lvq, f);
+  write_lvq(lvq.lvq, f);
+  WRITEVECTOR(lvq.codes);
+}
+
+}  // namespace persistence_internal
+
+void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
+  HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
+                            "WriteIndex: index must not be null");
+  IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
+  if (registry.Contains(std::type_index(typeid(*index)))) {
+    registry.Write(*index, f, io_flags);
+    return;
+  }
 
   const auto* id_map = dynamic_cast<const IndexIDMap*>(index);
   if (id_map) {
@@ -456,44 +499,6 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     if (hnsw->storage) {
       WriteIndex(hnsw->storage, f, 0);
     }
-    return;
-  }
-
-  const IndexFlatL2* iflatl2 = dynamic_cast<const IndexFlatL2*>(index);
-  if (iflatl2) {
-    uint32_t h = fourcc("IFlm");
-    WRITE1(h);
-    write_index_header(*iflatl2, f);
-    WRITEVECTOR(iflatl2->codes);
-    return;
-  }
-
-  const IndexFlatIP* iflatip = dynamic_cast<const IndexFlatIP*>(index);
-  if (iflatip) {
-    uint32_t h = fourcc("IFlp");
-    WRITE1(h);
-    write_index_header(*iflatip, f);
-    WRITEVECTOR(iflatip->codes);
-    return;
-  }
-
-  const IndexPQ* ipq = dynamic_cast<const IndexPQ*>(index);
-  if (ipq) {
-    uint32_t h = fourcc("IPQ8");
-    WRITE1(h);
-    write_index_header(*ipq, f);
-    write_pq(ipq->pq, f);
-    WRITEVECTOR(ipq->codes);
-    return;
-  }
-
-  const IndexLVQ* ilvq = dynamic_cast<const IndexLVQ*>(index);
-  if (ilvq) {
-    uint32_t h = fourcc("ILVQ");
-    WRITE1(h);
-    write_index_header(*ilvq, f);
-    write_lvq(ilvq->lvq, f);
-    WRITEVECTOR(ilvq->codes);
     return;
   }
 

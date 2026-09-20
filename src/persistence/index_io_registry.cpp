@@ -143,14 +143,23 @@ std::unique_ptr<Index> IndexIORegistry::Read(IOReader* reader,
   HYPERVEC_THROW_IF_NOT_FMT((*reader)(&tag, sizeof(tag), 1) == 1,
                             "read error in %s", reader->name.c_str());
 
+  return ReadPayload(tag, reader, io_flags);
+}
+
+std::unique_ptr<Index> IndexIORegistry::ReadPayload(uint32_t read_tag,
+                                                    IOReader* reader,
+                                                    int io_flags) const {
+  HYPERVEC_THROW_IF_NOT_MSG(reader != nullptr,
+                            "index persistence reader must not be null");
+
   IndexPayloadReader payload_reader;
   std::type_index expected_type(typeid(void));
   {
     std::shared_lock lock(impl_->mutex);
-    const auto registered_tag = impl_->tags.find(tag);
+    const auto registered_tag = impl_->tags.find(read_tag);
     HYPERVEC_THROW_IF_NOT_FMT(registered_tag != impl_->tags.end(),
                               "unknown index persistence tag '%s'",
-                              fourcc_inv_printable(tag).c_str());
+                              fourcc_inv_printable(read_tag).c_str());
     const Impl::Entry& entry = impl_->entries.at(registered_tag->second);
     payload_reader = entry.reader;
     expected_type = entry.index_type;
@@ -159,8 +168,9 @@ std::unique_ptr<Index> IndexIORegistry::Read(IOReader* reader,
   std::unique_ptr<Index> index = payload_reader(reader, io_flags);
   HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
                             "registered index reader returned null");
+  const Index* loaded_index = index.get();
   HYPERVEC_THROW_IF_NOT_MSG(
-      std::type_index(typeid(*index)) == expected_type,
+      std::type_index(typeid(*loaded_index)) == expected_type,
       "registered index reader returned the wrong C++ index type");
   return index;
 }

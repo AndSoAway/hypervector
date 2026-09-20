@@ -65,6 +65,10 @@ class IndexIORegistry {
   /** Read a tag and its registered payload. */
   std::unique_ptr<Index> Read(IOReader* reader, int io_flags = 0) const;
 
+  /** Read a registered payload after its tag has already been consumed. */
+  std::unique_ptr<Index> ReadPayload(uint32_t read_tag, IOReader* reader,
+                                     int io_flags = 0) const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

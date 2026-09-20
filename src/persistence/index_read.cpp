@@ -22,6 +22,8 @@
 #include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
+#include <persistence/index_io_builtins.h>
+#include <persistence/index_io_registry.h>
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
 #include <persistence/mapped_io.h>
@@ -901,6 +903,73 @@ static std::unique_ptr<IndexLSH> read_lsh(const IndexHeaderData& header,
   return index;
 }
 
+namespace persistence_internal {
+
+std::unique_ptr<Index> ReadFlatL2Payload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexFlatL2>();
+  read_index_header(*index, reader);
+  index->code_size = mul_no_overflow(
+      sizeof(float), static_cast<size_t>(index->d), "IndexFlat code size");
+  const size_t code_count = mul_no_overflow(
+      static_cast<size_t>(index->n_total), index->code_size, "IndexFlat codes");
+  ReadVectorExact(index->codes, code_count, reader, "IndexFlat codes");
+  return index;
+}
+
+std::unique_ptr<Index> ReadFlatIPPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexFlatIP>();
+  read_index_header(*index, reader);
+  index->code_size = mul_no_overflow(
+      sizeof(float), static_cast<size_t>(index->d), "IndexFlat code size");
+  const size_t code_count = mul_no_overflow(
+      static_cast<size_t>(index->n_total), index->code_size, "IndexFlat codes");
+  ReadVectorExact(index->codes, code_count, reader, "IndexFlat codes");
+  return index;
+}
+
+std::unique_ptr<Index> ReadPQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexPQ>();
+  read_index_header(*index, reader);
+  read_pq(index->pq, reader);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      index->pq.d == index->d,
+      "IndexPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+      static_cast<int64_t>(index->pq.d), static_cast<int64_t>(index->d));
+  HYPERVEC_THROW_IF_NOT_MSG(index->metric_type == kMetricL2,
+                            "IndexPQ deserialize: only kMetricL2 is supported");
+  index->pq.is_trained = index->is_trained;
+  const size_t code_count =
+      mul_no_overflow(static_cast<size_t>(index->n_total), index->pq.code_size,
+                      "IndexPQ codes");
+  ReadVectorExact(index->codes, code_count, reader, "IndexPQ codes");
+  return index;
+}
+
+std::unique_ptr<Index> ReadLVQPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexLVQ>();
+  read_index_header(*index, reader);
+  read_lvq(index->lvq, reader);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      index->lvq.d == index->d,
+      "IndexLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
+      static_cast<int64_t>(index->lvq.d), static_cast<int64_t>(index->d));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index->metric_type == kMetricL2,
+      "IndexLVQ deserialize: only kMetricL2 is supported");
+  index->lvq.is_trained = index->is_trained;
+  const size_t code_count =
+      mul_no_overflow(static_cast<size_t>(index->n_total), index->lvq.code_size,
+                      "IndexLVQ codes");
+  ReadVectorExact(index->codes, code_count, reader, "IndexLVQ codes");
+  return index;
+}
+
+}  // namespace persistence_internal
+
 Index* ReadIndex(IOReader* f, int io_flags) {
   HYPERVEC_THROW_IF_NOT_FMT((io_flags & ~IO_FLAG_MMAP_IFC) == 0,
                             "ReadIndex: unsupported I/O flags 0x%x", io_flags);
@@ -927,6 +996,11 @@ Index* ReadIndex(IOReader* f, int io_flags) {
 
   uint32_t h;
   READ1(h);
+
+  IndexIORegistry& registry = persistence_internal::GetBuiltinIndexIORegistry();
+  if (registry.Contains(h)) {
+    return registry.ReadPayload(h, f, io_flags).release();
+  }
 
   if (h == fourcc("ILSh")) {
     const IndexHeaderData header = read_index_header_data(f);
@@ -1015,28 +1089,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     return idxhnsw.release();
   }
 
-  if (h == fourcc("IFlm") || h == fourcc("IFll")) {
-    auto idx = std::make_unique<IndexFlatL2>();
-    read_index_header(*idx, f);
-    idx->code_size = mul_no_overflow(sizeof(float), static_cast<size_t>(idx->d),
-                                     "IndexFlat code size");
-    const size_t code_count = mul_no_overflow(
-        static_cast<size_t>(idx->n_total), idx->code_size, "IndexFlat codes");
-    ReadVectorExact(idx->codes, code_count, f, "IndexFlat codes");
-    return idx.release();
-  }
-
-  if (h == fourcc("IFlp")) {
-    auto idx = std::make_unique<IndexFlatIP>();
-    read_index_header(*idx, f);
-    idx->code_size = mul_no_overflow(sizeof(float), static_cast<size_t>(idx->d),
-                                     "IndexFlat code size");
-    const size_t code_count = mul_no_overflow(
-        static_cast<size_t>(idx->n_total), idx->code_size, "IndexFlat codes");
-    ReadVectorExact(idx->codes, code_count, f, "IndexFlat codes");
-    return idx.release();
-  }
-
   if (h == fourcc("IVFf")) {
     auto idx = std::make_unique<IndexIVFFlat>();
     read_index_header(*idx, f);
@@ -1048,43 +1100,6 @@ Index* ReadIndex(IOReader* f, int io_flags) {
 
     const size_t code_size = static_cast<size_t>(idx->d) * sizeof(float);
     ReadInvertedLists(*idx, code_size, f);
-    return idx.release();
-  }
-
-  if (h == fourcc("IPQ8")) {
-    auto idx = std::make_unique<IndexPQ>();
-    read_index_header(*idx, f);
-    read_pq(idx->pq, f);
-    HYPERVEC_THROW_IF_NOT_FMT(
-        idx->pq.d == idx->d,
-        "IndexPQ deserialize: pq.d (%" PRId64 ") != index.d (%" PRId64 ")",
-        static_cast<int64_t>(idx->pq.d), static_cast<int64_t>(idx->d));
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idx->metric_type == kMetricL2,
-        "IndexPQ deserialize: only kMetricL2 is supported");
-    idx->pq.is_trained = idx->is_trained;
-    const size_t code_count = mul_no_overflow(
-        static_cast<size_t>(idx->n_total), idx->pq.code_size, "IndexPQ codes");
-    ReadVectorExact(idx->codes, code_count, f, "IndexPQ codes");
-    return idx.release();
-  }
-
-  if (h == fourcc("ILVQ")) {
-    auto idx = std::make_unique<IndexLVQ>();
-    read_index_header(*idx, f);
-    read_lvq(idx->lvq, f);
-    HYPERVEC_THROW_IF_NOT_FMT(
-        idx->lvq.d == idx->d,
-        "IndexLVQ deserialize: lvq.d (%" PRId64 ") != index.d (%" PRId64 ")",
-        static_cast<int64_t>(idx->lvq.d), static_cast<int64_t>(idx->d));
-    HYPERVEC_THROW_IF_NOT_MSG(
-        idx->metric_type == kMetricL2,
-        "IndexLVQ deserialize: only kMetricL2 is supported");
-    idx->lvq.is_trained = idx->is_trained;
-    const size_t code_count =
-        mul_no_overflow(static_cast<size_t>(idx->n_total), idx->lvq.code_size,
-                        "IndexLVQ codes");
-    ReadVectorExact(idx->codes, code_count, f, "IndexLVQ codes");
     return idx.release();
   }
 

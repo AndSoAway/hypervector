@@ -148,6 +148,7 @@ TEST(IndexNSG, PersistenceRoundtripPreservesStaticState) {
   EXPECT_EQ(restored->Options().check_relative_distance,
             options.check_relative_distance);
   ASSERT_EQ(restored->Graph().NodeCount(), source.Graph().NodeCount());
+  EXPECT_EQ(restored->Graph().MaxDegree(), source.Graph().MaxDegree());
   for (size_t node = 0; node < source.Graph().NodeCount(); ++node) {
     const auto source_neighbors =
         source.Graph().Neighbors(static_cast<hypervec::GraphId>(node));

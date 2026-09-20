@@ -914,6 +914,11 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   READ1(options.ef_search);
   options.check_relative_distance =
       read_bool(f, "IndexNSGFlat check_relative_distance");
+  const size_t configured_capacity = add_no_overflow(
+      options.max_degree, size_t{1}, "IndexNSGFlat graph capacity");
+  const size_t graph_capacity =
+      total == 0 ? configured_capacity
+                 : (total == 1 ? 1 : std::min(total - 1, configured_capacity));
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -941,18 +946,18 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   for (size_t node = 0; node < total; ++node) {
     HYPERVEC_THROW_IF_NOT_MSG(
         offsets[node] <= offsets[node + 1] &&
-            offsets[node + 1] - offsets[node] <= options.max_degree,
+            offsets[node + 1] - offsets[node] <= graph_capacity,
         "IndexNSGFlat offsets contain an invalid neighbor span");
   }
-  const size_t max_edges = mul_no_overflow(total, options.max_degree,
-                                           "IndexNSGFlat maximum edge count");
+  const size_t max_edges =
+      mul_no_overflow(total, graph_capacity, "IndexNSGFlat maximum edge count");
   HYPERVEC_THROW_IF_NOT_MSG(
       offsets.back() <= max_edges,
       "IndexNSGFlat edge count exceeds the configured degree bound");
   std::vector<GraphId> edges;
   ReadVectorExact(edges, offsets.back(), f, "IndexNSGFlat edges");
 
-  MutableBoundedGraph graph(total, options.max_degree);
+  MutableBoundedGraph graph(total, graph_capacity);
   for (size_t node = 0; node < total; ++node) {
     const size_t degree = offsets[node + 1] - offsets[node];
     const GraphId* neighbors =

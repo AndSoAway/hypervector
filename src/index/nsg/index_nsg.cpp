@@ -37,6 +37,16 @@ size_t InitialGraphCapacity(const NSGIndexOptions& options) {
                          "IndexNSG graph capacity");
 }
 
+size_t GraphCapacity(const NSGIndexOptions& options, size_t node_count) {
+  if (node_count == 0) {
+    return InitialGraphCapacity(options);
+  }
+  if (node_count == 1) {
+    return 1;
+  }
+  return std::min(node_count - 1, InitialGraphCapacity(options));
+}
+
 NNDescentOptions CandidateBuildOptions(const NSGIndexOptions& options) {
   NNDescentOptions builder_options;
   builder_options.max_degree = options.knn_degree;
@@ -325,7 +335,8 @@ void IndexNSG::RestoreState(InMemoryCodeStore code_store,
       code_store.CodeSize() == quantizer_->CodeSize(),
       "IndexNSG::RestoreState: code size does not match the quantizer");
   HYPERVEC_THROW_IF_NOT_MSG(
-      graph.MaxDegree() == options_.max_degree,
+      graph.MaxDegree() ==
+          GraphCapacity(options_, static_cast<size_t>(restored_total)),
       "IndexNSG::RestoreState: graph max degree does not match the options");
   HYPERVEC_THROW_IF_NOT_MSG(
       graph.NodeCount() == static_cast<size_t>(restored_total),

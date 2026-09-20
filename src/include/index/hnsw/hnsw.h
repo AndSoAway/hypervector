@@ -163,11 +163,11 @@ struct HNSW {
 
   // methods that initialize the tree sizes
 
-  /// initialize the assign_probas and cum_nneighbor_per_level to
-  /// have 2*M links on level 0 and M links on levels > 0
+  /// replace assign_probas and cum_nneighbor_per_level with a validated table
+  /// having 2*M links on level 0 and M links on levels > 0
   void SetDefaultProbas(int M, float levelMult);
 
-  /// set nb of neighbors for this level (before adding anything)
+  /// set a positive nb of neighbors for this level (before adding anything)
   void SetNbNeighbors(int level_no, int n);
 
   // methods that access the tree sizes

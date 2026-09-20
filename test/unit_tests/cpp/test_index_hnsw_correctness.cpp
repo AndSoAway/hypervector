@@ -286,6 +286,46 @@ void ExpectCompressedPermutation(hypervec::IndexHNSW* index,
 
 }  // namespace
 
+TEST(IndexHNSWCorrectness, ConstructionRejectsInvalidGraphParameters) {
+  EXPECT_THROW((hypervec::HNSW(0)), hypervec::HypervecException);
+  EXPECT_THROW((hypervec::HNSW(1)), hypervec::HypervecException);
+  EXPECT_THROW((hypervec::HNSW(-1)), hypervec::HypervecException);
+  EXPECT_THROW((hypervec::HNSW(std::numeric_limits<int>::max())),
+               hypervec::HypervecException);
+  EXPECT_THROW((hypervec::IndexHNSW(nullptr, 8)), hypervec::HypervecException);
+  EXPECT_THROW((hypervec::IndexHNSWFlat(4, 1)), hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, LayoutReconfigurationIsValidatedAndTransactional) {
+  hypervec::HNSW graph(4);
+  const auto probabilities = graph.assign_probas;
+  const auto capacities = graph.cum_nneighbor_per_level;
+
+  EXPECT_THROW(graph.SetDefaultProbas(1, 1.0F), hypervec::HypervecException);
+  EXPECT_THROW(
+      graph.SetDefaultProbas(4, std::numeric_limits<float>::infinity()),
+      hypervec::HypervecException);
+  EXPECT_EQ(graph.assign_probas, probabilities);
+  EXPECT_EQ(graph.cum_nneighbor_per_level, capacities);
+
+  graph.SetDefaultProbas(8, static_cast<float>(1.0 / std::log(8.0)));
+  EXPECT_EQ(graph.NbNeighbors(0), 16);
+  EXPECT_EQ(graph.NbNeighbors(1), 8);
+
+  const auto updated_capacities = graph.cum_nneighbor_per_level;
+  EXPECT_THROW(graph.NbNeighbors(-1), hypervec::HypervecException);
+  EXPECT_THROW(graph.SetNbNeighbors(0, 0), hypervec::HypervecException);
+  EXPECT_THROW(graph.SetNbNeighbors(0, std::numeric_limits<int>::max()),
+               hypervec::HypervecException);
+  EXPECT_EQ(graph.cum_nneighbor_per_level, updated_capacities);
+
+  graph.SetNbNeighbors(0, 12);
+  EXPECT_EQ(graph.NbNeighbors(0), 12);
+  EXPECT_EQ(graph.NbNeighbors(1), 8);
+  graph.PrepareLevelTab(1);
+  EXPECT_THROW(graph.SetNbNeighbors(0, 16), hypervec::HypervecException);
+}
+
 TEST(IndexHNSWCorrectness, SearchReleasesDistanceComputerAfterException) {
   int destruction_count = 0;
   ThrowingSearchStorage storage(&destruction_count);

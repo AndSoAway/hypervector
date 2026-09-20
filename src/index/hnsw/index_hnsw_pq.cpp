@@ -26,8 +26,8 @@ IndexHNSWPQ::IndexHNSWPQ(int d, int M_pq, int nbits, int M_hnsw,
                             "metric=%d",
                             static_cast<int>(metric));
   storage = new IndexPQ(d, M_pq, nbits, kMetricL2);
-  raw_storage = new IndexFlatL2(d);
   own_fields = true;
+  raw_storage = new IndexFlatL2(d);
   is_trained = false;
 }
 

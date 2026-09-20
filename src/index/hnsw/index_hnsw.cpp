@@ -503,6 +503,13 @@ class GraphAppendGuard {
   bool committed_ = false;
 };
 
+const Index& RequireHnswStorage(const Index* storage) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW: storage must not be null during construction");
+  return *storage;
+}
+
 }  // namespace
 
 /**************************************************************
@@ -513,7 +520,10 @@ IndexHNSW::IndexHNSW(int d, int M, MetricType metric)
   : Index(d, metric), hnsw(M), storage(nullptr) {}
 
 IndexHNSW::IndexHNSW(Index* storage, int M)
-  : Index(storage->d, storage->metric_type), hnsw(M), storage(storage) {
+    : Index(RequireHnswStorage(storage).d,
+            RequireHnswStorage(storage).metric_type),
+      hnsw(M),
+      storage(storage) {
   metric_arg = storage->metric_arg;
   is_trained = storage->is_trained;
 }
@@ -1190,7 +1200,8 @@ static Index* make_hnsw_flat_storage(int d, MetricType metric) {
 }
 
 IndexHNSWFlat::IndexHNSWFlat(int d, int M, MetricType metric)
-  : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
+    : IndexHNSW(d, M, metric) {
+  storage = make_hnsw_flat_storage(d, metric);
   own_fields = true;
   is_trained = true;
 }

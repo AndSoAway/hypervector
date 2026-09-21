@@ -118,6 +118,28 @@ TEST(OPQMatrix, ReducesProductQuantizationErrorOnCorrelatedData) {
   EXPECT_LT(optimized_error, plain_error * 0.95);
 }
 
+TEST(OPQMatrix, BoundedTrainingSamplesDeterministicallyAndValidatesAllRows) {
+  const std::vector<float> data = CorrelatedTrainingData(256);
+  hypervec::OPQMatrix first(8, 4, 2);
+  first.parameters.iterations = 2;
+  first.parameters.pq_parameters.niter = 5;
+  first.parameters.max_training_rows = 32;
+  hypervec::OPQMatrix second(8, 4, 2);
+  second.parameters = first.parameters;
+  first.Train(256, data.data());
+  second.Train(256, data.data());
+  EXPECT_EQ(first.matrix, second.matrix);
+  std::vector<float> invalid = data;
+  invalid.back() = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(first.Train(256, invalid.data()), hypervec::HypervecException);
+  EXPECT_EQ(first.matrix, second.matrix);
+
+  first.parameters.max_training_rows = -1;
+  EXPECT_THROW(first.Train(256, data.data()), hypervec::HypervecException);
+  first.parameters.max_training_rows = 2;
+  EXPECT_THROW(first.Train(256, data.data()), hypervec::HypervecException);
+}
+
 TEST(OPQMatrix, FailedRetrainingPreservesUsableState) {
   constexpr hypervec::idx_t n = 64;
   std::vector<float> data = CorrelatedTrainingData(n);
@@ -137,6 +159,7 @@ TEST(OPQMatrix, ValidatesConstructionAndTrainingOptions) {
   EXPECT_THROW(hypervec::OPQMatrix(8, 0, 2), hypervec::HypervecException);
   EXPECT_THROW(hypervec::OPQMatrix(7, 4, 2), hypervec::HypervecException);
   EXPECT_THROW(hypervec::OPQMatrix(8, 4, 0), hypervec::HypervecException);
+  EXPECT_GE(hypervec::OPQMatrix(8, 4, 16).parameters.max_training_rows, 65536);
 
   hypervec::OPQMatrix opq(8, 4, 2);
   opq.parameters.iterations = 0;

@@ -162,6 +162,12 @@ std::unique_ptr<Index> MakeOPQPQ(const IndexConfig& config) {
   const int opq_iterations = PositiveIntParameter(config, "opq_iterations", 8);
   auto opq = std::make_unique<OPQMatrix>(config.dimension, m_pq, nbits);
   opq->parameters.iterations = opq_iterations;
+  const int64_t training_rows =
+      config.GetInteger("opq_training_rows", opq->parameters.max_training_rows);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      training_rows >= 0,
+      "index parameter 'opq_training_rows' must be non-negative");
+  opq->parameters.max_training_rows = training_rows;
   auto pq = std::make_unique<IndexPQ>(config.dimension, m_pq, nbits,
                                       config.metric_type);
   return std::make_unique<IndexPreTransform>(std::move(opq), std::move(pq));
@@ -415,9 +421,10 @@ void RegisterBuiltins(IndexRegistry* registry) {
       MakeDiskANN);
   registry->Register({"flat", {"IndexFlat"}, {}}, MakeFlat);
   registry->Register({"pq", {"IndexPQ"}, {"m_pq", "nbits"}}, MakePQ);
-  registry->Register(
-      {"opq_pq", {"opqpq", "IndexOPQPQ"}, {"m_pq", "nbits", "opq_iterations"}},
-      MakeOPQPQ);
+  registry->Register({"opq_pq",
+                      {"opqpq", "IndexOPQPQ"},
+                      {"m_pq", "nbits", "opq_iterations", "opq_training_rows"}},
+                     MakeOPQPQ);
   registry->Register({"lvq", {"IndexLVQ"}, {"nlocal", "nbits"}}, MakeLVQ);
   registry->Register(
       {"ivf_flat", {"ivf", "ivfflat", "IndexIVFFlat"}, {"nlist"}}, MakeIVFFlat);

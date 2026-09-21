@@ -245,7 +245,8 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   hypervec::IndexConfig opq_config("opq_pq", 12);
   opq_config.SetInteger("m_pq", 3)
       .SetInteger("nbits", 4)
-      .SetInteger("opq_iterations", 5);
+      .SetInteger("opq_iterations", 5)
+      .SetInteger("opq_training_rows", 1024);
   auto opq_base = hypervec::CreateIndex(opq_config);
   auto* opq_index = dynamic_cast<hypervec::IndexPreTransform*>(opq_base.get());
   ASSERT_NE(opq_index, nullptr);
@@ -256,6 +257,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(opq->subquantizer_count, 3);
   EXPECT_EQ(opq->nbits, 4);
   EXPECT_EQ(opq->parameters.iterations, 5);
+  EXPECT_EQ(opq->parameters.max_training_rows, 1024);
   EXPECT_EQ(opq_pq->pq.M, 3);
   EXPECT_EQ(opq_pq->pq.nbits, 4);
 

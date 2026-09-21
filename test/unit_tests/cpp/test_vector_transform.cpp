@@ -11,6 +11,7 @@
 #include <utils/log/exception.h>
 
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -47,6 +48,31 @@ TEST(VectorTransform, OrthogonalAffineTransformRoundtrips) {
   for (size_t i = 0; i < input.size(); ++i) {
     EXPECT_NEAR(restored[i], input[i], 1e-6F);
   }
+}
+
+TEST(VectorTransform, LargeParallelBatchMatchesIndividualAndInPlaceRows) {
+  constexpr hypervec::idx_t dimension = 64;
+  constexpr hypervec::idx_t count = 256;
+  hypervec::LinearTransform linear(dimension, dimension);
+  std::vector<float> rotation(dimension * dimension, 0.0F);
+  for (hypervec::idx_t row = 0; row < dimension; row += 2) {
+    rotation[row * dimension + row + 1] = -1.0F;
+    rotation[(row + 1) * dimension + row] = 1.0F;
+  }
+  linear.SetTransform(std::move(rotation), {}, true);
+  std::vector<float> values(count * dimension);
+  for (size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<float>(i % 57) / 11.0F;
+  }
+  const auto batch = linear.Apply(count, values.data());
+  for (hypervec::idx_t row = 0; row < count; ++row) {
+    const auto single = linear.Apply(1, values.data() + row * dimension);
+    for (hypervec::idx_t column = 0; column < dimension; ++column) {
+      EXPECT_FLOAT_EQ(batch[row * dimension + column], single[column]);
+    }
+  }
+  linear.Apply(count, values.data(), values.data());
+  EXPECT_EQ(values, batch);
 }
 
 TEST(VectorTransform, GeneralLinearTransformHasNoImplicitInverse) {

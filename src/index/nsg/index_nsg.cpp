@@ -51,6 +51,7 @@ NNDescentOptions CandidateBuildOptions(const NSGIndexOptions& options) {
   NNDescentOptions builder_options;
   builder_options.max_degree = options.knn_degree;
   builder_options.max_iterations = options.nn_descent_iterations;
+  builder_options.build_threads = options.build_threads;
   builder_options.convergence_threshold =
       options.nn_descent_convergence_threshold;
   builder_options.random_seed = options.random_seed;
@@ -60,6 +61,7 @@ NNDescentOptions CandidateBuildOptions(const NSGIndexOptions& options) {
 NSGBuildOptions GraphBuildOptions(const NSGIndexOptions& options) {
   NSGBuildOptions builder_options;
   builder_options.max_degree = options.max_degree;
+  builder_options.build_threads = options.build_threads;
   builder_options.search_width = options.build_search_width;
   builder_options.candidate_pool_size = options.candidate_pool_size;
   builder_options.check_relative_distance = options.check_relative_distance;
@@ -202,11 +204,17 @@ void IndexNSG::Build(idx_t n, const float* x) {
       MakeTraversalDistance(*quantizer_, staged_store.View());
   NSGIndexBuildStats staged_stats;
   MutableBoundedGraph candidate_graph = candidate_builder_.Build(
-      *distance, static_cast<size_t>(n), &staged_stats.candidate_graph);
+      *distance, static_cast<size_t>(n), &staged_stats.candidate_graph,
+      [this, &staged_store] {
+        return MakeTraversalDistance(*quantizer_, staged_store.View());
+      });
   const GraphId staged_entry_point =
       SelectNavigationPoint(n, d, x, distance.get());
   MutableBoundedGraph staged_graph = nsg_builder_.Build(
-      candidate_graph, *distance, staged_entry_point, &staged_stats.nsg);
+      candidate_graph, *distance, staged_entry_point, &staged_stats.nsg,
+      [this, &staged_store] {
+        return MakeTraversalDistance(*quantizer_, staged_store.View());
+      });
   const GraphValidationReport report =
       ValidateGraph(staged_graph, staged_entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(

@@ -55,6 +55,7 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("candidate_limit", 8)
       .SetInteger("knn_degree", 4)
       .SetInteger("nn_descent_iterations", 3)
+      .SetInteger("build_threads", 2)
       .SetDouble("nn_descent_convergence_threshold", 0.01)
       .SetInteger("random_seed", 7)
       .SetInteger("max_degree", 4)
@@ -292,6 +293,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   hypervec::IndexConfig nsg_config("nsg_flat", 12);
   nsg_config.SetInteger("knn_degree", 9)
       .SetInteger("nn_descent_iterations", 6)
+      .SetInteger("build_threads", 32)
       .SetDouble("nn_descent_convergence_threshold", 0.02)
       .SetInteger("random_seed", 17)
       .SetInteger("max_degree", 7)
@@ -304,6 +306,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   ASSERT_NE(nsg, nullptr);
   EXPECT_EQ(nsg->Options().knn_degree, 9U);
   EXPECT_EQ(nsg->Options().nn_descent_iterations, 6U);
+  EXPECT_EQ(nsg->Options().build_threads, 32U);
   EXPECT_DOUBLE_EQ(nsg->Options().nn_descent_convergence_threshold, 0.02);
   EXPECT_EQ(nsg->Options().random_seed, 17U);
   EXPECT_EQ(nsg->Options().max_degree, 7U);

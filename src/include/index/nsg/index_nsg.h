@@ -30,6 +30,8 @@ struct SearchParametersNSG : SearchParameters {
 struct NSGIndexOptions {
   size_t knn_degree = 64;
   size_t nn_descent_iterations = 30;
+  /** Build-only hint, deliberately not serialized with the graph. */
+  size_t build_threads = 1;
   double nn_descent_convergence_threshold = 0.001;
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
   size_t max_degree = 32;

@@ -9,11 +9,16 @@
 #include <index/graph/neighbor_pruner.h>
 #include <index/graph/nn_descent_builder.h>
 #include <index/graph/visited_table.h>
+#include <omp.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <random>
 #include <utility>
 #include <vector>
@@ -116,6 +121,132 @@ size_t SampleBounded(std::mt19937_64* random, size_t bound) {
   return static_cast<size_t>(sample % unsigned_bound);
 }
 
+struct JoinedPair {
+  GraphId first;
+  GraphId second;
+  float distance;
+};
+
+std::vector<JoinedPair> JoinSamples(const SampleList& recent,
+                                    const SampleList& previous,
+                                    DistanceComputer& distance) {
+  std::vector<JoinedPair> pairs;
+  for (size_t lhs = 0; lhs < recent.size(); ++lhs) {
+    const GraphId first = recent[lhs].id;
+    for (size_t rhs = 0; rhs < lhs; ++rhs) {
+      const GraphId second = recent[rhs].id;
+      if (first != second) {
+        const float value = distance.symmetric_dis(first, second);
+        ValidateDistance(value);
+        pairs.push_back({first, second, value});
+      }
+    }
+    for (const NeighborCandidate& old : previous) {
+      const GraphId second = old.id;
+      if (first != second) {
+        const float value = distance.symmetric_dis(first, second);
+        ValidateDistance(value);
+        pairs.push_back({first, second, value});
+      }
+    }
+  }
+  return pairs;
+}
+
+// Evaluate independent distances in parallel, but replay each pivot's pairs
+// in the original order. The graph and stats remain stable across thread
+// counts.
+bool RefineParallel(const std::vector<SampleList>& recent,
+                    const std::vector<SampleList>& previous, size_t degree,
+                    size_t sample_limit, size_t requested_threads,
+                    const NNDescentBuilder::DistanceFactory& factory,
+                    std::vector<NeighborList>* refined, NNDescentStats* stats) {
+  constexpr size_t kPairBudget = (64U * 1024U * 1024U) / sizeof(JoinedPair);
+  const size_t worst_pairs =
+      sample_limit > 0 && sample_limit > kPairBudget / sample_limit / 2
+          ? kPairBudget
+          : std::max(size_t{1}, size_t{2} * sample_limit * sample_limit);
+  const size_t block_size =
+      std::min({recent.size(), std::max(size_t{1}, kPairBudget / worst_pairs),
+                requested_threads * size_t{4}});
+  const size_t worker_count = std::min(requested_threads, block_size);
+  if (worker_count < 2) {
+    return false;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      static_cast<bool>(factory),
+      "NNDescentBuilder: parallel build requires a distance factory");
+  std::vector<std::unique_ptr<DistanceComputer>> worker_distances;
+  worker_distances.reserve(worker_count);
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    worker_distances.push_back(factory());
+    HYPERVEC_THROW_IF_NOT_MSG(
+        worker_distances.back() != nullptr,
+        "NNDescentBuilder: distance factory returned null");
+  }
+
+  std::vector<std::vector<JoinedPair>> pending(block_size);
+  std::exception_ptr error;
+  std::mutex error_mutex;
+  std::atomic<bool> failed{false};
+  const auto record_error = [&] {
+    std::lock_guard<std::mutex> guard(error_mutex);
+    if (error == nullptr) {
+      error = std::current_exception();
+    }
+    failed.store(true);
+  };
+#pragma omp parallel num_threads(static_cast<int>(worker_count))
+  {
+    DistanceComputer& distance = *worker_distances[omp_get_thread_num()];
+    for (size_t first = 0; first < recent.size(); first += block_size) {
+      const auto count = static_cast<std::ptrdiff_t>(
+          std::min(block_size, recent.size() - first));
+#pragma omp for schedule(static)
+      for (std::ptrdiff_t offset = 0; offset < count; ++offset) {
+        if (!failed.load()) {
+          try {
+            const size_t pivot = first + static_cast<size_t>(offset);
+            pending[static_cast<size_t>(offset)] =
+                JoinSamples(recent[pivot], previous[pivot], distance);
+          } catch (...) {
+            record_error();
+          }
+        }
+      }
+#pragma omp single
+      {
+        if (!failed.load()) {
+          try {
+            for (std::ptrdiff_t offset = 0; offset < count; ++offset) {
+              for (const JoinedPair& pair :
+                   pending[static_cast<size_t>(offset)]) {
+                InsertCandidate(pair.first, {pair.second, pair.distance, false},
+                                degree,
+                                &(*refined)[static_cast<size_t>(pair.first)]);
+                InsertCandidate(pair.second, {pair.first, pair.distance, false},
+                                degree,
+                                &(*refined)[static_cast<size_t>(pair.second)]);
+                ++stats->refinement_distance_computations;
+              }
+              pending[static_cast<size_t>(offset)].clear();
+            }
+          } catch (...) {
+            record_error();
+          }
+        }
+      }
+      if (failed.load()) {
+        break;
+      }
+    }
+  }
+  if (error != nullptr) {
+    std::rethrow_exception(error);
+  }
+  return true;
+}
+
 }  // namespace
 
 void NNDescentStats::Reset() noexcept { *this = {}; }
@@ -149,11 +280,22 @@ NNDescentBuilder::NNDescentBuilder(NNDescentOptions options)
                                 options_.sample_rate > 0.0 &&
                                 options_.sample_rate <= 1.0,
                             "NNDescentBuilder: sample_rate must be in (0, 1]");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options_.build_threads > 0 &&
+          options_.build_threads <=
+              static_cast<size_t>(std::numeric_limits<int>::max()),
+      "NNDescentBuilder: build_threads must be in [1, INT_MAX]");
 }
 
 MutableBoundedGraph NNDescentBuilder::Build(DistanceComputer& distance,
                                             size_t node_count,
                                             NNDescentStats* stats) const {
+  return Build(distance, node_count, stats, {});
+}
+
+MutableBoundedGraph NNDescentBuilder::Build(
+    DistanceComputer& distance, size_t node_count, NNDescentStats* stats,
+    const DistanceFactory& distance_factory) const {
   constexpr size_t kGraphCapacity =
       static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -242,38 +384,45 @@ MutableBoundedGraph NNDescentBuilder::Build(DistanceComputer& distance,
 
     std::vector<NeighborList> refined = neighborhoods;
     size_t iteration_updates = 0;
-    for (size_t pivot = 0; pivot < node_count; ++pivot) {
-      const SampleList& sampled_new = new_samples[pivot];
-      const SampleList& sampled_old = old_samples[pivot];
-      for (size_t lhs = 0; lhs < sampled_new.size(); ++lhs) {
-        const GraphId first = sampled_new[lhs].id;
-        for (size_t rhs = 0; rhs < lhs; ++rhs) {
-          const GraphId second = sampled_new[rhs].id;
-          if (first == second) {
-            continue;
+    const bool parallel =
+        options_.build_threads > 1 &&
+        RefineParallel(new_samples, old_samples, degree, sample_limit,
+                       options_.build_threads, distance_factory, &refined,
+                       &local_stats);
+    if (!parallel) {
+      for (size_t pivot = 0; pivot < node_count; ++pivot) {
+        const SampleList& sampled_new = new_samples[pivot];
+        const SampleList& sampled_old = old_samples[pivot];
+        for (size_t lhs = 0; lhs < sampled_new.size(); ++lhs) {
+          const GraphId first = sampled_new[lhs].id;
+          for (size_t rhs = 0; rhs < lhs; ++rhs) {
+            const GraphId second = sampled_new[rhs].id;
+            if (first == second) {
+              continue;
+            }
+            const float candidate_distance =
+                distance.symmetric_dis(first, second);
+            ValidateDistance(candidate_distance);
+            InsertCandidate(first, {second, candidate_distance, false}, degree,
+                            &refined[static_cast<size_t>(first)]);
+            InsertCandidate(second, {first, candidate_distance, false}, degree,
+                            &refined[static_cast<size_t>(second)]);
+            ++local_stats.refinement_distance_computations;
           }
-          const float candidate_distance =
-              distance.symmetric_dis(first, second);
-          ValidateDistance(candidate_distance);
-          InsertCandidate(first, {second, candidate_distance, false}, degree,
-                          &refined[static_cast<size_t>(first)]);
-          InsertCandidate(second, {first, candidate_distance, false}, degree,
-                          &refined[static_cast<size_t>(second)]);
-          ++local_stats.refinement_distance_computations;
-        }
-        for (const NeighborCandidate& old : sampled_old) {
-          const GraphId second = old.id;
-          if (first == second) {
-            continue;
+          for (const NeighborCandidate& old : sampled_old) {
+            const GraphId second = old.id;
+            if (first == second) {
+              continue;
+            }
+            const float candidate_distance =
+                distance.symmetric_dis(first, second);
+            ValidateDistance(candidate_distance);
+            InsertCandidate(first, {second, candidate_distance, false}, degree,
+                            &refined[static_cast<size_t>(first)]);
+            InsertCandidate(second, {first, candidate_distance, false}, degree,
+                            &refined[static_cast<size_t>(second)]);
+            ++local_stats.refinement_distance_computations;
           }
-          const float candidate_distance =
-              distance.symmetric_dis(first, second);
-          ValidateDistance(candidate_distance);
-          InsertCandidate(first, {second, candidate_distance, false}, degree,
-                          &refined[static_cast<size_t>(first)]);
-          InsertCandidate(second, {first, candidate_distance, false}, degree,
-                          &refined[static_cast<size_t>(second)]);
-          ++local_stats.refinement_distance_computations;
         }
       }
     }

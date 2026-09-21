@@ -9,12 +9,17 @@
 #include <index/graph/graph_validation.h>
 #include <index/graph/nsg_builder.h>
 #include <index/graph/visited_table.h>
+#include <omp.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <queue>
 #include <utility>
 #include <vector>
@@ -78,6 +83,48 @@ void AddCandidate(const NeighborCandidate& candidate, VisitedTable* pooled,
   }
 }
 
+void BuildDirectedNeighbors(
+    const GraphStorage& candidate_graph, const GraphSearcher& searcher,
+    GraphId navigation_point, size_t node, size_t pruned_degree,
+    const NSGBuildOptions& options, const HnswHeuristicPruner& pruner,
+    DistanceComputer& distance, VisitedTable* searched, VisitedTable* pooled,
+    NeighborList* neighbors, NSGBuildStats* stats) {
+  NodeQueryDistanceComputer query_distance(distance,
+                                           static_cast<GraphId>(node));
+  const std::array<GraphId, 1> entry_points = {navigation_point};
+  const std::vector<GraphSearchResult> search_results = searcher.Search(
+      query_distance, entry_points,
+      GraphSearchOptions{options.search_width, options.check_relative_distance,
+                         nullptr},
+      searched, &stats->search);
+
+  const GraphNeighborList original_neighbors =
+      candidate_graph.Neighbors(static_cast<GraphId>(node));
+  NeighborList candidates;
+  candidates.reserve(add_no_overflow(search_results.size(),
+                                     original_neighbors.size(),
+                                     "NSGBuilder candidate pool"));
+  pooled->set(node);
+  for (const GraphSearchResult& result : search_results) {
+    AddCandidate({result.id, ValidateDistance(result.distance)}, pooled,
+                 &candidates);
+  }
+  for (GraphId neighbor : original_neighbors) {
+    if (pooled->set(static_cast<size_t>(neighbor))) {
+      candidates.push_back({neighbor, query_distance(neighbor)});
+      ++stats->candidate_distance_computations;
+    }
+  }
+  std::sort(candidates.begin(), candidates.end(), CandidateOrder);
+  if (candidates.size() > options.candidate_pool_size) {
+    candidates.resize(options.candidate_pool_size);
+  }
+  *neighbors =
+      pruner.Prune(candidates, pruned_degree, query_distance, &stats->pruning);
+  ++stats->pruned_nodes;
+  pooled->advance();
+}
+
 void MarkReachable(const std::vector<NeighborList>& neighborhoods,
                    GraphId entry_point, std::vector<bool>* reachable,
                    size_t* reachable_count,
@@ -137,12 +184,24 @@ NSGBuilder::NSGBuilder(NSGBuildOptions options)
   HYPERVEC_THROW_IF_NOT_MSG(
       options_.candidate_pool_size >= options_.max_degree,
       "NSGBuilder: candidate_pool_size must cover max_degree");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options_.build_threads > 0 &&
+          options_.build_threads <=
+              static_cast<size_t>(std::numeric_limits<int>::max()),
+      "NSGBuilder: build_threads must be in [1, INT_MAX]");
 }
 
 MutableBoundedGraph NSGBuilder::Build(const GraphStorage& candidate_graph,
                                       DistanceComputer& distance,
                                       GraphId navigation_point,
                                       NSGBuildStats* stats) const {
+  return Build(candidate_graph, distance, navigation_point, stats, {});
+}
+
+MutableBoundedGraph NSGBuilder::Build(
+    const GraphStorage& candidate_graph, DistanceComputer& distance,
+    GraphId navigation_point, NSGBuildStats* stats,
+    const DistanceFactory& distance_factory) const {
   const size_t node_count = candidate_graph.NodeCount();
   constexpr size_t kGraphCapacity =
       static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
@@ -178,43 +237,65 @@ MutableBoundedGraph NSGBuilder::Build(const GraphStorage& candidate_graph,
 
   std::vector<NeighborList> neighborhoods(node_count);
   const GraphSearcher searcher(candidate_graph);
-  VisitedTable searched(node_count, false);
-  VisitedTable pooled(node_count, false);
-  const std::array<GraphId, 1> entry_points = {navigation_point};
-  for (size_t node = 0; node < node_count; ++node) {
-    NodeQueryDistanceComputer query_distance(distance,
-                                             static_cast<GraphId>(node));
-    const std::vector<GraphSearchResult> search_results = searcher.Search(
-        query_distance, entry_points,
-        GraphSearchOptions{options_.search_width,
-                           options_.check_relative_distance, nullptr},
-        &searched, &local_stats.search);
-
-    const GraphNeighborList original_neighbors =
-        candidate_graph.Neighbors(static_cast<GraphId>(node));
-    NeighborList candidates;
-    candidates.reserve(add_no_overflow(search_results.size(),
-                                       original_neighbors.size(),
-                                       "NSGBuilder candidate pool"));
-    pooled.set(node);
-    for (const GraphSearchResult& result : search_results) {
-      AddCandidate({result.id, ValidateDistance(result.distance)}, &pooled,
-                   &candidates);
+  const size_t workers = std::min(options_.build_threads, node_count);
+  if (workers == 1) {
+    VisitedTable searched(node_count, false);
+    VisitedTable pooled(node_count, false);
+    for (size_t node = 0; node < node_count; ++node) {
+      BuildDirectedNeighbors(candidate_graph, searcher, navigation_point, node,
+                             pruned_degree, options_, pruner_, distance,
+                             &searched, &pooled, &neighborhoods[node],
+                             &local_stats);
     }
-    for (GraphId neighbor : original_neighbors) {
-      if (pooled.set(static_cast<size_t>(neighbor))) {
-        candidates.push_back({neighbor, query_distance(neighbor)});
-        ++local_stats.candidate_distance_computations;
+  } else {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        static_cast<bool>(distance_factory),
+        "NSGBuilder: parallel build requires a distance factory");
+    std::vector<std::unique_ptr<DistanceComputer>> distances;
+    std::vector<std::unique_ptr<VisitedTable>> searched;
+    std::vector<std::unique_ptr<VisitedTable>> pooled;
+    distances.reserve(workers);
+    searched.reserve(workers);
+    pooled.reserve(workers);
+    for (size_t worker = 0; worker < workers; ++worker) {
+      distances.push_back(distance_factory());
+      HYPERVEC_THROW_IF_NOT_MSG(distances.back() != nullptr,
+                                "NSGBuilder: distance factory returned null");
+      searched.push_back(std::make_unique<VisitedTable>(node_count, false));
+      pooled.push_back(std::make_unique<VisitedTable>(node_count, false));
+    }
+    std::vector<NSGBuildStats> worker_stats(workers);
+    std::exception_ptr error;
+    std::mutex error_mutex;
+    std::atomic<bool> failed{false};
+#pragma omp parallel for num_threads(static_cast<int>(workers)) \
+    schedule(dynamic, 8)
+    for (std::ptrdiff_t node = 0;
+         node < static_cast<std::ptrdiff_t>(node_count); ++node) {
+      if (failed.load()) {
+        continue;
+      }
+      const size_t worker = static_cast<size_t>(omp_get_thread_num());
+      try {
+        BuildDirectedNeighbors(
+            candidate_graph, searcher, navigation_point,
+            static_cast<size_t>(node), pruned_degree, options_, pruner_,
+            *distances[worker], searched[worker].get(), pooled[worker].get(),
+            &neighborhoods[static_cast<size_t>(node)], &worker_stats[worker]);
+      } catch (...) {
+        std::lock_guard<std::mutex> guard(error_mutex);
+        if (error == nullptr) {
+          error = std::current_exception();
+        }
+        failed.store(true);
       }
     }
-    std::sort(candidates.begin(), candidates.end(), CandidateOrder);
-    if (candidates.size() > options_.candidate_pool_size) {
-      candidates.resize(options_.candidate_pool_size);
+    if (error != nullptr) {
+      std::rethrow_exception(error);
     }
-    neighborhoods[node] = pruner_.Prune(candidates, pruned_degree,
-                                        query_distance, &local_stats.pruning);
-    ++local_stats.pruned_nodes;
-    pooled.advance();
+    for (const NSGBuildStats& per_worker : worker_stats) {
+      local_stats.Combine(per_worker);
+    }
   }
 
   const std::vector<NeighborList> directed = neighborhoods;

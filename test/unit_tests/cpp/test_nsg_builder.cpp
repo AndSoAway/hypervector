@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -150,6 +151,57 @@ TEST(NSGBuilder, RepairsDirectedConnectivityDeterministically) {
     EXPECT_EQ(CopyNeighbors(first, static_cast<hypervec::GraphId>(node)),
               CopyNeighbors(repeated, static_cast<hypervec::GraphId>(node)));
   }
+}
+
+TEST(NSGBuilder, ParallelPruningPreservesGraphAndStats) {
+  const std::vector<float> values = {0, 1, 2, 3, 100, 101, 102, 103};
+  const auto candidates = MakeDisconnectedCandidateGraph();
+  hypervec::NSGBuildOptions options{1, 4, 6, true};
+  ScalarDistanceComputer serial_distance(values);
+  hypervec::NSGBuildStats baseline_stats;
+  const auto baseline = hypervec::NSGBuilder(options).Build(
+      candidates, serial_distance, 0, &baseline_stats);
+
+  for (size_t threads : {size_t{4}, size_t{32}}) {
+    options.build_threads = threads;
+    ScalarDistanceComputer distance(values);
+    hypervec::NSGBuildStats stats;
+    const auto graph = hypervec::NSGBuilder(options).Build(
+        candidates, distance, 0, &stats,
+        [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+    EXPECT_EQ(stats.pruned_nodes, baseline_stats.pruned_nodes);
+    EXPECT_EQ(stats.search.distance_computations,
+              baseline_stats.search.distance_computations);
+    EXPECT_EQ(stats.pruning.distance_computations,
+              baseline_stats.pruning.distance_computations);
+    EXPECT_EQ(stats.reciprocal_edges_added,
+              baseline_stats.reciprocal_edges_added);
+    EXPECT_EQ(stats.connectivity_edges_added,
+              baseline_stats.connectivity_edges_added);
+    for (size_t node = 0; node < values.size(); ++node) {
+      EXPECT_EQ(CopyNeighbors(graph, static_cast<hypervec::GraphId>(node)),
+                CopyNeighbors(baseline, static_cast<hypervec::GraphId>(node)));
+    }
+  }
+}
+
+TEST(NSGBuilder, ParallelFailuresDoNotPublishStats) {
+  const std::vector<float> values = {0, 1, 2, 3, 100, 101, 102, 103};
+  const auto candidates = MakeDisconnectedCandidateGraph();
+  hypervec::NSGBuildOptions options{1, 4, 6, true};
+  options.build_threads = 4;
+  hypervec::NSGBuilder builder(options);
+  ScalarDistanceComputer distance(values);
+  hypervec::NSGBuildStats stats;
+  stats.pruned_nodes = 9;
+  EXPECT_THROW(builder.Build(candidates, distance, 0, &stats),
+               hypervec::HypervecException);
+  EXPECT_EQ(stats.pruned_nodes, 9U);
+  EXPECT_THROW(
+      builder.Build(candidates, distance, 0, &stats,
+                    [] { return std::make_unique<NaNDistanceComputer>(); }),
+      hypervec::HypervecException);
+  EXPECT_EQ(stats.pruned_nodes, 9U);
 }
 
 TEST(NSGBuilder, PrunesDenseCandidatesAndBoundsReciprocalEdges) {

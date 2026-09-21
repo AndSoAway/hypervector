@@ -300,6 +300,8 @@ std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
       static_cast<size_t>(PositiveIntParameter(config, "knn_degree", 64));
   options.nn_descent_iterations = static_cast<size_t>(
       PositiveIntParameter(config, "nn_descent_iterations", 30));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   options.nn_descent_convergence_threshold =
       config.GetDouble("nn_descent_convergence_threshold", 0.001);
   if (config.HasParameter("random_seed")) {
@@ -442,7 +444,7 @@ void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register(
       {"nsg_flat",
        {"nsg", "nsgflat", "IndexNSGFlat"},
-       {"knn_degree", "nn_descent_iterations",
+       {"knn_degree", "nn_descent_iterations", "build_threads",
         "nn_descent_convergence_threshold", "random_seed", "max_degree",
         "build_search_width", "candidate_pool_size", "ef_search",
         "check_relative_distance"}},

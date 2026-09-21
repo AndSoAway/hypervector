@@ -85,6 +85,43 @@ TEST(IndexNSG, FlatL2BuildsReachableGraphAndMatchesExhaustiveSearch) {
   ExpectSameSearch(expected, index, queries, 3);
 }
 
+TEST(IndexNSG, ParallelCandidateBuildPreservesSearchAndGraph) {
+  constexpr hypervec::idx_t kCount = 128;
+  std::vector<float> database(static_cast<size_t>(kCount));
+  for (hypervec::idx_t node = 0; node < kCount; ++node) {
+    database[static_cast<size_t>(node)] =
+        static_cast<float>((node * 37) % kCount);
+  }
+  auto options = ExhaustiveOptions();
+  hypervec::IndexNSGFlat baseline(1, hypervec::kMetricL2, options);
+  baseline.Build(kCount, database.data());
+
+  options.build_threads = 4;
+  hypervec::IndexNSGFlat parallel(1, hypervec::kMetricL2, options);
+  parallel.Build(kCount, database.data());
+  EXPECT_EQ(parallel.EntryPoint(), baseline.EntryPoint());
+  EXPECT_EQ(parallel.BuildStats().candidate_graph.neighbor_updates,
+            baseline.BuildStats().candidate_graph.neighbor_updates);
+  for (hypervec::idx_t node = 0; node < kCount; ++node) {
+    const auto serial_neighbors = baseline.Graph().Neighbors(node);
+    const auto parallel_neighbors = parallel.Graph().Neighbors(node);
+    EXPECT_TRUE(std::equal(serial_neighbors.begin(), serial_neighbors.end(),
+                           parallel_neighbors.begin(),
+                           parallel_neighbors.end()));
+  }
+  ExpectSameSearch(baseline, parallel, database, 5);
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&parallel, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  const auto restored = hypervec::ReadIndexUp(&reader);
+  const auto* restored_nsg =
+      dynamic_cast<const hypervec::IndexNSGFlat*>(restored.get());
+  ASSERT_NE(restored_nsg, nullptr);
+  EXPECT_EQ(restored_nsg->Options().build_threads, 1U);
+  ExpectSameSearch(parallel, *restored_nsg, database, 5);
+}
+
 TEST(IndexNSG, SimilaritySearchRestoresExternalDistanceDirection) {
   const std::vector<float> database = {
       1.0F, 0.0F, 0.0F, 2.0F, 2.0F, 1.0F, 3.0F, 4.0F, 1.0F, 3.0F, 6.0F, 2.0F,

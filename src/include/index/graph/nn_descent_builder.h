@@ -13,6 +13,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 
 namespace hypervec {
 
@@ -22,6 +24,8 @@ struct NNDescentOptions {
   double convergence_threshold = 0.001;
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
   double sample_rate = 0.2;
+  /** Parallel distance evaluations; the graph is still updated in order. */
+  size_t build_threads = 1;
 };
 
 struct NNDescentStats {
@@ -51,10 +55,16 @@ struct NNDescentStats {
  */
 class NNDescentBuilder {
  public:
+  using DistanceFactory = std::function<std::unique_ptr<DistanceComputer>()>;
+
   explicit NNDescentBuilder(NNDescentOptions options = {});
 
   MutableBoundedGraph Build(DistanceComputer& distance, size_t node_count,
                             NNDescentStats* stats = nullptr) const;
+
+  MutableBoundedGraph Build(DistanceComputer& distance, size_t node_count,
+                            NNDescentStats* stats,
+                            const DistanceFactory& distance_factory) const;
 
   const NNDescentOptions& Options() const noexcept { return options_; }
 

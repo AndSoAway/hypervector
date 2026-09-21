@@ -24,7 +24,8 @@ struct NNDescentOptions {
   double convergence_threshold = 0.001;
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
   double sample_rate = 0.2;
-  /** Parallel distance evaluations; the graph is still updated in order. */
+  /** Concurrent neighbor updates; builds with >1 thread may produce
+   * different valid graphs as thread scheduling changes. */
   size_t build_threads = 1;
 };
 

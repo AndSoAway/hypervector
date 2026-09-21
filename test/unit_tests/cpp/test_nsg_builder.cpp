@@ -153,7 +153,7 @@ TEST(NSGBuilder, RepairsDirectedConnectivityDeterministically) {
   }
 }
 
-TEST(NSGBuilder, ParallelPruningPreservesGraphAndStats) {
+TEST(NSGBuilder, ParallelPruningRetainsConnectivityAndDirectedWork) {
   const std::vector<float> values = {0, 1, 2, 3, 100, 101, 102, 103};
   const auto candidates = MakeDisconnectedCandidateGraph();
   hypervec::NSGBuildOptions options{1, 4, 6, true};
@@ -172,17 +172,34 @@ TEST(NSGBuilder, ParallelPruningPreservesGraphAndStats) {
     EXPECT_EQ(stats.pruned_nodes, baseline_stats.pruned_nodes);
     EXPECT_EQ(stats.search.distance_computations,
               baseline_stats.search.distance_computations);
-    EXPECT_EQ(stats.pruning.distance_computations,
-              baseline_stats.pruning.distance_computations);
-    EXPECT_EQ(stats.reciprocal_edges_added,
-              baseline_stats.reciprocal_edges_added);
-    EXPECT_EQ(stats.connectivity_edges_added,
-              baseline_stats.connectivity_edges_added);
-    for (size_t node = 0; node < values.size(); ++node) {
-      EXPECT_EQ(CopyNeighbors(graph, static_cast<hypervec::GraphId>(node)),
-                CopyNeighbors(baseline, static_cast<hypervec::GraphId>(node)));
-    }
+    const auto report = hypervec::ValidateGraph(graph, 0);
+    EXPECT_TRUE(report.IsStructurallyValid());
+    EXPECT_EQ(report.reachable_nodes, values.size());
+    EXPECT_EQ(graph.NodeCount(), baseline.NodeCount());
   }
+}
+
+TEST(NSGBuilder, ParallelReciprocalPruningPreservesReachableGraph) {
+  constexpr size_t kCount = 32;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>(node);
+  }
+  const auto candidates = MakeCompleteGraph(kCount);
+  hypervec::NSGBuildOptions options{1, 8, kCount, true};
+  options.build_threads = 8;
+  ScalarDistanceComputer distance(values);
+  hypervec::NSGBuildStats stats;
+  const auto graph = hypervec::NSGBuilder(options).Build(
+      candidates, distance, 16, &stats,
+      [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+
+  const auto report = hypervec::ValidateGraph(graph, 16);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, kCount);
+  EXPECT_EQ(stats.pruned_nodes, kCount);
+  EXPECT_LE(graph.MaxDegree(), options.max_degree + 1);
+  EXPECT_GT(stats.reciprocal_edges_added + stats.reciprocal_edges_rejected, 0U);
 }
 
 TEST(NSGBuilder, ParallelFailuresDoNotPublishStats) {

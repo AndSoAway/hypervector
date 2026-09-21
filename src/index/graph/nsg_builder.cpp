@@ -299,31 +299,85 @@ MutableBoundedGraph NSGBuilder::Build(
   }
 
   const std::vector<NeighborList> directed = neighborhoods;
-  for (size_t node = 0; node < node_count; ++node) {
+  const auto add_reciprocals = [&](size_t node,
+                                   DistanceComputer& worker_distance,
+                                   NSGBuildStats* worker_stats,
+                                   std::vector<std::mutex>* locks) {
     for (const NeighborCandidate& neighbor : directed[node]) {
-      NeighborList& reciprocal =
-          neighborhoods[static_cast<size_t>(neighbor.id)];
-      const GraphId source = static_cast<GraphId>(node);
-      if (Contains(reciprocal, source)) {
-        continue;
-      }
-      const NeighborCandidate proposal{source, neighbor.distance};
-      if (reciprocal.size() < pruned_degree) {
-        reciprocal.push_back(proposal);
-        ++local_stats.reciprocal_edges_added;
-        continue;
-      }
-
-      NeighborList candidates = reciprocal;
-      candidates.push_back(proposal);
-      NodeQueryDistanceComputer query_distance(distance, neighbor.id);
-      reciprocal = pruner_.Prune(candidates, pruned_degree, query_distance,
-                                 &local_stats.pruning);
-      if (Contains(reciprocal, source)) {
-        ++local_stats.reciprocal_edges_added;
+      const auto insert = [&] {
+        NeighborList& reciprocal =
+            neighborhoods[static_cast<size_t>(neighbor.id)];
+        const GraphId source = static_cast<GraphId>(node);
+        if (Contains(reciprocal, source)) {
+          return;
+        }
+        const NeighborCandidate proposal{source, neighbor.distance};
+        if (reciprocal.size() < pruned_degree) {
+          reciprocal.push_back(proposal);
+          ++worker_stats->reciprocal_edges_added;
+          return;
+        }
+        NeighborList candidates = reciprocal;
+        candidates.push_back(proposal);
+        NodeQueryDistanceComputer query_distance(worker_distance, neighbor.id);
+        reciprocal = pruner_.Prune(candidates, pruned_degree, query_distance,
+                                   &worker_stats->pruning);
+        if (Contains(reciprocal, source)) {
+          ++worker_stats->reciprocal_edges_added;
+        } else {
+          ++worker_stats->reciprocal_edges_rejected;
+        }
+      };
+      if (locks != nullptr) {
+        std::lock_guard<std::mutex> lock(
+            (*locks)[static_cast<size_t>(neighbor.id)]);
+        insert();
       } else {
-        ++local_stats.reciprocal_edges_rejected;
+        insert();
       }
+    }
+  };
+  if (workers == 1) {
+    for (size_t node = 0; node < node_count; ++node) {
+      add_reciprocals(node, distance, &local_stats, nullptr);
+    }
+  } else {
+    std::vector<std::mutex> node_locks(node_count);
+    std::vector<std::unique_ptr<DistanceComputer>> distances;
+    distances.reserve(workers);
+    for (size_t worker = 0; worker < workers; ++worker) {
+      distances.push_back(distance_factory());
+      HYPERVEC_THROW_IF_NOT_MSG(distances.back() != nullptr,
+                                "NSGBuilder: distance factory returned null");
+    }
+    std::vector<NSGBuildStats> worker_stats(workers);
+    std::exception_ptr error;
+    std::mutex error_mutex;
+    std::atomic<bool> failed{false};
+#pragma omp parallel for num_threads(static_cast<int>(workers)) \
+    schedule(dynamic, 8)
+    for (std::ptrdiff_t node = 0;
+         node < static_cast<std::ptrdiff_t>(node_count); ++node) {
+      if (failed.load()) {
+        continue;
+      }
+      const size_t worker = static_cast<size_t>(omp_get_thread_num());
+      try {
+        add_reciprocals(static_cast<size_t>(node), *distances[worker],
+                        &worker_stats[worker], &node_locks);
+      } catch (...) {
+        std::lock_guard<std::mutex> guard(error_mutex);
+        if (error == nullptr) {
+          error = std::current_exception();
+        }
+        failed.store(true);
+      }
+    }
+    if (error != nullptr) {
+      std::rethrow_exception(error);
+    }
+    for (const auto& worker : worker_stats) {
+      local_stats.Combine(worker);
     }
   }
 

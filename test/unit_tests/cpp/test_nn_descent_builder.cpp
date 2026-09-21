@@ -160,7 +160,7 @@ TEST(NNDescentBuilder, RefinesRandomGraphWithDeterministicRecall) {
   }
 }
 
-TEST(NNDescentBuilder, ParallelRefinementMatchesSequentialGraphAndStats) {
+TEST(NNDescentBuilder, ParallelRefinementMaintainsComparableRecall) {
   constexpr size_t kCount = 128;
   std::vector<float> values(kCount);
   for (size_t node = 0; node < kCount; ++node) {
@@ -171,6 +171,7 @@ TEST(NNDescentBuilder, ParallelRefinementMatchesSequentialGraphAndStats) {
   hypervec::NNDescentStats baseline_stats;
   const auto baseline = hypervec::NNDescentBuilder(options).Build(
       sequential_distance, kCount, &baseline_stats);
+  const double baseline_recall = Recall(baseline, values, options.max_degree);
 
   for (size_t threads : {size_t{4}, size_t{32}, size_t{64}}) {
     options.build_threads = threads;
@@ -179,15 +180,33 @@ TEST(NNDescentBuilder, ParallelRefinementMatchesSequentialGraphAndStats) {
     const auto graph = hypervec::NNDescentBuilder(options).Build(
         distance, kCount, &stats,
         [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
-    EXPECT_EQ(stats.iterations, baseline_stats.iterations);
-    EXPECT_EQ(stats.neighbor_updates, baseline_stats.neighbor_updates);
-    EXPECT_EQ(stats.refinement_distance_computations,
-              baseline_stats.refinement_distance_computations);
-    EXPECT_EQ(stats.converged, baseline_stats.converged);
-    for (size_t node = 0; node < kCount; ++node) {
-      EXPECT_EQ(CopyNeighbors(graph, static_cast<hypervec::GraphId>(node)),
-                CopyNeighbors(baseline, static_cast<hypervec::GraphId>(node)));
-    }
+    EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+    EXPECT_LE(stats.iterations, options.max_iterations);
+    EXPECT_GT(stats.refinement_distance_computations, 0U);
+    EXPECT_GE(Recall(graph, values, options.max_degree),
+              baseline_recall - 0.05);
+  }
+}
+
+TEST(NNDescentBuilder, ConcurrentRefinementHandlesLargeGraphs) {
+  constexpr size_t kCount = 16401;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>((node * 37) % kCount);
+  }
+  hypervec::NNDescentOptions options{4, 3, 0.0, 1729};
+  options.sample_rate = 0.6;
+  for (size_t threads : {size_t{4}, size_t{32}, size_t{64}}) {
+    options.build_threads = threads;
+    ScalarDistanceComputer distance(values);
+    hypervec::NNDescentStats stats;
+    const auto graph = hypervec::NNDescentBuilder(options).Build(
+        distance, kCount, &stats,
+        [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+    EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+    EXPECT_EQ(graph.NodeCount(), kCount);
+    EXPECT_GT(stats.refinement_distance_computations, 0U);
+    EXPECT_GE(stats.iterations, 1U);
   }
 }
 

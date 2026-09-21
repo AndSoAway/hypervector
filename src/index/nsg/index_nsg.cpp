@@ -11,6 +11,7 @@
 #include <index/graph/visited_table.h>
 #include <index/nsg/index_nsg.h>
 #include <utils/distances/distance_computer.h>
+#include <utils/distances/extra_distances.h>
 #include <utils/distances/metric_type.h>
 #include <utils/log/assert.h>
 
@@ -72,6 +73,52 @@ std::unique_ptr<DistanceComputer> MakeTraversalDistance(
     const Quantizer& quantizer, EncodedVectorView store) {
   std::unique_ptr<DistanceComputer> distance =
       quantizer.CreateDistanceComputer(store);
+  if (IsSimilarityMetric(quantizer.Metric())) {
+    return std::make_unique<NegativeDistanceComputer>(distance.release());
+  }
+  return distance;
+}
+
+template <typename VectorDistanceType>
+class RawBuildDistanceComputer final : public DistanceComputer {
+ public:
+  RawBuildDistanceComputer(const float* vectors, VectorDistanceType distance)
+      : vectors_(vectors), distance_(std::move(distance)) {}
+
+  void SetQuery(const float* query) override { query_ = query; }
+
+  float operator()(idx_t index) override {
+    return distance_(query_,
+                     vectors_ + static_cast<size_t>(index) * distance_.d);
+  }
+
+  float symmetric_dis(idx_t lhs, idx_t rhs) override {
+    return distance_(vectors_ + static_cast<size_t>(lhs) * distance_.d,
+                     vectors_ + static_cast<size_t>(rhs) * distance_.d);
+  }
+
+ private:
+  const float* vectors_;
+  VectorDistanceType distance_;
+  const float* query_ = nullptr;
+};
+
+std::unique_ptr<DistanceComputer> MakeBuildDistance(const Quantizer& quantizer,
+                                                    EncodedVectorView store,
+                                                    const float* vectors,
+                                                    float metric_arg) {
+  if (dynamic_cast<const FlatQuantizer*>(&quantizer) == nullptr) {
+    return MakeTraversalDistance(quantizer, store);
+  }
+  // Flat encoding is an exact copy of the input. During Build, read the
+  // caller-owned float vectors directly instead of decoding two codes for
+  // every pair. The persisted codes and search distance stay unchanged.
+  std::unique_ptr<DistanceComputer> distance = with_VectorDistance(
+      static_cast<size_t>(quantizer.Dimension()), quantizer.Metric(),
+      metric_arg, [vectors](auto vd) -> std::unique_ptr<DistanceComputer> {
+        return std::make_unique<RawBuildDistanceComputer<decltype(vd)>>(
+            vectors, std::move(vd));
+      });
   if (IsSimilarityMetric(quantizer.Metric())) {
     return std::make_unique<NegativeDistanceComputer>(distance.release());
   }
@@ -200,21 +247,19 @@ void IndexNSG::Build(idx_t n, const float* x) {
   InMemoryCodeStore staged_store(quantizer_->CodeSize());
   staged_store.Append(n, encoded.data());
 
-  std::unique_ptr<DistanceComputer> distance =
-      MakeTraversalDistance(*quantizer_, staged_store.View());
+  const auto make_build_distance = [this, &staged_store, x] {
+    return MakeBuildDistance(*quantizer_, staged_store.View(), x, metric_arg);
+  };
+  std::unique_ptr<DistanceComputer> distance = make_build_distance();
   NSGIndexBuildStats staged_stats;
   MutableBoundedGraph candidate_graph = candidate_builder_.Build(
       *distance, static_cast<size_t>(n), &staged_stats.candidate_graph,
-      [this, &staged_store] {
-        return MakeTraversalDistance(*quantizer_, staged_store.View());
-      });
+      make_build_distance);
   const GraphId staged_entry_point =
       SelectNavigationPoint(n, d, x, distance.get());
-  MutableBoundedGraph staged_graph = nsg_builder_.Build(
-      candidate_graph, *distance, staged_entry_point, &staged_stats.nsg,
-      [this, &staged_store] {
-        return MakeTraversalDistance(*quantizer_, staged_store.View());
-      });
+  MutableBoundedGraph staged_graph =
+      nsg_builder_.Build(candidate_graph, *distance, staged_entry_point,
+                         &staged_stats.nsg, make_build_distance);
   const GraphValidationReport report =
       ValidateGraph(staged_graph, staged_entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(

@@ -10,9 +10,9 @@
 
 #pragma once
 
-#include <index/index.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/hnsw.h>
+#include <index/index.h>
 #include <utils/utils.h>
 
 #include <optional>
@@ -32,6 +32,10 @@ struct IndexHNSW : Index {
 
   // the link structure
   HNSW hnsw;
+
+  /** Build-only parallel insertion hint; not serialized. Default preserves
+   * deterministic sequential insertion. Searches must not overlap Add. */
+  int build_threads = 1;
 
   // the sequential storage
   bool own_fields = false;
@@ -71,8 +75,8 @@ struct IndexHNSW : Index {
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   /** Search one vector with a custom result handler */
   void Search1(const float* x, ResultHandler& handler,

@@ -118,6 +118,7 @@ int HnswDegree(const IndexConfig& config) {
 }
 
 void ConfigureHNSW(IndexHNSW* index, const IndexConfig& config) {
+  index->build_threads = PositiveIntParameter(config, "build_threads", 1);
   index->hnsw.ef_construction = PositiveIntParameter(
       config, "ef_construction", index->hnsw.ef_construction);
   index->hnsw.ef_search =
@@ -386,6 +387,7 @@ std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
 std::vector<std::string> HnswParameterNames(
     std::initializer_list<std::string_view> storage_parameters = {}) {
   std::vector<std::string> names = {"m_hnsw",
+                                    "build_threads",
                                     "ef_construction",
                                     "ef_search",
                                     "check_relative_distance",

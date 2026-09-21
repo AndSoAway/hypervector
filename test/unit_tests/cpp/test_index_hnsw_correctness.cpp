@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
+#include <index/graph/graph_validation.h>
+#include <index/hnsw/hnsw_graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
@@ -823,12 +825,50 @@ TEST(IndexHNSWCorrectness, RepeatedAddFlatKeepsGraphAligned) {
   ExpectSearchLabelsValid(index, data.data());
 }
 
+TEST(IndexHNSWCorrectness, ParallelAddPreservesValidGraphAcrossBatches) {
+  constexpr hypervec::idx_t kDimension = 8;
+  constexpr hypervec::idx_t kBatch = 128;
+  const auto data = RandomVectors(kBatch * 2, kDimension, 4321);
+  for (int threads : {4, 32, 64}) {
+    hypervec::IndexHNSWFlat index(kDimension, 8);
+    index.build_threads = threads;
+    index.hnsw.ef_construction = 100;
+    index.hnsw.ef_search = 128;
+    index.Add(kBatch, data.data());
+    index.Add(kBatch, data.data() + kBatch * kDimension);
+    ExpectConsistentGraph(index);
+    const hypervec::HNSWGraphStorage graph(index.hnsw);
+    EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+    size_t exact_self_matches = 0;
+    for (hypervec::idx_t node = 0; node < index.n_total; ++node) {
+      float distance = 0;
+      hypervec::idx_t nearest = -1;
+      index.Search(1, data.data() + node * kDimension, 1, &distance, &nearest);
+      exact_self_matches += static_cast<size_t>(nearest == node);
+    }
+    EXPECT_GE(exact_self_matches, static_cast<size_t>(index.n_total * 0.8));
+  }
+}
+
+TEST(IndexHNSWCorrectness, ParallelAddSupportsSimilarityMetric) {
+  constexpr hypervec::idx_t kDimension = 8;
+  constexpr hypervec::idx_t kCount = 256;
+  const auto data = RandomVectors(kCount, kDimension, 4554);
+  hypervec::IndexHNSWFlat index(kDimension, 8, hypervec::kMetricInnerProduct);
+  index.build_threads = 32;
+  index.Add(kCount, data.data());
+  const hypervec::HNSWGraphStorage graph(index.hnsw);
+  EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+  ExpectSearchLabelsValid(index, data.data());
+}
+
 TEST(IndexHNSWCorrectness, RepeatedAddPQKeepsGraphAligned) {
   constexpr hypervec::idx_t d = 8;
   constexpr hypervec::idx_t batch = 32;
   const auto data = RandomVectors(batch * 2, d, 1002);
 
   hypervec::IndexHNSWPQ index(d, 2, 4, 8);
+  index.build_threads = 4;
   index.Train(batch * 2, data.data());
   index.Add(batch, data.data());
   index.Add(batch, data.data() + batch * d);
@@ -844,6 +884,7 @@ TEST(IndexHNSWCorrectness, RepeatedAddLVQKeepsGraphAligned) {
   const auto data = RandomVectors(batch * 2, d, 1003);
 
   hypervec::IndexHNSWLVQ index(d, 4, 3, 8);
+  index.build_threads = 4;
   index.Train(batch * 2, data.data());
   index.Add(batch, data.data());
   index.Add(batch, data.data() + batch * d);
@@ -896,6 +937,47 @@ TEST(IndexHNSWCorrectness, FailedGraphBuildRollsBackStorageAndGraph) {
   EXPECT_EQ(index.n_total, initial_count + extra_count);
   ExpectConsistentGraph(index);
   ExpectSearchLabelsValid(index, data.data());
+}
+
+TEST(IndexHNSWCorrectness, ParallelBuildFailureRollsBackOldLinks) {
+  constexpr hypervec::idx_t kDimension = 4;
+  constexpr hypervec::idx_t kInitial = 48;
+  constexpr hypervec::idx_t kAppend = 32;
+  const auto data = RandomVectors(kInitial + kAppend, kDimension, 2004);
+  FailingAddStorage storage(kDimension);
+  hypervec::IndexHNSW index(&storage, 8);
+  index.Add(kInitial, data.data());
+  index.build_threads = 4;
+  const auto old_codes = storage.codes.owned_data;
+  const auto old_levels = index.hnsw.levels;
+  const auto old_offsets = index.hnsw.offsets;
+  const std::vector<hypervec::HNSW::storage_idx_t> old_neighbors(
+      index.hnsw.neighbors.data(),
+      index.hnsw.neighbors.data() + index.hnsw.neighbors.size());
+  const auto old_entry = index.hnsw.entry_point;
+  const auto old_level = index.hnsw.max_level;
+  const auto old_random = index.hnsw.rng.mt;
+
+  storage.fail_graph_build = true;
+  EXPECT_THROW(index.Add(kAppend, data.data() + kInitial * kDimension),
+               std::runtime_error);
+  EXPECT_EQ(index.n_total, kInitial);
+  EXPECT_EQ(storage.n_total, kInitial);
+  EXPECT_EQ(storage.codes.owned_data, old_codes);
+  EXPECT_EQ(index.hnsw.levels, old_levels);
+  EXPECT_EQ(index.hnsw.offsets, old_offsets);
+  EXPECT_EQ(std::vector<hypervec::HNSW::storage_idx_t>(
+                index.hnsw.neighbors.data(),
+                index.hnsw.neighbors.data() + index.hnsw.neighbors.size()),
+            old_neighbors);
+  EXPECT_EQ(index.hnsw.entry_point, old_entry);
+  EXPECT_EQ(index.hnsw.max_level, old_level);
+  EXPECT_EQ(index.hnsw.rng.mt, old_random);
+
+  storage.fail_graph_build = false;
+  index.Add(kAppend, data.data() + kInitial * kDimension);
+  const hypervec::HNSWGraphStorage graph(index.hnsw);
+  EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
 }
 
 TEST(IndexHNSWCorrectness, AddRejectsInvalidInputAndMappedGraph) {

@@ -7,16 +7,17 @@
  */
 
 #include <quantization/pq/pq.h>
-
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 #include <utils/log/exception.h>
 #include <utils/structures/heap.h>
+#include <utils/structures/random.h>
 
 #include <algorithm>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -87,6 +88,26 @@ void DecodeImpl(const ProductQuantizer& pq, const uint8_t* code, float* x) {
   }
 }
 
+std::vector<idx_t> SampleTrainingRows(idx_t count, idx_t sample_count,
+                                      int seed) {
+  HYPERVEC_ASSERT(sample_count >= 0 && sample_count <= count);
+  std::vector<idx_t> rows(static_cast<size_t>(sample_count));
+  for (idx_t i = 0; i < sample_count; ++i) {
+    rows[static_cast<size_t>(i)] = i;
+  }
+
+  RandomGenerator random(seed);
+  for (idx_t i = sample_count; i < count; ++i) {
+    const uint64_t position = static_cast<uint64_t>(random.rand_int64()) %
+                              (static_cast<uint64_t>(i) + 1U);
+    if (position < static_cast<uint64_t>(sample_count)) {
+      rows[static_cast<size_t>(position)] = i;
+    }
+  }
+  std::sort(rows.begin(), rows.end());
+  return rows;
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -128,26 +149,55 @@ void ProductQuantizer::SetDerivedValues() {
 
 void ProductQuantizer::Train(idx_t n, const float* x,
                              const PQParameters& params) {
+  HYPERVEC_THROW_IF_NOT_FMT(n >= ksub,
+                            "ProductQuantizer::Train: need at least ksub=%ld "
+                            "training vectors, got %ld "
+                            "(consider lowering nbits or providing more data)",
+                            static_cast<long>(ksub), static_cast<long>(n));
   HYPERVEC_THROW_IF_NOT_FMT(
-    n >= ksub,
-    "ProductQuantizer::Train: need at least ksub=%ld training vectors, got %ld "
-    "(consider lowering nbits or providing more data)",
-    static_cast<long>(ksub), static_cast<long>(n));
-  HYPERVEC_THROW_IF_NOT_FMT(params.niter > 0,
-                            "ProductQuantizer::Train: niter must be > 0, got %d",
-                            params.niter);
-  HYPERVEC_THROW_IF_NOT_FMT(params.nredo > 0,
-                            "ProductQuantizer::Train: nredo must be > 0, got %d",
-                            params.nredo);
+      params.niter > 0, "ProductQuantizer::Train: niter must be > 0, got %d",
+      params.niter);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      params.nredo > 0, "ProductQuantizer::Train: nredo must be > 0, got %d",
+      params.nredo);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      params.max_points_per_centroid >= 0,
+      "ProductQuantizer::Train: max_points_per_centroid must be non-negative, "
+      "got %d",
+      params.max_points_per_centroid);
+
+  idx_t training_count = n;
+  if (params.max_points_per_centroid > 0) {
+    const size_t training_limit =
+        mul_no_overflow(static_cast<size_t>(ksub),
+                        static_cast<size_t>(params.max_points_per_centroid),
+                        "ProductQuantizer training sample limit");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        training_limit <=
+            static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+        "ProductQuantizer training sample limit exceeds idx_t");
+    training_count = std::min(n, static_cast<idx_t>(training_limit));
+  }
+  const std::vector<idx_t> training_rows =
+      training_count < n ? SampleTrainingRows(n, training_count, params.seed)
+                         : std::vector<idx_t>{};
 
   // Subquantizers are independent — train them in parallel. Each thread
-  // needs its own slice buffer (size n * dsub) to hold the m-th subvector
-  // slice contiguously.
+  // needs its own sampled slice buffer to hold one subspace contiguously.
+  // Do not create more workers than subquantizers: idle OpenMP workers would
+  // still allocate the full scratch buffer.
   std::vector<std::pair<int, std::exception_ptr>> exceptions;
+#ifdef _OPENMP
+  const int max_threads = omp_get_max_threads();
+  const int worker_count =
+      static_cast<idx_t>(max_threads) < M ? max_threads : static_cast<int>(M);
+#else
+  const int worker_count = 1;
+#endif
 
-#pragma omp parallel
+#pragma omp parallel num_threads(worker_count)
   {
-    std::vector<float> xslice(static_cast<size_t>(n) * dsub);
+    std::vector<float> xslice(static_cast<size_t>(training_count) * dsub);
     KMeansParameters kp;
     kp.niter = params.niter;
     kp.nredo = params.nredo;
@@ -159,8 +209,10 @@ void ProductQuantizer::Train(idx_t n, const float* x,
       try {
         // Gather subvector m of every training vector into a contiguous
         // (n, dsub) matrix.
-        for (idx_t i = 0; i < n; i++) {
-          std::memcpy(xslice.data() + i * dsub, x + i * d + m * dsub,
+        for (idx_t i = 0; i < training_count; i++) {
+          const idx_t source_row =
+              training_rows.empty() ? i : training_rows[static_cast<size_t>(i)];
+          std::memcpy(xslice.data() + i * dsub, x + source_row * d + m * dsub,
                       static_cast<size_t>(dsub) * sizeof(float));
         }
 
@@ -174,15 +226,18 @@ void ProductQuantizer::Train(idx_t n, const float* x,
 #pragma omp critical
 #endif
           {
-            std::fprintf(stderr, "PQ training subquantizer %ld/%ld (dsub=%ld, "
-                                 "ksub=%ld, n=%ld)\n",
+            std::fprintf(stderr,
+                         "PQ training subquantizer %ld/%ld (dsub=%ld, "
+                         "ksub=%ld, training_n=%ld, input_n=%ld)\n",
                          static_cast<long>(m + 1), static_cast<long>(M),
                          static_cast<long>(dsub), static_cast<long>(ksub),
+                         static_cast<long>(training_count),
                          static_cast<long>(n));
           }
         }
 
-        RunKMeans(n, xslice.data(), dsub, ksub, GetCentroids(m, 0), kp);
+        RunKMeans(training_count, xslice.data(), dsub, ksub, GetCentroids(m, 0),
+                  kp);
       } catch (...) {
 #pragma omp critical
         exceptions.emplace_back(static_cast<int>(m), std::current_exception());

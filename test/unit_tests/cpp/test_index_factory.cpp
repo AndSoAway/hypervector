@@ -287,6 +287,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   nsw_config.SetInteger("max_degree", 7)
       .SetInteger("ef_construction", 15)
       .SetInteger("ef_search", 9)
+      .SetInteger("build_threads", 4)
       .SetBoolean("check_relative_distance", false)
       .SetBoolean("fill_to_max_degree", false);
   auto nsw_base = hypervec::CreateIndex(nsw_config);
@@ -295,6 +296,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(nsw->Options().max_degree, 7U);
   EXPECT_EQ(nsw->Options().ef_construction, 15U);
   EXPECT_EQ(nsw->Options().ef_search, 9U);
+  EXPECT_EQ(nsw->Options().build_threads, 4U);
   EXPECT_FALSE(nsw->Options().check_relative_distance);
   EXPECT_FALSE(nsw->Options().fill_to_max_degree);
 
@@ -473,6 +475,10 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_nsw("nsw_flat", 4);
   bad_nsw.SetInteger("max_degree", 8).SetInteger("ef_construction", 4);
   EXPECT_THROW(hypervec::CreateIndex(bad_nsw), hypervec::HypervecException);
+  hypervec::IndexConfig bad_nsw_threads("nsw_flat", 4);
+  bad_nsw_threads.SetInteger("build_threads", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_nsw_threads),
+               hypervec::HypervecException);
 
   hypervec::IndexConfig bad_nsg("nsg_flat", 4);
   bad_nsg.SetDouble("nn_descent_convergence_threshold", 2.0);

@@ -31,6 +31,7 @@ struct NSWIndexOptions {
   size_t ef_search = 16;
   bool check_relative_distance = true;
   bool fill_to_max_degree = true;
+  size_t build_threads = 1;
 };
 
 /** Single-layer NSW index composed from the shared graph and codec protocols.
@@ -67,6 +68,9 @@ class IndexNSW : public Index {
                     GraphId entry_point);
 
   const NSWIndexOptions& Options() const noexcept { return options_; }
+  /** Build-time concurrency is not persisted; restored indexes default to 1.
+   * Call this before further Add operations to opt into parallel append. */
+  void SetBuildThreads(size_t count);
   const Quantizer& QuantizerModel() const noexcept { return *quantizer_; }
   const InMemoryCodeStore& CodeStore() const noexcept { return code_store_; }
   const GraphStorage& Graph() const noexcept { return graph_; }

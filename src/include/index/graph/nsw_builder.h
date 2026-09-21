@@ -14,6 +14,9 @@
 #include <utils/distances/distance_computer.h>
 
 #include <cstddef>
+#include <mutex>
+#include <span>
+#include <vector>
 
 namespace hypervec {
 
@@ -63,6 +66,27 @@ class NSWIncrementalBuilder {
   NSWInsertionResult AddNode(DistanceComputer& distance,
                              MutableGraphStorage& graph, GraphId entry_point,
                              NSWBuildStats* stats = nullptr) const;
+
+  /** Read-only proposal against a stable graph snapshot. Each worker owns its
+   * distance computer and visited table; graph writes must wait for all
+   * proposals in the batch to finish. */
+  std::vector<GraphId> Propose(DistanceComputer& distance,
+                               const GraphStorage& graph, GraphId entry_point,
+                               VisitedTable* visited,
+                               NSWBuildStats* stats) const;
+
+  /** Install a proposal and its reciprocal links, in insertion order. */
+  void Commit(DistanceComputer& distance, MutableGraphStorage& graph,
+              GraphId node, const std::vector<GraphId>& neighbors,
+              NSWBuildStats* stats) const;
+
+  /** Concurrent commit for proposals which target only earlier batches.
+   * Workers write disjoint new-node lists; each older reciprocal list is
+   * protected independently. Caller pre-sizes graph and lock array. */
+  void CommitConcurrent(DistanceComputer& distance, MutableGraphStorage& graph,
+                        GraphId node, const std::vector<GraphId>& neighbors,
+                        std::span<std::mutex> node_locks,
+                        NSWBuildStats* stats) const;
 
   const NSWBuildOptions& Options() const noexcept { return options_; }
 

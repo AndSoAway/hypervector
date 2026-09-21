@@ -298,6 +298,8 @@ std::unique_ptr<Index> MakeNSWFlat(const IndexConfig& config) {
       static_cast<size_t>(PositiveIntParameter(config, "ef_construction", 64));
   options.ef_search =
       static_cast<size_t>(PositiveIntParameter(config, "ef_search", 16));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   options.check_relative_distance =
       config.GetBoolean("check_relative_distance", true);
   options.fill_to_max_degree = config.GetBoolean("fill_to_max_degree", true);
@@ -450,11 +452,12 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"hnswlvq", "IndexHNSWLVQ"},
                       HnswParameterNames({"nlocal", "nbits"})},
                      MakeHNSWLVQ);
-  registry->Register({"nsw_flat",
-                      {"nsw", "nswflat", "IndexNSWFlat"},
-                      {"max_degree", "ef_construction", "ef_search",
-                       "check_relative_distance", "fill_to_max_degree"}},
-                     MakeNSWFlat);
+  registry->Register(
+      {"nsw_flat",
+       {"nsw", "nswflat", "IndexNSWFlat"},
+       {"max_degree", "ef_construction", "ef_search", "build_threads",
+        "check_relative_distance", "fill_to_max_degree"}},
+      MakeNSWFlat);
   registry->Register(
       {"nsg_flat",
        {"nsg", "nsgflat", "IndexNSGFlat"},

@@ -10,16 +10,20 @@
 #include <index/graph/graph_validation.h>
 #include <index/graph/visited_table.h>
 #include <index/nsw/index_nsw.h>
+#include <omp.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/distances/metric_type.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -73,6 +77,11 @@ IndexNSW::IndexNSW(std::unique_ptr<Quantizer> quantizer,
   HYPERVEC_THROW_IF_NOT_MSG(options_.ef_search > 0,
                             "IndexNSW: ef_search must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(
+      options_.build_threads > 0 &&
+          options_.build_threads <=
+              static_cast<size_t>((std::numeric_limits<int>::max)()),
+      "IndexNSW: build_threads must be in [1, INT_MAX]");
+  HYPERVEC_THROW_IF_NOT_MSG(
       quantizer_->Metric() != kMetricLp ||
           (std::isfinite(metric_arg) && metric_arg > 0.0F),
       "IndexNSW: kMetricLp requires a finite, positive metric_arg");
@@ -88,6 +97,14 @@ IndexCapabilities IndexNSW::GetCapabilities() const {
   capabilities.requires_training = quantizer_->NeedsTraining();
   capabilities.supports_reconstruct = true;
   return capabilities;
+}
+
+void IndexNSW::SetBuildThreads(size_t count) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      count > 0 &&
+          count <= static_cast<size_t>((std::numeric_limits<int>::max)()),
+      "IndexNSW: build_threads must be in [1, INT_MAX]");
+  options_.build_threads = count;
 }
 
 void IndexNSW::Train(idx_t n, const float* x) {
@@ -134,7 +151,13 @@ void IndexNSW::Add(idx_t n, const float* x) {
   std::unique_ptr<DistanceComputer> distance =
       MakeTraversalDistance(*quantizer_, staged_store.View());
 
-  for (idx_t node = n_total; node < new_total; ++node) {
+  idx_t first = n_total;
+  // Seed a navigable graph before concurrent workers read a fixed snapshot.
+  const idx_t bootstrap_end =
+      options_.build_threads == 1
+          ? new_total
+          : std::min(new_total, std::max(n_total, idx_t{256}));
+  for (idx_t node = first; node < bootstrap_end; ++node) {
     distance->SetQuery(x + static_cast<size_t>(node - n_total) * d);
     const NSWInsertionResult result = builder_.AddNode(
         *distance, staged_graph, staged_entry_point, &staged_stats);
@@ -142,6 +165,85 @@ void IndexNSW::Add(idx_t n, const float* x) {
         result.node_id == node,
         "IndexNSW::Add: graph and vector identifiers diverged");
     staged_entry_point = result.entry_point;
+  }
+
+  first = bootstrap_end;
+  if (first < new_total) {
+    const int workers = static_cast<int>(
+        std::min<idx_t>(options_.build_threads, new_total - first));
+    std::vector<std::unique_ptr<DistanceComputer>> distances;
+    std::vector<NSWBuildStats> worker_stats(workers);
+    distances.reserve(workers);
+    for (int worker = 0; worker < workers; ++worker) {
+      distances.push_back(
+          MakeTraversalDistance(*quantizer_, staged_store.View()));
+    }
+    std::vector<std::mutex> node_locks(static_cast<size_t>(new_total));
+    constexpr idx_t kBatchSize = 256;
+    for (idx_t begin = first; begin < new_total; begin += kBatchSize) {
+      const idx_t end = std::min(new_total, begin + kBatchSize);
+      staged_graph.Resize(static_cast<size_t>(end));
+      std::vector<std::vector<GraphId>> proposals(end - begin);
+      std::vector<std::unique_ptr<VisitedTable>> visited;
+      visited.reserve(workers);
+      for (int worker = 0; worker < workers; ++worker) {
+        // Sparse visited sets avoid clearing a million entries per batch.
+        visited.push_back(
+            std::make_unique<VisitedTable>(staged_graph.NodeCount(), true));
+      }
+      std::exception_ptr error;
+      std::mutex error_mutex;
+      std::atomic<bool> failed{false};
+#pragma omp parallel for num_threads(workers) schedule(dynamic, 4)
+      for (idx_t node = begin; node < end; ++node) {
+        if (failed.load(std::memory_order_relaxed)) {
+          continue;
+        }
+        const int worker = omp_get_thread_num();
+        try {
+          distances[worker]->SetQuery(x +
+                                      static_cast<size_t>(node - n_total) * d);
+          proposals[node - begin] = builder_.Propose(
+              *distances[worker], staged_graph, staged_entry_point,
+              visited[worker].get(), &worker_stats[worker]);
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(error_mutex);
+          if (error == nullptr) {
+            error = std::current_exception();
+          }
+          failed.store(true, std::memory_order_relaxed);
+        }
+      }
+      if (error != nullptr) {
+        std::rethrow_exception(error);
+      }
+      error = nullptr;
+      failed.store(false, std::memory_order_relaxed);
+#pragma omp parallel for num_threads(workers) schedule(dynamic, 4)
+      for (idx_t node = begin; node < end; ++node) {
+        if (failed.load(std::memory_order_relaxed)) {
+          continue;
+        }
+        const int worker = omp_get_thread_num();
+        try {
+          builder_.CommitConcurrent(
+              *distances[worker], staged_graph, static_cast<GraphId>(node),
+              proposals[node - begin], node_locks, &worker_stats[worker]);
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(error_mutex);
+          if (error == nullptr) {
+            error = std::current_exception();
+          }
+          failed.store(true, std::memory_order_relaxed);
+        }
+      }
+      if (error != nullptr) {
+        std::rethrow_exception(error);
+      }
+    }
+    for (const NSWBuildStats& stats : worker_stats) {
+      staged_stats.Combine(stats);
+    }
   }
 
   code_store_ = std::move(staged_store);

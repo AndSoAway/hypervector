@@ -112,8 +112,8 @@ class RaBitQInvertedListScanner final : public InvertedListScanner {
         "RaBitQ scanner SetQuery and SetList must be called before scanning");
     HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
                               "RaBitQ scanner code must not be null");
-    return quantizer_.EstimateSquaredDistance(rotated_query_.data(),
-                                              query_norm_squared_, code);
+    return quantizer_.EstimateSquaredDistanceWithLut(query_norm_squared_, code,
+                                                     distance_lut_);
   }
 
  private:
@@ -121,6 +121,7 @@ class RaBitQInvertedListScanner final : public InvertedListScanner {
     query_norm_squared_ =
         SquaredNorm(query, dimension_, "RaBitQ scanner query");
     quantizer_.Transform(query, rotated_query_.data());
+    quantizer_.PrepareDistanceLut(rotated_query_.data(), &distance_lut_);
     query_ready_ = true;
   }
 
@@ -132,6 +133,7 @@ class RaBitQInvertedListScanner final : public InvertedListScanner {
   const float* query_ = nullptr;
   std::vector<float> residual_query_;
   std::vector<float> rotated_query_;
+  RaBitQQuantizer::DistanceLut distance_lut_;
   float query_norm_squared_ = 0.0F;
   bool query_ready_ = false;
 };

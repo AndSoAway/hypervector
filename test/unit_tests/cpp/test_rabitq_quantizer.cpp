@@ -150,6 +150,31 @@ TEST(RaBitQQuantizer, PreservesNearestNeighborOnSeparatedFixture) {
   }
 }
 
+TEST(RaBitQQuantizer, PreparedLookupMatchesScalarEstimates) {
+  for (hypervec::idx_t dimension : {1, 5, 16, 65, 300}) {
+    hypervec::RaBitQQuantizer quantizer(dimension, 2026, 3);
+    const std::vector<float> vectors = MakeVectors(17, dimension);
+    std::vector<uint8_t> codes(17 * quantizer.CodeSize());
+    quantizer.Encode(17, vectors.data(), codes.data());
+    for (hypervec::idx_t query = 0; query < 5; ++query) {
+      std::vector<float> rotated(quantizer.RotatedDimension());
+      const float* input = vectors.data() + query * dimension;
+      quantizer.Transform(input, rotated.data());
+      hypervec::RaBitQQuantizer::DistanceLut lut;
+      quantizer.PrepareDistanceLut(rotated.data(), &lut);
+      const float norm = SquaredNorm(input, static_cast<size_t>(dimension));
+      for (size_t row = 0; row < 17; ++row) {
+        const uint8_t* code = codes.data() + row * quantizer.CodeSize();
+        EXPECT_NEAR(
+            quantizer.EstimateSquaredDistance(rotated.data(), norm, code),
+            quantizer.EstimateSquaredDistanceWithLut(norm, code, lut),
+            0.0001F * (1.0F + norm))
+            << "dimension=" << dimension << " row=" << row;
+      }
+    }
+  }
+}
+
 TEST(RaBitQQuantizer, HandlesZeroVectorsAndRejectsInvalidState) {
   EXPECT_THROW(hypervec::RaBitQQuantizer(0), hypervec::HypervecException);
   EXPECT_THROW(hypervec::RaBitQQuantizer(4, 1, 0), hypervec::HypervecException);

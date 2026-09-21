@@ -302,6 +302,64 @@ float RaBitQQuantizer::EstimateSquaredDistance(const float* rotated_query,
   return static_cast<float>(std::max(0.0, estimated));
 }
 
+void RaBitQQuantizer::PrepareDistanceLut(const float* rotated_query,
+                                         DistanceLut* lut) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      rotated_query != nullptr && lut != nullptr,
+      "RaBitQQuantizer::PrepareDistanceLut: buffers are null");
+  lut->resize(bit_bytes_ * 2);
+  for (size_t nibble = 0; nibble < lut->size(); ++nibble) {
+    double values[4] = {};
+    for (size_t bit = 0; bit < 4; ++bit) {
+      const size_t offset = nibble * 4 + bit;
+      if (offset < rotated_dimension_) {
+        HYPERVEC_THROW_IF_NOT_FMT(std::isfinite(rotated_query[offset]),
+                                  "RaBitQQuantizer::PrepareDistanceLut: "
+                                  "non-finite query value at offset %zu",
+                                  offset);
+        values[bit] = rotated_query[offset];
+      }
+    }
+    for (size_t bits = 0; bits < 16; ++bits) {
+      double sum = 0.0;
+      for (size_t bit = 0; bit < 4; ++bit) {
+        sum += (bits & (size_t{1} << bit)) != 0 ? values[bit] : -values[bit];
+      }
+      (*lut)[nibble][bits] = sum;
+    }
+  }
+}
+
+float RaBitQQuantizer::EstimateSquaredDistanceWithLut(
+    float query_norm_squared, const uint8_t* code,
+    const DistanceLut& lut) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code != nullptr && lut.size() == bit_bytes_ * 2,
+      "RaBitQQuantizer::EstimateSquaredDistanceWithLut: invalid buffers");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      std::isfinite(query_norm_squared) && query_norm_squared >= 0.0F,
+      "RaBitQQuantizer::EstimateSquaredDistanceWithLut: invalid query norm");
+  const float vector_norm_squared = ReadFactor(code, 0);
+  const float scale = ReadFactor(code, sizeof(float));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      std::isfinite(vector_norm_squared) && vector_norm_squared >= 0.0F &&
+          std::isfinite(scale) && scale >= 0.0F,
+      "RaBitQQuantizer::EstimateSquaredDistanceWithLut: invalid code factors");
+  double signed_sum = 0.0;
+  for (size_t byte = 0; byte < bit_bytes_; ++byte) {
+    const uint8_t bits = code[byte];
+    signed_sum += lut[byte * 2][bits & 15U];
+    signed_sum += lut[byte * 2 + 1][bits >> 4];
+  }
+  const double estimated = static_cast<double>(query_norm_squared) +
+                           vector_norm_squared -
+                           2.0 * static_cast<double>(scale) * signed_sum;
+  HYPERVEC_THROW_IF_NOT_MSG(std::isfinite(estimated),
+                            "RaBitQQuantizer::EstimateSquaredDistanceWithLut: "
+                            "estimate is not finite");
+  return static_cast<float>(std::max(0.0, estimated));
+}
+
 std::unique_ptr<DistanceComputer> RaBitQQuantizer::CreateDistanceComputerImpl(
     EncodedVectorView store) const {
   return std::make_unique<RaBitQDistanceComputer>(*this, std::move(store));

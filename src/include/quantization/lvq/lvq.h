@@ -18,14 +18,22 @@ namespace hypervec {
 #define HYPERVEC_LVQ_DEFAULT_SEED 1234
 #define HYPERVEC_LVQ_DEFAULT_NITER 25
 #define HYPERVEC_LVQ_DEFAULT_NREDO 1
+#define HYPERVEC_LVQ_DEFAULT_MAX_POINTS_PER_CODEWORD 32
 #define HYPERVEC_LVQ_MAX_NBITS 16
 
 struct LVQParameters {
   int niter = HYPERVEC_LVQ_DEFAULT_NITER;
   int seed = HYPERVEC_LVQ_DEFAULT_SEED;
   int nredo = HYPERVEC_LVQ_DEFAULT_NREDO;
+  /// Bound the total training rows to nlocal * ksub * this value. Set to 0
+  /// to use all rows, including for the underlying KMeans stages.
+  int max_points_per_codeword = HYPERVEC_LVQ_DEFAULT_MAX_POINTS_PER_CODEWORD;
   bool verbose = false;
 };
+
+/// Compute the bounded input count shared by LVQ and residual IVF-LVQ.
+idx_t LVQTrainingCount(idx_t n, idx_t nlocal, idx_t ksub,
+                       const LVQParameters& params);
 
 /** Local Vector Quantization codec.
  *

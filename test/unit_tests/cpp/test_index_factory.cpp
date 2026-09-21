@@ -173,6 +173,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
       .SetInteger("candidate_pool_size", 13)
       .SetDouble("alpha", 1.4)
       .SetInteger("build_passes", 3)
+      .SetInteger("build_threads", 4)
       .SetInteger("random_seed", 29)
       .SetInteger("search_width", 17)
       .SetBoolean("check_relative_distance", false)
@@ -187,6 +188,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(diskann->Options().candidate_pool_size, 13U);
   EXPECT_FLOAT_EQ(diskann->Options().alpha, 1.4F);
   EXPECT_EQ(diskann->Options().build_passes, 3U);
+  EXPECT_EQ(diskann->Options().build_threads, 4U);
   EXPECT_EQ(diskann->Options().random_seed, 29U);
   EXPECT_EQ(diskann->Options().search_width, 17U);
   EXPECT_FALSE(diskann->Options().check_relative_distance);
@@ -200,6 +202,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
       .SetInteger("candidate_pool_size", 13)
       .SetDouble("alpha", 1.4)
       .SetInteger("build_passes", 3)
+      .SetInteger("build_threads", 4)
       .SetInteger("random_seed", 31)
       .SetInteger("search_width", 17)
       .SetBoolean("check_relative_distance", false);
@@ -211,6 +214,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(vamana->Options().candidate_pool_size, 13U);
   EXPECT_FLOAT_EQ(vamana->Options().alpha, 1.4F);
   EXPECT_EQ(vamana->Options().build_passes, 3U);
+  EXPECT_EQ(vamana->Options().build_threads, 4U);
   EXPECT_EQ(vamana->Options().random_seed, 31U);
   EXPECT_EQ(vamana->Options().search_width, 17U);
   EXPECT_FALSE(vamana->Options().check_relative_distance);

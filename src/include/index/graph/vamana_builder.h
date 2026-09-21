@@ -15,6 +15,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 
 namespace hypervec {
 
@@ -25,6 +27,7 @@ struct VamanaBuildOptions {
   float alpha = 1.2F;
   size_t build_passes = 2;
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
+  size_t build_threads = 1;
 };
 
 struct VamanaBuildStats {
@@ -53,17 +56,23 @@ struct VamanaBuildStats {
  * configured alpha. A single pass uses the configured alpha directly. A
  * final bounded repair preserves a directed path from the navigation point to
  * every node, including datasets with duplicate vectors.
+ * Parallel builds use read-only batches followed by ordered edge commits;
+ * one-thread builds retain the original incremental search path.
  *
  * DistanceComputer must provide symmetric_dis(), with smaller values meaning
  * closer neighbors.
  */
 class VamanaBuilder {
  public:
+  using DistanceFactory = std::function<std::unique_ptr<DistanceComputer>()>;
   explicit VamanaBuilder(VamanaBuildOptions options = {});
 
   MutableBoundedGraph Build(DistanceComputer& distance, size_t node_count,
                             GraphId navigation_point,
                             VamanaBuildStats* stats = nullptr) const;
+  MutableBoundedGraph Build(DistanceComputer& distance, size_t node_count,
+                            GraphId navigation_point, VamanaBuildStats* stats,
+                            const DistanceFactory& distance_factory) const;
 
   const VamanaBuildOptions& Options() const noexcept { return options_; }
 

@@ -8,12 +8,17 @@
 
 #include <index/graph/vamana_builder.h>
 #include <index/graph/visited_table.h>
+#include <omp.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <queue>
 #include <random>
 #include <utility>
@@ -144,25 +149,31 @@ struct Reachability {
   size_t count = 0;
 };
 
-Reachability FindReachable(const GraphStorage& graph, GraphId entry_point) {
-  Reachability result;
-  result.reachable.assign(graph.NodeCount(), false);
-  result.parent.assign(graph.NodeCount(), kInvalidGraphId);
+void MarkReachable(const GraphStorage& graph, GraphId entry_point,
+                   GraphId parent, Reachability* result) {
   std::queue<GraphId> pending;
-  result.reachable[static_cast<size_t>(entry_point)] = true;
+  result->reachable[static_cast<size_t>(entry_point)] = true;
+  result->parent[static_cast<size_t>(entry_point)] = parent;
   pending.push(entry_point);
   while (!pending.empty()) {
     const GraphId source = pending.front();
     pending.pop();
-    ++result.count;
+    ++result->count;
     for (GraphId neighbor : graph.Neighbors(source)) {
-      if (!result.reachable[static_cast<size_t>(neighbor)]) {
-        result.reachable[static_cast<size_t>(neighbor)] = true;
-        result.parent[static_cast<size_t>(neighbor)] = source;
+      if (!result->reachable[static_cast<size_t>(neighbor)]) {
+        result->reachable[static_cast<size_t>(neighbor)] = true;
+        result->parent[static_cast<size_t>(neighbor)] = source;
         pending.push(neighbor);
       }
     }
   }
+}
+
+Reachability FindReachable(const GraphStorage& graph, GraphId entry_point) {
+  Reachability result;
+  result.reachable.assign(graph.NodeCount(), false);
+  result.parent.assign(graph.NodeCount(), kInvalidGraphId);
+  MarkReachable(graph, entry_point, kInvalidGraphId, &result);
   return result;
 }
 
@@ -199,14 +210,17 @@ GraphId SelectReplacement(const MutableBoundedGraph& graph, GraphId source,
 }
 
 void RepairConnectivity(MutableBoundedGraph* graph, GraphId entry_point,
-                        size_t max_degree, DistanceComputer& distance,
-                        VamanaBuildStats* stats) {
+                        size_t max_degree, size_t search_width,
+                        DistanceComputer& distance, VamanaBuildStats* stats) {
   Reachability reachability = FindReachable(*graph, entry_point);
+  size_t next_unreachable = 0;
+  const GraphSearcher searcher(*graph);
+  VisitedTable searched(graph->NodeCount(), false);
   while (reachability.count < graph->NodeCount()) {
-    const auto target_position = std::find(reachability.reachable.begin(),
-                                           reachability.reachable.end(), false);
-    const GraphId target =
-        static_cast<GraphId>(target_position - reachability.reachable.begin());
+    while (reachability.reachable[next_unreachable]) {
+      ++next_unreachable;
+    }
+    const GraphId target = static_cast<GraphId>(next_unreachable);
     GraphId best_source = kInvalidGraphId;
     float best_distance = (std::numeric_limits<float>::infinity)();
     const auto consider_source = [&](GraphId source) {
@@ -226,6 +240,18 @@ void RepairConnectivity(MutableBoundedGraph* graph, GraphId entry_point,
     };
     for (GraphId source : graph->Neighbors(target)) {
       consider_source(source);
+    }
+    if (best_source == kInvalidGraphId) {
+      NodeQueryDistanceComputer query_distance(distance, target);
+      const std::array<GraphId, 1> entry_points = {entry_point};
+      const auto nearby = searcher.Search(
+          query_distance, entry_points,
+          GraphSearchOptions{std::max(search_width, max_degree * 4), false,
+                             nullptr},
+          &searched, &stats->search);
+      for (const GraphSearchResult& candidate : nearby) {
+        consider_source(candidate.id);
+      }
     }
     if (best_source == kInvalidGraphId) {
       for (size_t source = 0; source < graph->NodeCount(); ++source) {
@@ -254,7 +280,10 @@ void RepairConnectivity(MutableBoundedGraph* graph, GraphId entry_point,
         graph->AddNeighbor(best_source, target),
         "VamanaBuilder: connectivity edge already exists");
     ++stats->connectivity_edges_added;
-    reachability = FindReachable(*graph, entry_point);
+    // Removing only non-tree edges preserves the existing reachable set.
+    // Expand from the newly connected target instead of re-walking the entire
+    // graph after each repaired component.
+    MarkReachable(*graph, target, best_source, &reachability);
   }
 }
 
@@ -291,12 +320,23 @@ VamanaBuilder::VamanaBuilder(VamanaBuildOptions options) : options_(options) {
       "VamanaBuilder: alpha must be finite and at least one");
   HYPERVEC_THROW_IF_NOT_MSG(options_.build_passes > 0,
                             "VamanaBuilder: build_passes must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options_.build_threads > 0 &&
+          options_.build_threads <=
+              static_cast<size_t>((std::numeric_limits<int>::max)()),
+      "VamanaBuilder: build_threads must be in [1, INT_MAX]");
 }
 
 MutableBoundedGraph VamanaBuilder::Build(DistanceComputer& distance,
                                          size_t node_count,
                                          GraphId navigation_point,
                                          VamanaBuildStats* stats) const {
+  return Build(distance, node_count, navigation_point, stats, {});
+}
+
+MutableBoundedGraph VamanaBuilder::Build(
+    DistanceComputer& distance, size_t node_count, GraphId navigation_point,
+    VamanaBuildStats* stats, const DistanceFactory& distance_factory) const {
   constexpr size_t kGraphCapacity =
       static_cast<size_t>((std::numeric_limits<GraphId>::max)()) + 1;
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -333,32 +373,117 @@ MutableBoundedGraph VamanaBuilder::Build(DistanceComputer& distance,
   std::mt19937_64 random(options_.random_seed);
   const std::array<GraphId, 1> entry_points = {navigation_point};
 
+  const size_t workers = std::min(options_.build_threads, node_count);
+  std::vector<std::unique_ptr<DistanceComputer>> distances;
+  std::vector<std::unique_ptr<VisitedTable>> worker_searched;
+  std::vector<std::unique_ptr<VisitedTable>> worker_pooled;
+  std::vector<VamanaBuildStats> worker_stats(workers);
+  if (workers > 1) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        static_cast<bool>(distance_factory),
+        "VamanaBuilder: parallel build requires a distance factory");
+    for (size_t worker = 0; worker < workers; ++worker) {
+      distances.push_back(distance_factory());
+      HYPERVEC_THROW_IF_NOT_MSG(
+          distances.back() != nullptr,
+          "VamanaBuilder: distance factory returned null");
+      worker_searched.push_back(
+          std::make_unique<VisitedTable>(node_count, false));
+      worker_pooled.push_back(
+          std::make_unique<VisitedTable>(node_count, false));
+    }
+  }
+
   for (size_t pass = 0; pass < options_.build_passes; ++pass) {
     std::shuffle(order.begin(), order.end(), random);
     const bool bootstrap_pass = options_.build_passes > 1 && pass == 0;
     const VamanaRobustPruner pruner(bootstrap_pass ? 1.0F : options_.alpha);
-    for (GraphId node : order) {
-      NodeQueryDistanceComputer query_distance(distance, node);
-      const std::vector<GraphSearchResult> search_results = searcher.Search(
-          query_distance, entry_points,
-          GraphSearchOptions{options_.search_width, false, nullptr}, &searched,
-          &local_stats.search);
-      const NeighborList candidates = CollectCandidates(
-          graph, node, search_results, query_distance, &pooled,
-          options_.candidate_pool_size, &local_stats);
-      const NeighborList selected = pruner.Prune(
-          candidates, degree, query_distance, &local_stats.pruning);
-      const std::vector<GraphId> ids = NeighborIds(selected);
-      graph.SetNeighbors(node, ids);
-      for (const NeighborCandidate& neighbor : selected) {
-        InsertReciprocal(&graph, node, neighbor.id, distance, pruner, degree,
-                         &local_stats);
+    // Start with a live, connected bootstrap; thereafter each batch reads a
+    // fixed graph snapshot while workers propose outgoing edges. Only the
+    // ordered commit stage mutates adjacency and reciprocal edges.
+    const size_t bootstrap =
+        workers == 1 || pass > 0 ? 0 : std::min(node_count, size_t{1024});
+    const size_t batch_size = workers == 1 ? 1 : 1024;
+    for (size_t begin = 0; begin < node_count; begin += batch_size) {
+      const size_t end = std::min(node_count, begin + batch_size);
+      std::vector<NeighborList> selected(end - begin);
+      const size_t serial_end =
+          begin < bootstrap ? std::min(end, bootstrap) : begin;
+      const auto propose = [&](size_t position,
+                               DistanceComputer& worker_distance,
+                               VisitedTable* worker_visited,
+                               VisitedTable* worker_pool,
+                               VamanaBuildStats* partial) {
+        const GraphId node = order[position];
+        NodeQueryDistanceComputer query_distance(worker_distance, node);
+        const std::vector<GraphSearchResult> search_results = searcher.Search(
+            query_distance, entry_points,
+            GraphSearchOptions{options_.search_width, false, nullptr},
+            worker_visited, &partial->search);
+        const NeighborList candidates = CollectCandidates(
+            graph, node, search_results, query_distance, worker_pool,
+            options_.candidate_pool_size, partial);
+        selected[position - begin] =
+            pruner.Prune(candidates, degree, query_distance, &partial->pruning);
+        ++partial->nodes_processed;
+      };
+      const auto commit = [&](size_t position) {
+        const GraphId node = order[position];
+        const NeighborList& neighbors = selected[position - begin];
+        graph.SetNeighbors(node, NeighborIds(neighbors));
+        for (const NeighborCandidate& neighbor : neighbors) {
+          InsertReciprocal(&graph, node, neighbor.id, distance, pruner, degree,
+                           &local_stats);
+        }
+      };
+      for (size_t position = begin; position < serial_end; ++position) {
+        propose(position, distance, &searched, &pooled, &local_stats);
+        commit(position);
       }
-      ++local_stats.nodes_processed;
+      if (serial_end == end) {
+        continue;
+      }
+      if (workers == 1) {
+        propose(begin, distance, &searched, &pooled, &local_stats);
+      } else {
+        std::exception_ptr error;
+        std::mutex error_mutex;
+        std::atomic<bool> failed{false};
+#pragma omp parallel for num_threads(static_cast<int>(workers)) \
+    schedule(dynamic, 8)
+        for (std::ptrdiff_t position = static_cast<std::ptrdiff_t>(serial_end);
+             position < static_cast<std::ptrdiff_t>(end); ++position) {
+          if (failed.load()) {
+            continue;
+          }
+          const size_t worker = static_cast<size_t>(omp_get_thread_num());
+          try {
+            propose(static_cast<size_t>(position), *distances[worker],
+                    worker_searched[worker].get(), worker_pooled[worker].get(),
+                    &worker_stats[worker]);
+          } catch (...) {
+            std::lock_guard<std::mutex> guard(error_mutex);
+            if (error == nullptr) {
+              error = std::current_exception();
+            }
+            failed.store(true);
+          }
+        }
+        if (error != nullptr) {
+          std::rethrow_exception(error);
+        }
+      }
+      for (size_t position = serial_end; position < end; ++position) {
+        commit(position);
+      }
     }
     ++local_stats.passes_completed;
   }
-  RepairConnectivity(&graph, navigation_point, degree, distance, &local_stats);
+  for (const VamanaBuildStats& partial : worker_stats) {
+    local_stats.Combine(partial);
+  }
+  RepairConnectivity(&graph, navigation_point, degree, options_.search_width,
+                     distance, &local_stats);
 
   if (stats != nullptr) {
     stats->Combine(local_stats);

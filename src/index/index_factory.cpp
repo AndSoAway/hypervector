@@ -235,6 +235,8 @@ std::unique_ptr<Index> MakeDiskANN(const IndexConfig& config) {
   options.alpha = static_cast<float>(config.GetDouble("alpha", 1.2));
   options.build_passes =
       static_cast<size_t>(PositiveIntParameter(config, "build_passes", 2));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   if (config.HasParameter("random_seed")) {
     const int64_t random_seed = config.GetInteger("random_seed", 0);
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -266,6 +268,8 @@ std::unique_ptr<Index> MakeVamana(const IndexConfig& config) {
   options.alpha = static_cast<float>(config.GetDouble("alpha", 1.2));
   options.build_passes =
       static_cast<size_t>(PositiveIntParameter(config, "build_passes", 2));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   if (config.HasParameter("random_seed")) {
     const int64_t random_seed = config.GetInteger("random_seed", 0);
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -401,13 +405,14 @@ std::vector<std::string> HnswParameterNames(
 }
 
 void RegisterBuiltins(IndexRegistry* registry) {
-  registry->Register({"diskann",
-                      {"disk_ann", "IndexDiskANN", "IndexDiskANNFlat"},
-                      {"max_degree", "build_search_width",
-                       "candidate_pool_size", "alpha", "build_passes",
-                       "random_seed", "search_width", "check_relative_distance",
-                       "page_size", "cache_capacity_pages", "node_data_path"}},
-                     MakeDiskANN);
+  registry->Register(
+      {"diskann",
+       {"disk_ann", "IndexDiskANN", "IndexDiskANNFlat"},
+       {"max_degree", "build_search_width", "candidate_pool_size", "alpha",
+        "build_passes", "build_threads", "random_seed", "search_width",
+        "check_relative_distance", "page_size", "cache_capacity_pages",
+        "node_data_path"}},
+      MakeDiskANN);
   registry->Register({"flat", {"IndexFlat"}, {}}, MakeFlat);
   registry->Register({"pq", {"IndexPQ"}, {"m_pq", "nbits"}}, MakePQ);
   registry->Register(
@@ -460,7 +465,7 @@ void RegisterBuiltins(IndexRegistry* registry) {
       {"vamana_flat",
        {"vamana", "vamanaflat", "IndexVamana", "IndexVamanaFlat"},
        {"max_degree", "build_search_width", "candidate_pool_size", "alpha",
-        "build_passes", "random_seed", "search_width",
+        "build_passes", "build_threads", "random_seed", "search_width",
         "check_relative_distance"}},
       MakeVamana);
 }

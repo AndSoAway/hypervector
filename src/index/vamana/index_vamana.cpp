@@ -37,6 +37,7 @@ VamanaBuildOptions GraphBuildOptions(const VamanaIndexOptions& options) {
   builder_options.candidate_pool_size = options.candidate_pool_size;
   builder_options.alpha = options.alpha;
   builder_options.build_passes = options.build_passes;
+  builder_options.build_threads = options.build_threads;
   builder_options.random_seed = options.random_seed;
   return builder_options;
 }
@@ -153,7 +154,10 @@ void IndexVamana::Build(idx_t n, const float* x) {
       SelectNavigationPoint(n, d, x, distance.get());
   VamanaBuildStats staged_stats;
   MutableBoundedGraph staged_mutable = builder_.Build(
-      *distance, static_cast<size_t>(n), staged_entry_point, &staged_stats);
+      *distance, static_cast<size_t>(n), staged_entry_point, &staged_stats,
+      [this, &staged_store] {
+        return quantizer_->CreateDistanceComputer(staged_store.View());
+      });
   FixedDegreeGraph staged_graph(staged_mutable);
   const GraphValidationReport report =
       ValidateGraph(staged_graph, staged_entry_point);

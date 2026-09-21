@@ -16,7 +16,53 @@ Some of the methods, like those based on binary vectors and compact quantization
 
 ## Installing
 
-HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-cpu](https://anaconda.org/pytorch/hypervec-cpu). The library is mostly implemented in C++, the only dependency is a [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms) implementation. The Python interface is also optional. It compiles with cmake. See [INSTALL.md](INSTALL.md) for details.
+HyperVec is mostly implemented in C++. A source build requires a C++20
+compiler, CMake 3.16 or newer, OpenMP, BLAS, and LAPACK. The optional Python
+extension additionally requires Python development files, NumPy, and SWIG.
+
+### Building from source
+
+The current CMake build provides the portable `generic` CPU target. Other
+optimization levels, the MKL-specific switch, and the C API switch are reserved
+but not implemented; requesting one fails during configuration instead of
+silently producing the wrong build.
+
+The default configuration builds only the core library and does not download
+dependencies:
+
+```bash
+cmake -S . -B build/release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_OPT_LEVEL=generic \
+  -DBUILD_TESTING=OFF
+cmake --build build/release -j
+```
+
+To build the C++ unit tests with an installed GoogleTest package:
+
+```bash
+cmake -S . -B build/test \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_TESTING=ON \
+  -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+  -DHYPERVEC_FETCH_DEPS=OFF
+cmake --build build/test -j
+ctest --test-dir build/test --output-on-failure
+```
+
+If GoogleTest is unavailable, configuration stops with an actionable error.
+Set `HYPERVEC_FETCH_DEPS=ON` only when CMake is explicitly allowed to download
+the pinned test dependency.
+
+Examples are opt-in and build as normal targets:
+
+```bash
+cmake -S . -B build/examples \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_ENABLE_EXTRAS=ON \
+  -DBUILD_TESTING=OFF
+cmake --build build/examples -j
+```
 
 ## How HyperVec works
 

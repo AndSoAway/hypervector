@@ -7,9 +7,7 @@ cmake_minimum_required(VERSION 3.10)
 
 project(hypervec VERSION 1.0.0)
 
-# =============================================================================
-# Minimal HNSW-only HyperVec Build Configuration
-# =============================================================================
+# CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
   index/index.cpp

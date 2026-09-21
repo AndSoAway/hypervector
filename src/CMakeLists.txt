@@ -42,6 +42,7 @@ set(HYPERVEC_SRC
   index/nsw/index_nsw.cpp
   index/vamana/index_vamana.cpp
   index/pretransform/index_pre_transform.cpp
+  index/refine/index_rerank.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
   persistence/index_io_builtins.cpp

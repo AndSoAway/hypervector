@@ -153,6 +153,27 @@ def main():
             report["artifacts"]["ground_truth"], ground_truth
         )
         assert_process_memory(report["resources"], "after_search")
+        assert report["rerank"]["enabled"] is False
+
+        rerank_report_path = directory / "rerank-report.json"
+        run(
+            eval_tool,
+            "--index", index,
+            "--queries", queries,
+            "--ground-truth", ground_truth,
+            "--metric", "l2",
+            "--k", 2,
+            "--warmup-runs", 0,
+            "--measured-runs", 1,
+            "--rerank-base", base,
+            "--rerank-candidates", 3,
+            "--json-output", rerank_report_path,
+        )
+        rerank_report = json.loads(rerank_report_path.read_text(encoding="utf-8"))
+        assert rerank_report["rerank"]["enabled"] is True
+        assert rerank_report["rerank"]["candidates"] == 3
+        assert_fingerprint(rerank_report["rerank"]["exact_base"], base)
+        assert rerank_report["metrics"]["recall_at_k"] == 1.0
 
         concurrent_report_path = directory / "concurrent-report.json"
         run(

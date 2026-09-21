@@ -12,7 +12,6 @@
 #include <utils/log/assert.h>
 #include <utils/log/exception.h>
 #include <utils/structures/heap.h>
-#include <utils/structures/random.h>
 
 #include <algorithm>
 #include <cstring>
@@ -88,26 +87,6 @@ void DecodeImpl(const ProductQuantizer& pq, const uint8_t* code, float* x) {
   }
 }
 
-std::vector<idx_t> SampleTrainingRows(idx_t count, idx_t sample_count,
-                                      int seed) {
-  HYPERVEC_ASSERT(sample_count >= 0 && sample_count <= count);
-  std::vector<idx_t> rows(static_cast<size_t>(sample_count));
-  for (idx_t i = 0; i < sample_count; ++i) {
-    rows[static_cast<size_t>(i)] = i;
-  }
-
-  RandomGenerator random(seed);
-  for (idx_t i = sample_count; i < count; ++i) {
-    const uint64_t position = static_cast<uint64_t>(random.rand_int64()) %
-                              (static_cast<uint64_t>(i) + 1U);
-    if (position < static_cast<uint64_t>(sample_count)) {
-      rows[static_cast<size_t>(position)] = i;
-    }
-  }
-  std::sort(rows.begin(), rows.end());
-  return rows;
-}
-
 }  // namespace
 
 // ===========================================================================
@@ -179,8 +158,9 @@ void ProductQuantizer::Train(idx_t n, const float* x,
     training_count = std::min(n, static_cast<idx_t>(training_limit));
   }
   const std::vector<idx_t> training_rows =
-      training_count < n ? SampleTrainingRows(n, training_count, params.seed)
-                         : std::vector<idx_t>{};
+      training_count < n
+          ? SampleKMeansTrainingRows(n, training_count, params.seed)
+          : std::vector<idx_t>{};
 
   // Subquantizers are independent — train them in parallel. Each thread
   // needs its own sampled slice buffer to hold one subspace contiguously.
@@ -203,6 +183,7 @@ void ProductQuantizer::Train(idx_t n, const float* x,
     kp.nredo = params.nredo;
     kp.verbose = params.verbose;
     kp.metric = kMetricL2;  // T1 scope: L2 only
+    kp.max_points_per_centroid = 0;  // sampling already happened above
 
 #pragma omp for
     for (idx_t m = 0; m < M; m++) {

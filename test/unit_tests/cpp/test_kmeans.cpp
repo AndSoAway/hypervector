@@ -7,12 +7,12 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -120,6 +120,45 @@ TEST(KMeans, NRedoBeatsSingleRun) {
   // The best of 5 redos must not be worse than a single run with the same
   // base seed (redo=0 of the multi run uses the same seed as `single`).
   EXPECT_LE(obj_multi, obj_single + 1e-4f);
+}
+
+TEST(KMeans, BoundedTrainingMatchesExplicitDeterministicSample) {
+  const hypervec::idx_t d = 4;
+  const hypervec::idx_t k = 4;
+  const hypervec::idx_t n = 128;
+  const std::vector<float> x = MakeClusteredData(d, 8, n / 8, 73);
+
+  hypervec::KMeansParameters bounded_params;
+  bounded_params.niter = 4;
+  bounded_params.max_points_per_centroid = 2;
+  std::vector<float> bounded_centroids(static_cast<size_t>(k) * d);
+  const float bounded_objective = hypervec::RunKMeans(
+      n, x.data(), d, k, bounded_centroids.data(), bounded_params);
+
+  const hypervec::idx_t sample_count =
+      k * bounded_params.max_points_per_centroid;
+  const std::vector<hypervec::idx_t> rows =
+      hypervec::SampleKMeansTrainingRows(n, sample_count, bounded_params.seed);
+  std::vector<float> sampled(static_cast<size_t>(sample_count) * d);
+  for (hypervec::idx_t i = 0; i < sample_count; ++i) {
+    std::copy_n(x.data() + rows[static_cast<size_t>(i)] * d, d,
+                sampled.data() + i * d);
+  }
+
+  hypervec::KMeansParameters explicit_params = bounded_params;
+  explicit_params.max_points_per_centroid = 0;
+  std::vector<float> explicit_centroids(static_cast<size_t>(k) * d);
+  const float explicit_objective =
+      hypervec::RunKMeans(sample_count, sampled.data(), d, k,
+                          explicit_centroids.data(), explicit_params);
+
+  EXPECT_FLOAT_EQ(bounded_objective, explicit_objective);
+  EXPECT_EQ(bounded_centroids, explicit_centroids);
+
+  bounded_params.max_points_per_centroid = -1;
+  EXPECT_THROW(hypervec::RunKMeans(n, x.data(), d, k, bounded_centroids.data(),
+                                   bounded_params),
+               hypervec::HypervecException);
 }
 
 TEST(KMeans, NEqualsKEachClusterHoldsOnePoint) {

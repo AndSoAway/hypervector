@@ -10,10 +10,14 @@
 #include <invlists/inverted_lists.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/pq_quantizer_adapter.h>
+#include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cinttypes>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -223,26 +227,62 @@ void IndexIVFPQ::Train(idx_t n, const float* x) {
 
   std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
   ProductQuantizer trained_pq(pq.d, pq.M, pq.nbits);
-  ProductQuantizerAdapter trained_quantizer(trained_pq);
+  PQParameters pq_params;
+  ProductQuantizerAdapter trained_quantizer(trained_pq, pq_params);
 
   if (by_residual) {
-    std::vector<float> coarse_dis(static_cast<size_t>(n));
-    std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
-    FindNearestCentroidsIn(trained_centroids, n, x, 1, coarse_dis.data(),
-                           centroid_ids.data());
+    // PQ trains on at most ksub * max_points_per_centroid rows. Select them
+    // before computing residuals, avoiding an all-row coarse assignment and
+    // an n*d temporary that the quantizer would immediately discard.
+    idx_t training_count = n;
+    if (pq_params.max_points_per_centroid > 0) {
+      const size_t limit = mul_no_overflow(
+          static_cast<size_t>(trained_pq.ksub),
+          static_cast<size_t>(pq_params.max_points_per_centroid),
+          "IndexIVFPQ training sample limit");
+      HYPERVEC_THROW_IF_NOT_MSG(
+          limit <= static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+          "IndexIVFPQ training sample limit exceeds idx_t");
+      training_count = std::min(n, static_cast<idx_t>(limit));
+    }
 
-    std::vector<float> residuals(static_cast<size_t>(n) * d);
-    for (idx_t i = 0; i < n; i++) {
+    std::vector<float> sampled_vectors;
+    const float* training_vectors = x;
+    if (training_count < n) {
+      const std::vector<idx_t> rows =
+          SampleKMeansTrainingRows(n, training_count, pq_params.seed);
+      sampled_vectors.resize(mul_no_overflow(
+          static_cast<size_t>(training_count), static_cast<size_t>(d),
+          "IndexIVFPQ training vectors"));
+      for (idx_t i = 0; i < training_count; ++i) {
+        std::memcpy(sampled_vectors.data() + i * d,
+                    x + rows[static_cast<size_t>(i)] * d,
+                    static_cast<size_t>(d) * sizeof(float));
+      }
+      training_vectors = sampled_vectors.data();
+    }
+
+    std::vector<float> coarse_dis(static_cast<size_t>(training_count));
+    std::vector<idx_t> centroid_ids(static_cast<size_t>(training_count));
+    FindNearestCentroidsIn(trained_centroids, training_count, training_vectors,
+                           1, coarse_dis.data(), centroid_ids.data());
+
+    std::vector<float> residuals(mul_no_overflow(
+        static_cast<size_t>(training_count), static_cast<size_t>(d),
+        "IndexIVFPQ training residuals"));
+    for (idx_t i = 0; i < training_count; ++i) {
       const float* c =
           trained_centroids.data() + centroid_ids[static_cast<size_t>(i)] * d;
-      const float* xi = x + i * d;
+      const float* xi = training_vectors + i * d;
       float* ri = residuals.data() + i * d;
       for (idx_t j = 0; j < d; j++) {
         ri[j] = xi[j] - c[j];
       }
     }
 
-    trained_quantizer.Train(n, residuals.data());
+    pq_params.max_points_per_centroid = 0;  // already sampled above
+    ProductQuantizerAdapter residual_quantizer(trained_pq, pq_params);
+    residual_quantizer.Train(training_count, residuals.data());
   } else {
     trained_quantizer.Train(n, x);
   }

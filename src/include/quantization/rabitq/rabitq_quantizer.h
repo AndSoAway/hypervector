@@ -81,7 +81,7 @@ class RaBitQQuantizer final : public Quantizer {
       EncodedVectorView store) const override;
 
  private:
-  void ApplyRotation(std::vector<float>* values) const;
+  void ApplyRotation(float* values) const;
   void ApplyInverseRotation(std::vector<float>* values) const;
   float ReadFactor(const uint8_t* code, size_t offset) const;
   void WriteFactor(float value, size_t offset, uint8_t* code) const;

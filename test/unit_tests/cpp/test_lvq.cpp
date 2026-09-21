@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <index/hnsw/index_hnsw_lvq.h>
+#include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
@@ -22,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -78,6 +80,24 @@ TEST(LocalVectorQuantizer, TrainEncodeDecodeSmoke) {
   for (float v : decoded) {
     EXPECT_TRUE(std::isfinite(v));
   }
+}
+
+TEST(LocalVectorQuantizer, BatchCodesMatchSingleVectorEncoding) {
+  constexpr hypervec::idx_t dimension = 8;
+  constexpr hypervec::idx_t count = 400;
+  const auto vectors = RandomVectors(count, dimension, 121, 5.0F);
+  hypervec::LocalVectorQuantizer lvq(dimension, 8, 4);
+  lvq.Train(count, vectors.data());
+
+  std::vector<uint8_t> batch(static_cast<size_t>(count) * lvq.code_size);
+  std::vector<uint8_t> individual(batch.size());
+  lvq.ComputeCodes(count, vectors.data(), batch.data());
+  for (hypervec::idx_t row = 0; row < count; ++row) {
+    lvq.ComputeCode(
+        vectors.data() + row * dimension,
+        individual.data() + static_cast<size_t>(row) * lvq.code_size);
+  }
+  EXPECT_EQ(batch, individual);
 }
 
 TEST(LocalVectorQuantizer, BoundedTrainingMatchesExplicitSample) {
@@ -268,6 +288,48 @@ TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(nq) * k);
   idx.Search(nq, query.data(), k, distances.data(), labels.data());
   ExpectSortedValid(distances, labels, nq, k, nb);
+}
+
+TEST(IndexIVFLVQ, ResidualBatchesMatchSingleCodesAndStoredLists) {
+  constexpr hypervec::idx_t dimension = 4;
+  constexpr hypervec::idx_t count = 8193;
+  const auto vectors = RandomVectors(count, dimension, 832, 4.0F);
+  hypervec::IndexIVFLVQ index(dimension, 2, 2, 2);
+  index.Train(count, vectors.data());
+
+  const size_t code_size = index.lvq.code_size;
+  std::vector<uint8_t> batch(static_cast<size_t>(count) * code_size);
+  index.EncodeVectors(count, vectors.data(), batch.data());
+  for (hypervec::idx_t row :
+       {hypervec::idx_t{0}, hypervec::idx_t{8191}, hypervec::idx_t{8192}}) {
+    const float* vector = vectors.data() + row * dimension;
+    float coarse_distance = 0.0F;
+    hypervec::idx_t centroid_id = -1;
+    index.FindNearestCentroids(1, vector, 1, &coarse_distance, &centroid_id);
+    std::vector<float> residual(static_cast<size_t>(dimension));
+    const float* centroid = index.centroids.data() + centroid_id * dimension;
+    for (hypervec::idx_t column = 0; column < dimension; ++column) {
+      residual[static_cast<size_t>(column)] = vector[column] - centroid[column];
+    }
+    std::vector<uint8_t> individual(code_size);
+    index.lvq.ComputeCode(residual.data(), individual.data());
+    EXPECT_EQ(std::memcmp(batch.data() + static_cast<size_t>(row) * code_size,
+                          individual.data(), code_size),
+              0);
+  }
+
+  index.Add(count, vectors.data());
+  for (hypervec::idx_t list = 0; list < index.nlist; ++list) {
+    hypervec::InvertedLists::ScopedCodes codes(index.invlists, list);
+    hypervec::InvertedLists::ScopedIds ids(index.invlists, list);
+    for (size_t offset = 0; offset < index.invlists->list_size(list);
+         ++offset) {
+      const auto row = static_cast<size_t>(ids.get()[offset]);
+      EXPECT_EQ(std::memcmp(codes.get() + offset * code_size,
+                            batch.data() + row * code_size, code_size),
+                0);
+    }
+  }
 }
 
 TEST(IndexIVFLVQ, ScannerRangeSearchSupportsResidualAndRawCodes) {

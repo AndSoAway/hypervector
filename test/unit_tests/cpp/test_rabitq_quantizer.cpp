@@ -175,6 +175,31 @@ TEST(RaBitQQuantizer, PreparedLookupMatchesScalarEstimates) {
   }
 }
 
+TEST(RaBitQQuantizer, DistanceComputerMatchesScalarAcrossQueries) {
+  constexpr hypervec::idx_t dimension = 65;
+  constexpr hypervec::idx_t count = 17;
+  hypervec::RaBitQQuantizer quantizer(dimension, 2026, 3);
+  const auto vectors = MakeVectors(count, dimension);
+  std::vector<uint8_t> codes(static_cast<size_t>(count) * quantizer.CodeSize());
+  quantizer.Encode(count, vectors.data(), codes.data());
+  auto distance = quantizer.CreateDistanceComputer(
+      hypervec::EncodedVectorView(codes.data(), count, quantizer.CodeSize()));
+
+  for (hypervec::idx_t query = 0; query < 5; ++query) {
+    const float* input = vectors.data() + query * dimension;
+    std::vector<float> rotated(quantizer.RotatedDimension());
+    quantizer.Transform(input, rotated.data());
+    distance->SetQuery(input);
+    for (hypervec::idx_t row = 0; row < count; ++row) {
+      const float expected = quantizer.EstimateSquaredDistance(
+          rotated.data(), SquaredNorm(input, dimension),
+          codes.data() + static_cast<size_t>(row) * quantizer.CodeSize());
+      EXPECT_NEAR((*distance)(row), expected,
+                  0.0001F * (1.0F + SquaredNorm(input, dimension)));
+    }
+  }
+}
+
 TEST(RaBitQQuantizer, HandlesZeroVectorsAndRejectsInvalidState) {
   EXPECT_THROW(hypervec::RaBitQQuantizer(0), hypervec::HypervecException);
   EXPECT_THROW(hypervec::RaBitQQuantizer(4, 1, 0), hypervec::HypervecException);

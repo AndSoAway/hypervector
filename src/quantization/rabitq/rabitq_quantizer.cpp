@@ -48,22 +48,21 @@ uint64_t SplitMix64(uint64_t* state) {
   return value ^ (value >> 31);
 }
 
-void Hadamard(std::vector<float>* values) {
-  const size_t size = values->size();
+void Hadamard(float* values, size_t size) {
   for (size_t half = 1; half < size; half *= 2) {
     const size_t span = half * 2;
     for (size_t begin = 0; begin < size; begin += span) {
       for (size_t offset = 0; offset < half; ++offset) {
-        const float lhs = (*values)[begin + offset];
-        const float rhs = (*values)[begin + half + offset];
-        (*values)[begin + offset] = lhs + rhs;
-        (*values)[begin + half + offset] = lhs - rhs;
+        const float lhs = values[begin + offset];
+        const float rhs = values[begin + half + offset];
+        values[begin + offset] = lhs + rhs;
+        values[begin + half + offset] = lhs - rhs;
       }
     }
   }
   const float scale = 1.0F / std::sqrt(static_cast<float>(size));
-  for (float& value : *values) {
-    value *= scale;
+  for (size_t i = 0; i < size; ++i) {
+    values[i] *= scale;
   }
 }
 
@@ -98,6 +97,7 @@ class RaBitQDistanceComputer final : public DistanceComputer {
     query_norm_squared_ =
         SquaredNorm(query, quantizer_.Dimension(), "RaBitQ query");
     quantizer_.Transform(query, rotated_query_.data());
+    quantizer_.PrepareDistanceLut(rotated_query_.data(), &distance_lut_);
     query_ready_ = true;
   }
 
@@ -105,8 +105,8 @@ class RaBitQDistanceComputer final : public DistanceComputer {
     HYPERVEC_THROW_IF_NOT_MSG(
         query_ready_,
         "RaBitQQuantizer: SetQuery must be called before distance evaluation");
-    return quantizer_.EstimateSquaredDistance(
-        rotated_query_.data(), query_norm_squared_, store_.Code(index));
+    return quantizer_.EstimateSquaredDistanceWithLut(
+        query_norm_squared_, store_.Code(index), distance_lut_);
   }
 
   float symmetric_dis(idx_t lhs, idx_t rhs) override {
@@ -126,6 +126,7 @@ class RaBitQDistanceComputer final : public DistanceComputer {
   const RaBitQQuantizer& quantizer_;
   EncodedVectorView store_;
   std::vector<float> rotated_query_;
+  RaBitQQuantizer::DistanceLut distance_lut_;
   std::vector<float> decoded_lhs_;
   std::vector<float> decoded_rhs_;
   float query_norm_squared_ = 0.0F;
@@ -156,20 +157,20 @@ RaBitQQuantizer::RaBitQQuantizer(idx_t dimension, uint64_t seed,
   }
 }
 
-void RaBitQQuantizer::ApplyRotation(std::vector<float>* values) const {
+void RaBitQQuantizer::ApplyRotation(float* values) const {
   for (int round = 0; round < rotation_rounds_; ++round) {
     const int8_t* signs = rotation_signs_.data() +
                           static_cast<size_t>(round) * rotated_dimension_;
     for (size_t i = 0; i < rotated_dimension_; ++i) {
-      (*values)[i] *= signs[i];
+      values[i] *= signs[i];
     }
-    Hadamard(values);
+    Hadamard(values, rotated_dimension_);
   }
 }
 
 void RaBitQQuantizer::ApplyInverseRotation(std::vector<float>* values) const {
   for (int round = rotation_rounds_; round-- > 0;) {
-    Hadamard(values);
+    Hadamard(values->data(), rotated_dimension_);
     const int8_t* signs = rotation_signs_.data() +
                           static_cast<size_t>(round) * rotated_dimension_;
     for (size_t i = 0; i < rotated_dimension_; ++i) {
@@ -182,10 +183,10 @@ void RaBitQQuantizer::Transform(const float* vector, float* rotated) const {
   HYPERVEC_THROW_IF_NOT_MSG(vector != nullptr && rotated != nullptr,
                             "RaBitQQuantizer::Transform: buffers are null");
   SquaredNorm(vector, dimension_, "RaBitQQuantizer::Transform");
-  std::vector<float> values(rotated_dimension_, 0.0F);
-  std::copy(vector, vector + dimension_, values.begin());
-  ApplyRotation(&values);
-  std::copy(values.begin(), values.end(), rotated);
+  std::memmove(rotated, vector,
+               static_cast<size_t>(dimension_) * sizeof(float));
+  std::fill(rotated + dimension_, rotated + rotated_dimension_, 0.0F);
+  ApplyRotation(rotated);
 }
 
 void RaBitQQuantizer::InverseTransform(const float* rotated,
@@ -225,7 +226,11 @@ void RaBitQQuantizer::EncodeImpl(idx_t count, const float* vectors,
     std::memset(code, 0, code_size_);
     const float norm_squared =
         SquaredNorm(vector, dimension_, "RaBitQQuantizer::Encode");
-    Transform(vector, rotated.data());
+    // SquaredNorm above already validated the input; reuse the batch scratch
+    // instead of allocating a padded vector and validating it again per row.
+    std::copy(vector, vector + dimension_, rotated.begin());
+    std::fill(rotated.begin() + dimension_, rotated.end(), 0.0F);
+    ApplyRotation(rotated.data());
 
     double absolute_sum = 0.0;
     for (size_t i = 0; i < rotated_dimension_; ++i) {

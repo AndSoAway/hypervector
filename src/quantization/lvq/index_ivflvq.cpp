@@ -13,6 +13,7 @@
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -21,6 +22,33 @@
 
 namespace hypervec {
 namespace {
+
+void EncodeResidualBatches(const LocalVectorQuantizerAdapter& quantizer,
+                           const std::vector<float>& centroids,
+                           const idx_t* centroid_ids, idx_t count,
+                           const float* vectors, uint8_t* codes) {
+  constexpr idx_t kBatchSize = 8192;
+  const idx_t dimension = quantizer.Dimension();
+  const idx_t capacity = std::min(count, kBatchSize);
+  std::vector<float> residuals(mul_no_overflow(static_cast<size_t>(capacity),
+                                               static_cast<size_t>(dimension),
+                                               "IndexIVFLVQ residual batch"));
+  for (idx_t begin = 0; begin < count; begin += kBatchSize) {
+    const idx_t batch_count = std::min(kBatchSize, count - begin);
+    for (idx_t local = 0; local < batch_count; ++local) {
+      const idx_t row = begin + local;
+      const float* centroid =
+          centroids.data() + centroid_ids[static_cast<size_t>(row)] * dimension;
+      const float* vector = vectors + row * dimension;
+      float* residual = residuals.data() + local * dimension;
+      for (idx_t column = 0; column < dimension; ++column) {
+        residual[column] = vector[column] - centroid[column];
+      }
+    }
+    quantizer.Encode(batch_count, residuals.data(),
+                     codes + static_cast<size_t>(begin) * quantizer.CodeSize());
+  }
+}
 
 class LVQInvertedListScanner final : public InvertedListScanner {
  public:
@@ -193,19 +221,7 @@ void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
   std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
   FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
 
-  const size_t residual_count =
-      mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(d),
-                      "IndexIVFLVQ::EncodeVectors residual count");
-  std::vector<float> residuals(residual_count);
-  for (idx_t i = 0; i < n; i++) {
-    const float* c = centroids.data() + centroid_ids[i] * d;
-    const float* xi = x + i * d;
-    float* ri = residuals.data() + i * d;
-    for (idx_t j = 0; j < d; j++) {
-      ri[j] = xi[j] - c[j];
-    }
-  }
-  quantizer.Encode(n, residuals.data(), codes);
+  EncodeResidualBatches(quantizer, centroids, centroid_ids.data(), n, x, codes);
 }
 
 void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
@@ -230,17 +246,8 @@ void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
                       "IndexIVFLVQ::AddWithIds code bytes");
   std::vector<uint8_t> codes(code_bytes);
   if (by_residual) {
-    std::vector<float> residual(static_cast<size_t>(d));
-    for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() + centroid_ids[i] * d;
-      const float* xi = x + i * d;
-      for (idx_t j = 0; j < d; j++) {
-        residual[static_cast<size_t>(j)] = xi[j] - c[j];
-      }
-      quantizer.Encode(
-          1, residual.data(),
-          codes.data() + static_cast<size_t>(i) * quantizer.CodeSize());
-    }
+    EncodeResidualBatches(quantizer, centroids, centroid_ids.data(), n, x,
+                          codes.data());
   } else {
     quantizer.Encode(n, x, codes.data());
   }

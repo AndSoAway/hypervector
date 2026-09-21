@@ -11,14 +11,20 @@
 #include <quantization/rabitq/index_ivf_rabitq.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace hypervec {
 namespace {
@@ -48,6 +54,59 @@ void ValidateVectors(idx_t n, const float* vectors, idx_t dimension,
                   "RaBitQ vector element count");
   for (idx_t row = 0; row < n; ++row) {
     SquaredNorm(vectors + row * dimension, dimension, operation);
+  }
+}
+
+void EncodeResidualBatches(const RaBitQQuantizer& quantizer,
+                           const std::vector<float>& centroids,
+                           const idx_t* centroid_ids, idx_t count,
+                           const float* vectors, uint8_t* codes) {
+  constexpr idx_t kBatchSize = 256;
+  if (count == 0) {
+    return;
+  }
+  const idx_t dimension = quantizer.Dimension();
+  const idx_t batch_capacity = std::min(count, kBatchSize);
+  const size_t scratch_size = mul_no_overflow(
+      static_cast<size_t>(batch_capacity), static_cast<size_t>(dimension),
+      "IndexIVFRaBitQ residual batch");
+  const idx_t batches = 1 + (count - 1) / kBatchSize;
+  std::vector<std::exception_ptr> exceptions;
+#ifdef _OPENMP
+  const int threads =
+      std::min({32, omp_get_max_threads(),
+                static_cast<int>(std::min<idx_t>(batches, 32))});
+#pragma omp parallel if (batches > 1) num_threads(threads)
+#endif
+  {
+    std::vector<float> residuals(scratch_size);
+#pragma omp for schedule(static)
+    for (idx_t batch = 0; batch < batches; ++batch) {
+      try {
+        const idx_t begin = batch * kBatchSize;
+        const idx_t batch_count = std::min(kBatchSize, count - begin);
+        for (idx_t local = 0; local < batch_count; ++local) {
+          const idx_t row = begin + local;
+          const float* centroid =
+              centroids.data() +
+              centroid_ids[static_cast<size_t>(row)] * dimension;
+          const float* vector = vectors + row * dimension;
+          float* residual = residuals.data() + local * dimension;
+          for (idx_t column = 0; column < dimension; ++column) {
+            residual[column] = vector[column] - centroid[column];
+          }
+        }
+        quantizer.Encode(
+            batch_count, residuals.data(),
+            codes + static_cast<size_t>(begin) * quantizer.CodeSize());
+      } catch (...) {
+#pragma omp critical
+        exceptions.push_back(std::current_exception());
+      }
+    }
+  }
+  if (!exceptions.empty()) {
+    std::rethrow_exception(exceptions.front());
   }
 }
 
@@ -191,20 +250,7 @@ void IndexIVFRaBitQ::EncodeVectors(idx_t n, const float* x,
   std::vector<float> coarse_distances(static_cast<size_t>(n));
   std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
   FindNearestCentroids(n, x, 1, coarse_distances.data(), centroid_ids.data());
-  const size_t residual_count =
-      mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(d),
-                      "IndexIVFRaBitQ::EncodeVectors residual count");
-  std::vector<float> residuals(residual_count);
-  for (idx_t row = 0; row < n; ++row) {
-    const float* centroid =
-        centroids.data() + centroid_ids[static_cast<size_t>(row)] * d;
-    const float* vector = x + row * d;
-    float* residual = residuals.data() + row * d;
-    for (idx_t column = 0; column < d; ++column) {
-      residual[column] = vector[column] - centroid[column];
-    }
-  }
-  rabitq->Encode(n, residuals.data(), codes);
+  EncodeResidualBatches(*rabitq, centroids, centroid_ids.data(), n, x, codes);
 }
 
 void IndexIVFRaBitQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
@@ -232,19 +278,8 @@ void IndexIVFRaBitQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
   std::vector<uint8_t> codes(code_bytes);
 
   if (by_residual) {
-    std::vector<float> residual(static_cast<size_t>(d));
-    for (idx_t row = 0; row < n; ++row) {
-      const float* centroid =
-          centroids.data() + centroid_ids[static_cast<size_t>(row)] * d;
-      const float* vector = x + row * d;
-      for (idx_t column = 0; column < d; ++column) {
-        residual[static_cast<size_t>(column)] =
-            vector[column] - centroid[column];
-      }
-      rabitq->Encode(
-          1, residual.data(),
-          codes.data() + static_cast<size_t>(row) * rabitq->CodeSize());
-    }
+    EncodeResidualBatches(*rabitq, centroids, centroid_ids.data(), n, x,
+                          codes.data());
   } else {
     rabitq->Encode(n, x, codes.data());
   }

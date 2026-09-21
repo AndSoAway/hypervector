@@ -299,7 +299,7 @@ std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
   options.knn_degree =
       static_cast<size_t>(PositiveIntParameter(config, "knn_degree", 64));
   options.nn_descent_iterations = static_cast<size_t>(
-      PositiveIntParameter(config, "nn_descent_iterations", 10));
+      PositiveIntParameter(config, "nn_descent_iterations", 30));
   options.nn_descent_convergence_threshold =
       config.GetDouble("nn_descent_convergence_threshold", 0.001);
   if (config.HasParameter("random_seed")) {

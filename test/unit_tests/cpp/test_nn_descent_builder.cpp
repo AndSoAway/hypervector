@@ -193,6 +193,16 @@ TEST(NNDescentBuilder, ValidatesOptionsAndDoesNotPublishFailedStats) {
   EXPECT_THROW((hypervec::NNDescentBuilder(hypervec::NNDescentOptions{
                    1, 1, std::numeric_limits<double>::infinity(), 1})),
                hypervec::HypervecException);
+  hypervec::NNDescentOptions invalid_sample_rate;
+  invalid_sample_rate.sample_rate = 0.0;
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
+  invalid_sample_rate.sample_rate = 1.1;
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
+  invalid_sample_rate.sample_rate = std::numeric_limits<double>::infinity();
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
 
   NaNDistanceComputer distance;
   const hypervec::NNDescentBuilder builder(
@@ -210,6 +220,10 @@ TEST(NNDescentStats, ResetAndCombineAccumulateBuilds) {
   update.initial_distance_computations = 3;
   update.refinement_distance_computations = 5;
   update.neighbor_updates = 6;
+  update.sampled_old_neighbors = 7;
+  update.sampled_new_neighbors = 8;
+  update.sampled_neighbors_trimmed = 9;
+  update.peak_sampled_neighbors = 10;
   update.converged = true;
 
   aggregate.Combine(update);
@@ -217,6 +231,10 @@ TEST(NNDescentStats, ResetAndCombineAccumulateBuilds) {
   EXPECT_EQ(aggregate.initial_distance_computations, 3U);
   EXPECT_EQ(aggregate.refinement_distance_computations, 5U);
   EXPECT_EQ(aggregate.neighbor_updates, 6U);
+  EXPECT_EQ(aggregate.sampled_old_neighbors, 7U);
+  EXPECT_EQ(aggregate.sampled_new_neighbors, 8U);
+  EXPECT_EQ(aggregate.sampled_neighbors_trimmed, 9U);
+  EXPECT_EQ(aggregate.peak_sampled_neighbors, 10U);
   EXPECT_TRUE(aggregate.converged);
 
   aggregate.Reset();

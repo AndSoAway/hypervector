@@ -21,10 +21,17 @@
 namespace hypervec {
 namespace {
 
-using NeighborList = std::vector<NeighborCandidate>;
+struct TrackedNeighbor {
+  GraphId id;
+  float distance;
+  bool old = false;
+};
 
-bool CandidateOrder(const NeighborCandidate& lhs,
-                    const NeighborCandidate& rhs) noexcept {
+using NeighborList = std::vector<TrackedNeighbor>;
+using SampleList = std::vector<NeighborCandidate>;
+
+template <typename Neighbor>
+bool CandidateOrder(const Neighbor& lhs, const Neighbor& rhs) noexcept {
   if (lhs.distance != rhs.distance) {
     return lhs.distance < rhs.distance;
   }
@@ -37,20 +44,10 @@ void ValidateDistance(float distance) {
       "NNDescentBuilder: distance computation returned NaN");
 }
 
-void AddCandidate(GraphId candidate, size_t node_count, VisitedTable* seen,
-                  std::vector<GraphId>* candidates) {
-  HYPERVEC_THROW_IF_NOT_MSG(
-      candidate >= 0 && static_cast<size_t>(candidate) < node_count,
-      "NNDescentBuilder: candidate ID is outside the graph");
-  if (seen->set(static_cast<size_t>(candidate))) {
-    candidates->push_back(candidate);
-  }
-}
-
 std::vector<GraphId> NeighborIds(const NeighborList& neighbors) {
   std::vector<GraphId> ids;
   ids.reserve(neighbors.size());
-  for (const NeighborCandidate& neighbor : neighbors) {
+  for (const TrackedNeighbor& neighbor : neighbors) {
     ids.push_back(neighbor.id);
   }
   return ids;
@@ -59,7 +56,7 @@ std::vector<GraphId> NeighborIds(const NeighborList& neighbors) {
 size_t CountNewNeighbors(const NeighborList& previous,
                          const NeighborList& replacement) {
   size_t updates = 0;
-  for (const NeighborCandidate& candidate : replacement) {
+  for (const TrackedNeighbor& candidate : replacement) {
     const auto found =
         std::find_if(previous.begin(), previous.end(),
                      [&](const auto& old) { return old.id == candidate.id; });
@@ -68,6 +65,44 @@ size_t CountNewNeighbors(const NeighborList& previous,
     }
   }
   return updates;
+}
+
+void CompactSamples(SampleList* samples, size_t limit, NNDescentStats* stats) {
+  std::sort(samples->begin(), samples->end(),
+            CandidateOrder<NeighborCandidate>);
+  samples->erase(std::unique(samples->begin(), samples->end(),
+                             [](const auto& lhs, const auto& rhs) {
+                               return lhs.id == rhs.id;
+                             }),
+                 samples->end());
+  stats->peak_sampled_neighbors =
+      std::max(stats->peak_sampled_neighbors, samples->size());
+  if (samples->size() > limit) {
+    stats->sampled_neighbors_trimmed += samples->size() - limit;
+    samples->resize(limit);
+  }
+}
+
+void InsertCandidate(GraphId source, const TrackedNeighbor& candidate,
+                     size_t degree, NeighborList* neighbors) {
+  if (candidate.id == source) {
+    return;
+  }
+  if (std::any_of(neighbors->begin(), neighbors->end(),
+                  [&](const auto& item) { return item.id == candidate.id; })) {
+    return;
+  }
+  if (neighbors->size() == degree &&
+      !CandidateOrder(candidate, neighbors->back())) {
+    return;
+  }
+  const auto position =
+      std::lower_bound(neighbors->begin(), neighbors->end(), candidate,
+                       CandidateOrder<TrackedNeighbor>);
+  neighbors->insert(position, candidate);
+  if (neighbors->size() > degree) {
+    neighbors->pop_back();
+  }
 }
 
 size_t SampleBounded(std::mt19937_64* random, size_t bound) {
@@ -90,6 +125,11 @@ void NNDescentStats::Combine(const NNDescentStats& other) noexcept {
   initial_distance_computations += other.initial_distance_computations;
   refinement_distance_computations += other.refinement_distance_computations;
   neighbor_updates += other.neighbor_updates;
+  sampled_old_neighbors += other.sampled_old_neighbors;
+  sampled_new_neighbors += other.sampled_new_neighbors;
+  sampled_neighbors_trimmed += other.sampled_neighbors_trimmed;
+  peak_sampled_neighbors =
+      std::max(peak_sampled_neighbors, other.peak_sampled_neighbors);
   converged = converged || other.converged;
 }
 
@@ -105,6 +145,10 @@ NNDescentBuilder::NNDescentBuilder(NNDescentOptions options)
           options_.convergence_threshold >= 0.0 &&
           options_.convergence_threshold <= 1.0,
       "NNDescentBuilder: convergence_threshold must be in [0, 1]");
+  HYPERVEC_THROW_IF_NOT_MSG(std::isfinite(options_.sample_rate) &&
+                                options_.sample_rate > 0.0 &&
+                                options_.sample_rate <= 1.0,
+                            "NNDescentBuilder: sample_rate must be in (0, 1]");
 }
 
 MutableBoundedGraph NNDescentBuilder::Build(DistanceComputer& distance,
@@ -156,70 +200,87 @@ MutableBoundedGraph NNDescentBuilder::Build(DistanceComputer& distance,
       const float candidate_distance =
           distance.symmetric_dis(static_cast<GraphId>(node), candidate);
       ValidateDistance(candidate_distance);
-      neighbors.push_back({candidate, candidate_distance});
+      neighbors.push_back({candidate, candidate_distance, false});
       ++local_stats.initial_distance_computations;
     }
-    std::sort(neighbors.begin(), neighbors.end(), CandidateOrder);
+    std::sort(neighbors.begin(), neighbors.end(),
+              CandidateOrder<TrackedNeighbor>);
     sampled.advance();
   }
 
   const size_t edge_slots =
       mul_no_overflow(node_count, degree, "NNDescentBuilder edge slots");
-  VisitedTable seen(node_count, false);
+  const size_t sample_limit =
+      mul_no_overflow(degree, size_t{2}, "NNDescentBuilder sample limit");
+  std::mt19937_64 sampling_random(options_.random_seed ^ 0xD1B54A32D192ED03ULL);
+  std::bernoulli_distribution sample_edge(options_.sample_rate);
   for (size_t iteration = 0; iteration < options_.max_iterations; ++iteration) {
-    std::vector<std::vector<GraphId>> reverse(node_count);
+    std::vector<SampleList> old_samples(node_count);
+    std::vector<SampleList> new_samples(node_count);
     for (size_t node = 0; node < node_count; ++node) {
-      for (const NeighborCandidate& neighbor : neighborhoods[node]) {
-        reverse[static_cast<size_t>(neighbor.id)].push_back(
-            static_cast<GraphId>(node));
+      for (TrackedNeighbor& neighbor : neighborhoods[node]) {
+        if (!sample_edge(sampling_random)) {
+          continue;
+        }
+        auto& samples = neighbor.old ? old_samples : new_samples;
+        samples[node].push_back({neighbor.id, neighbor.distance});
+        samples[static_cast<size_t>(neighbor.id)].push_back(
+            {static_cast<GraphId>(node), neighbor.distance});
+        if (neighbor.old) {
+          local_stats.sampled_old_neighbors += 2;
+        } else {
+          local_stats.sampled_new_neighbors += 2;
+          neighbor.old = true;
+        }
       }
     }
 
-    std::vector<NeighborList> refined(node_count);
-    size_t iteration_updates = 0;
     for (size_t node = 0; node < node_count; ++node) {
-      std::vector<GraphId> candidates;
-      candidates.reserve(degree);
-      seen.set(node);
-      for (const NeighborCandidate& neighbor : neighborhoods[node]) {
-        AddCandidate(neighbor.id, node_count, &seen, &candidates);
-      }
-      for (GraphId incoming : reverse[node]) {
-        AddCandidate(incoming, node_count, &seen, &candidates);
-      }
+      CompactSamples(&old_samples[node], sample_limit, &local_stats);
+      CompactSamples(&new_samples[node], sample_limit, &local_stats);
+    }
 
-      const std::vector<GraphId> first_hop = candidates;
-      for (GraphId adjacent : first_hop) {
-        for (const NeighborCandidate& neighbor :
-             neighborhoods[static_cast<size_t>(adjacent)]) {
-          AddCandidate(neighbor.id, node_count, &seen, &candidates);
+    std::vector<NeighborList> refined = neighborhoods;
+    size_t iteration_updates = 0;
+    for (size_t pivot = 0; pivot < node_count; ++pivot) {
+      const SampleList& sampled_new = new_samples[pivot];
+      const SampleList& sampled_old = old_samples[pivot];
+      for (size_t lhs = 0; lhs < sampled_new.size(); ++lhs) {
+        const GraphId first = sampled_new[lhs].id;
+        for (size_t rhs = 0; rhs < lhs; ++rhs) {
+          const GraphId second = sampled_new[rhs].id;
+          if (first == second) {
+            continue;
+          }
+          const float candidate_distance =
+              distance.symmetric_dis(first, second);
+          ValidateDistance(candidate_distance);
+          InsertCandidate(first, {second, candidate_distance, false}, degree,
+                          &refined[static_cast<size_t>(first)]);
+          InsertCandidate(second, {first, candidate_distance, false}, degree,
+                          &refined[static_cast<size_t>(second)]);
+          ++local_stats.refinement_distance_computations;
         }
-        for (GraphId incoming : reverse[static_cast<size_t>(adjacent)]) {
-          AddCandidate(incoming, node_count, &seen, &candidates);
+        for (const NeighborCandidate& old : sampled_old) {
+          const GraphId second = old.id;
+          if (first == second) {
+            continue;
+          }
+          const float candidate_distance =
+              distance.symmetric_dis(first, second);
+          ValidateDistance(candidate_distance);
+          InsertCandidate(first, {second, candidate_distance, false}, degree,
+                          &refined[static_cast<size_t>(first)]);
+          InsertCandidate(second, {first, candidate_distance, false}, degree,
+                          &refined[static_cast<size_t>(second)]);
+          ++local_stats.refinement_distance_computations;
         }
       }
+    }
 
-      NeighborList evaluated;
-      evaluated.reserve(candidates.size());
-      for (GraphId candidate : candidates) {
-        const float candidate_distance =
-            distance.symmetric_dis(static_cast<GraphId>(node), candidate);
-        ValidateDistance(candidate_distance);
-        evaluated.push_back({candidate, candidate_distance});
-        ++local_stats.refinement_distance_computations;
-      }
-      if (evaluated.size() > degree) {
-        std::partial_sort(evaluated.begin(), evaluated.begin() + degree,
-                          evaluated.end(), CandidateOrder);
-        evaluated.resize(degree);
-      } else {
-        std::sort(evaluated.begin(), evaluated.end(), CandidateOrder);
-      }
-      NeighborList& replacement = refined[node];
-      replacement.reserve(degree);
-      replacement.assign(evaluated.begin(), evaluated.end());
-      iteration_updates += CountNewNeighbors(neighborhoods[node], replacement);
-      seen.advance();
+    for (size_t node = 0; node < node_count; ++node) {
+      iteration_updates +=
+          CountNewNeighbors(neighborhoods[node], refined[node]);
     }
 
     neighborhoods = std::move(refined);

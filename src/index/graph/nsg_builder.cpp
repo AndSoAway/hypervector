@@ -32,6 +32,13 @@ bool CandidateOrder(const NeighborCandidate& lhs,
   return lhs.id < rhs.id;
 }
 
+struct CandidateGreater {
+  bool operator()(const NeighborCandidate& lhs,
+                  const NeighborCandidate& rhs) const noexcept {
+    return CandidateOrder(rhs, lhs);
+  }
+};
+
 float ValidateDistance(float distance) {
   HYPERVEC_THROW_IF_NOT_MSG(!std::isnan(distance),
                             "NSGBuilder: distance computation returned NaN");
@@ -71,27 +78,29 @@ void AddCandidate(const NeighborCandidate& candidate, VisitedTable* pooled,
   }
 }
 
-std::vector<bool> FindReachable(const std::vector<NeighborList>& neighborhoods,
-                                size_t node_count, GraphId entry_point,
-                                size_t* reachable_count) {
-  std::vector<bool> reachable(node_count, false);
+void MarkReachable(const std::vector<NeighborList>& neighborhoods,
+                   GraphId entry_point, std::vector<bool>* reachable,
+                   size_t* reachable_count,
+                   std::vector<GraphId>* newly_reachable) {
+  if ((*reachable)[static_cast<size_t>(entry_point)]) {
+    return;
+  }
   std::queue<GraphId> pending;
-  reachable[static_cast<size_t>(entry_point)] = true;
+  (*reachable)[static_cast<size_t>(entry_point)] = true;
   pending.push(entry_point);
-  *reachable_count = 0;
   while (!pending.empty()) {
     const GraphId node = pending.front();
     pending.pop();
     ++*reachable_count;
+    newly_reachable->push_back(node);
     for (const NeighborCandidate& neighbor :
          neighborhoods[static_cast<size_t>(node)]) {
-      if (!reachable[static_cast<size_t>(neighbor.id)]) {
-        reachable[static_cast<size_t>(neighbor.id)] = true;
+      if (!(*reachable)[static_cast<size_t>(neighbor.id)]) {
+        (*reachable)[static_cast<size_t>(neighbor.id)] = true;
         pending.push(neighbor.id);
       }
     }
   }
-  return reachable;
 }
 
 std::vector<GraphId> NeighborIds(const NeighborList& neighbors) {
@@ -238,28 +247,105 @@ MutableBoundedGraph NSGBuilder::Build(const GraphStorage& candidate_graph,
   }
 
   size_t reachable_count = 0;
-  std::vector<bool> reachable = FindReachable(
-      neighborhoods, node_count, navigation_point, &reachable_count);
+  std::vector<bool> reachable(node_count, false);
+  std::vector<GraphId> newly_reachable;
+  MarkReachable(neighborhoods, navigation_point, &reachable, &reachable_count,
+                &newly_reachable);
+  constexpr size_t kNoSourcePosition = (std::numeric_limits<size_t>::max)();
+  std::vector<GraphId> repair_sources;
+  repair_sources.reserve(node_count);
+  std::vector<size_t> source_positions(node_count, kNoSourcePosition);
+  const auto add_sources = [&](const std::vector<GraphId>& nodes) {
+    for (GraphId node : nodes) {
+      const size_t position = static_cast<size_t>(node);
+      if (neighborhoods[position].size() < graph_capacity) {
+        source_positions[position] = repair_sources.size();
+        repair_sources.push_back(node);
+      }
+    }
+  };
+  const auto remove_source = [&](GraphId node) {
+    const size_t node_position = static_cast<size_t>(node);
+    const size_t source_position = source_positions[node_position];
+    HYPERVEC_THROW_IF_NOT_MSG(source_position != kNoSourcePosition,
+                              "NSGBuilder: repair source is not active");
+    const GraphId replacement = repair_sources.back();
+    repair_sources[source_position] = replacement;
+    source_positions[static_cast<size_t>(replacement)] = source_position;
+    repair_sources.pop_back();
+    source_positions[node_position] = kNoSourcePosition;
+  };
+  add_sources(newly_reachable);
+  VisitedTable repair_visited(node_count, false);
+  size_t next_unreachable = 0;
   while (reachable_count < node_count) {
-    const auto target_position =
-        std::find(reachable.begin(), reachable.end(), false);
-    const GraphId target =
-        static_cast<GraphId>(target_position - reachable.begin());
+    while (reachable[next_unreachable]) {
+      ++next_unreachable;
+    }
+    const GraphId target = static_cast<GraphId>(next_unreachable);
     GraphId best_source = kInvalidGraphId;
     float best_distance = (std::numeric_limits<float>::infinity)();
-    for (size_t source = 0; source < node_count; ++source) {
-      if (!reachable[source] ||
-          neighborhoods[source].size() >= graph_capacity) {
-        continue;
+    const auto consider_source = [&](GraphId source, float source_distance) {
+      if (source < 0 ||
+          source_positions[static_cast<size_t>(source)] == kNoSourcePosition) {
+        return;
       }
-      const float source_distance = ValidateDistance(
-          distance.symmetric_dis(static_cast<GraphId>(source), target));
-      ++local_stats.connectivity_distance_computations;
       if (best_source == kInvalidGraphId || source_distance < best_distance ||
-          (source_distance == best_distance &&
-           static_cast<GraphId>(source) < best_source)) {
-        best_source = static_cast<GraphId>(source);
+          (source_distance == best_distance && source < best_source)) {
+        best_source = source;
         best_distance = source_distance;
+      }
+    };
+    const auto evaluate_source = [&](GraphId source) {
+      const float source_distance =
+          ValidateDistance(distance.symmetric_dis(source, target));
+      ++local_stats.connectivity_distance_computations;
+      consider_source(source, source_distance);
+    };
+    for (GraphId source : candidate_graph.Neighbors(target)) {
+      if (reachable[static_cast<size_t>(source)]) {
+        evaluate_source(source);
+      }
+    }
+    for (const NeighborCandidate& source :
+         neighborhoods[static_cast<size_t>(target)]) {
+      if (reachable[static_cast<size_t>(source.id)]) {
+        consider_source(source.id, source.distance);
+      }
+    }
+
+    std::priority_queue<NeighborCandidate, std::vector<NeighborCandidate>,
+                        CandidateGreater>
+        repair_candidates;
+    const auto enqueue = [&](GraphId source) {
+      if (!reachable[static_cast<size_t>(source)] ||
+          !repair_visited.set(static_cast<size_t>(source))) {
+        return;
+      }
+      const float source_distance =
+          ValidateDistance(distance.symmetric_dis(source, target));
+      ++local_stats.connectivity_distance_computations;
+      repair_candidates.push({source, source_distance});
+    };
+    enqueue(navigation_point);
+    size_t expanded = 0;
+    while (!repair_candidates.empty() &&
+           expanded < options_.candidate_pool_size) {
+      const NeighborCandidate candidate = repair_candidates.top();
+      repair_candidates.pop();
+      consider_source(candidate.id, candidate.distance);
+      ++expanded;
+      for (const NeighborCandidate& neighbor :
+           neighborhoods[static_cast<size_t>(candidate.id)]) {
+        enqueue(neighbor.id);
+      }
+    }
+    repair_visited.advance();
+    if (best_source == kInvalidGraphId) {
+      const size_t fallback_count =
+          std::min(options_.candidate_pool_size, repair_sources.size());
+      for (size_t candidate = 0; candidate < fallback_count; ++candidate) {
+        evaluate_source(repair_sources[candidate]);
       }
     }
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -267,9 +353,15 @@ MutableBoundedGraph NSGBuilder::Build(const GraphStorage& candidate_graph,
         "NSGBuilder: no capacity remains for connectivity repair");
     neighborhoods[static_cast<size_t>(best_source)].push_back(
         {target, best_distance});
+    if (neighborhoods[static_cast<size_t>(best_source)].size() ==
+        graph_capacity) {
+      remove_source(best_source);
+    }
     ++local_stats.connectivity_edges_added;
-    reachable = FindReachable(neighborhoods, node_count, navigation_point,
-                              &reachable_count);
+    newly_reachable.clear();
+    MarkReachable(neighborhoods, target, &reachable, &reachable_count,
+                  &newly_reachable);
+    add_sources(newly_reachable);
   }
 
   for (size_t node = 0; node < node_count; ++node) {

@@ -106,6 +106,19 @@ hypervec::MutableBoundedGraph MakeCompleteGraph(size_t node_count) {
   return graph;
 }
 
+hypervec::MutableBoundedGraph MakeDisconnectedPairGraph(size_t node_count) {
+  hypervec::MutableBoundedGraph graph(node_count, 1);
+  for (size_t node = 0; node < node_count; node += 2) {
+    const std::array<hypervec::GraphId, 1> forward = {
+        static_cast<hypervec::GraphId>(node + 1)};
+    const std::array<hypervec::GraphId, 1> reverse = {
+        static_cast<hypervec::GraphId>(node)};
+    graph.SetNeighbors(static_cast<hypervec::GraphId>(node), forward);
+    graph.SetNeighbors(static_cast<hypervec::GraphId>(node + 1), reverse);
+  }
+  return graph;
+}
+
 }  // namespace
 
 TEST(NSGBuilder, RepairsDirectedConnectivityDeterministically) {
@@ -156,6 +169,28 @@ TEST(NSGBuilder, PrunesDenseCandidatesAndBoundsReciprocalEdges) {
   EXPECT_LE(report.edge_count, values.size() * graph.MaxDegree());
   EXPECT_GT(stats.pruning.rejected, 0U);
   EXPECT_GT(stats.pruning.candidates_examined, 0U);
+}
+
+TEST(NSGBuilder, BoundsConnectivityRepairSearchWork) {
+  constexpr size_t kCount = 100;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>(node);
+  }
+  const hypervec::MutableBoundedGraph candidates =
+      MakeDisconnectedPairGraph(kCount);
+  ScalarDistanceComputer distance(values);
+  const hypervec::NSGBuilder builder(hypervec::NSGBuildOptions{1, 2, 2, true});
+  hypervec::NSGBuildStats stats;
+
+  const hypervec::MutableBoundedGraph graph =
+      builder.Build(candidates, distance, 0, &stats);
+
+  const auto report = hypervec::ValidateGraph(graph, 0);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, kCount);
+  EXPECT_LT(stats.connectivity_distance_computations, kCount * 10);
+  EXPECT_LE(stats.connectivity_edges_added, kCount / 2);
 }
 
 TEST(NSGBuilder, ComposesWithNNDescentCandidateGraph) {

@@ -29,7 +29,7 @@ struct SearchParametersNSG : SearchParameters {
 
 struct NSGIndexOptions {
   size_t knn_degree = 64;
-  size_t nn_descent_iterations = 10;
+  size_t nn_descent_iterations = 30;
   double nn_descent_convergence_threshold = 0.001;
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
   size_t max_degree = 32;

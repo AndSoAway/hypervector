@@ -46,6 +46,7 @@ struct CommandLine {
   size_t warmup_runs = 1;
   size_t measured_runs = 3;
   hypervec::idx_t query_batch_size = 0;
+  size_t concurrency = 1;
   hypervec::SearchConfig search_config;
   std::vector<std::string> search_parameters;
   bool show_help = false;
@@ -60,7 +61,9 @@ void PrintUsage(std::ostream& output) {
       << "  --warmup-runs N          Untimed full-query runs (default: 1)\n"
       << "  --measured-runs N        Timed full-query runs (default: 3)\n"
       << "  --query-batch-size N     Queries per timed Search call\n"
-      << "                           (default: all queries)\n"
+      << "                           (default: all queries; 1 if concurrent)\n"
+      << "  --concurrency N        Concurrent independent Search callers "
+         "(default: 1)\n"
       << "  --metric METRIC          l2, inner_product, or cosine\n"
       << "  --search-param NAME=VALUE  Repeatable integer/bool runtime option\n"
       << "  --json-output REPORT.json  Optional reproducible result report\n"
@@ -170,6 +173,9 @@ CommandLine ParseCommandLine(int argc, char** argv) {
         throw std::runtime_error("--query-batch-size must be positive");
       }
       command.query_batch_size = static_cast<hypervec::idx_t>(value);
+    } else if (argument == "--concurrency") {
+      command.concurrency = ParseRunCount(
+          RequireValue(argc, argv, &position, argument), argument, false);
     } else if (argument == "--search-param") {
       const std::string_view assignment =
           RequireValue(argc, argv, &position, argument);
@@ -304,7 +310,8 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
            << hypervec::eval_cli::JsonEscape(command.search_parameters[offset])
            << "\"";
   }
-  output << "]\n"
+  output << "],\n"
+         << "    \"concurrency\": " << result.concurrency << "\n"
          << "  },\n"
          << "  \"artifacts\": {\n"
          << "    \"index\": ";
@@ -391,6 +398,7 @@ int Run(const CommandLine& command) {
   options.warmup_runs = command.warmup_runs;
   options.measured_runs = command.measured_runs;
   options.query_batch_size = command.query_batch_size;
+  options.concurrency = command.concurrency;
   const hypervec::SearchEvaluationResult result =
       hypervec::EvaluateSearch(*index, input, options, parameters.get());
   const hypervec::SearchParameterDescriptor descriptor =
@@ -412,6 +420,7 @@ int Run(const CommandLine& command) {
   std::cout << "mean_latency_ms=" << result.mean_latency_ms << '\n';
   std::cout << "queries_per_second=" << result.queries_per_second << '\n';
   std::cout << "query_batch_size=" << result.query_batch_size << '\n';
+  std::cout << "concurrency=" << result.concurrency << '\n';
   std::cout << "latency_sample_count=" << result.latency_sample_count << '\n';
   std::cout << "batch_latency_p50_ms=" << result.batch_latency_p50_ms << '\n';
   std::cout << "batch_latency_p95_ms=" << result.batch_latency_p95_ms << '\n';

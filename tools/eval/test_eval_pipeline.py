@@ -62,7 +62,7 @@ def main():
         build_report_path = directory / "build-report.json"
         report_path = directory / "report.json"
         write_fvecs(base, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
-        write_fvecs(queries, [[0.9, 0.1]])
+        write_fvecs(queries, [[0.9, 0.1], [0.1, 0.9], [0.9, 0.1], [0.1, 0.9]])
 
         run(
             ground_truth_tool,
@@ -133,7 +133,7 @@ def main():
         assert report["index"]["family"] == "generic"
         assert report["index"]["metric"] == "l2"
         assert report["index"]["vector_count"] == 3
-        assert report["workload"]["query_count"] == 1
+        assert report["workload"]["query_count"] == 4
         assert report["workload"]["semantic_metric"] == "l2"
         assert report["workload"]["k"] == 2
         assert report["execution"]["warmup_runs"] == 0
@@ -142,7 +142,7 @@ def main():
         assert report["metrics"]["recall_at_k"] == 1.0
         latency = report["metrics"]["batch_latency_ms"]
         assert latency["query_batch_size"] == 1
-        assert latency["sample_count"] == 2
+        assert latency["sample_count"] == 8
         assert latency["percentile_method"] == "nearest-rank"
         assert 0.0 <= latency["p50"] <= latency["p95"] <= latency["p99"]
         assert Path(report["index"]["path"]).is_absolute()
@@ -153,6 +153,34 @@ def main():
             report["artifacts"]["ground_truth"], ground_truth
         )
         assert_process_memory(report["resources"], "after_search")
+
+        concurrent_report_path = directory / "concurrent-report.json"
+        run(
+            eval_tool,
+            "--index",
+            index,
+            "--queries",
+            queries,
+            "--ground-truth",
+            ground_truth,
+            "--metric",
+            "l2",
+            "--k",
+            2,
+            "--warmup-runs",
+            1,
+            "--measured-runs",
+            2,
+            "--concurrency",
+            4,
+            "--json-output",
+            concurrent_report_path,
+        )
+        concurrent = json.loads(concurrent_report_path.read_text(encoding="utf-8"))
+        assert concurrent["execution"]["concurrency"] == 4
+        assert concurrent["metrics"]["recall_at_k"] == 1.0
+        assert concurrent["metrics"]["batch_latency_ms"]["query_batch_size"] == 1
+        assert concurrent["metrics"]["batch_latency_ms"]["sample_count"] == 8
 
         cosine_base = directory / "cosine-base.fvecs"
         cosine_queries = directory / "cosine-queries.fvecs"

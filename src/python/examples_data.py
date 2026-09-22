@@ -65,17 +65,16 @@ INDEX_EXAMPLES: tuple[dict[str, Any], ...] = (
         "limitations": ["参数调优复杂", "存在量化误差", "召回受搜索参数 nprobe 影响"],
         "parameters": [
             {"name": "nlist", "type": "int", "default": 1024, "required": False, "description": "聚类中心数"},
-            {"name": "nlocal", "type": "int", "default": 16, "required": False, "description": "局部量化参数"},
-            {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "量化位数"},
+            {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "每维量化位数（1–8）"},
             {"name": "nprobe", "type": "int", "default": 10, "required": False, "scope": "search", "description": "搜索时探测的聚类数"},
         ],
         "example_code": {
             "Python": {
-                "create": _create("IVFLVQ", {"nlist": 1024, "nlocal": 16, "nbits": 8}),
+                "create": _create("IVFLVQ", {"nlist": 1024, "nbits": 8}),
                 "search": _search("demo_ivf_lvq", {"nprobe": 16}),
             }
         },
-        "performance_tips": ["提高 nprobe 可提升召回但增加延迟", "提高 nlocal 和 nbits 会影响压缩率与精度的平衡"],
+        "performance_tips": ["提高 nprobe 可提升召回但增加延迟", "提高 nbits 会增加每条向量的编码长度并降低量化误差"],
         "metric_types": ["L2"],
     },
     {
@@ -140,14 +139,13 @@ INDEX_EXAMPLES: tuple[dict[str, Any], ...] = (
         "advantages": ["查询速度快", "召回率高", "索引占用低于纯浮点 HNSW"],
         "limitations": ["仅支持 L2", "存在量化误差", "构建耗时随 m_hnsw 增加"],
         "parameters": [
-            {"name": "nlocal", "type": "int", "default": 16, "required": False, "description": "局部量化参数"},
-            {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "量化位数"},
+            {"name": "nbits", "type": "int", "default": 8, "required": False, "description": "每维量化位数（1–8）"},
             {"name": "m_hnsw", "type": "int", "default": 32, "required": False, "description": "图连接数"},
             {"name": "ef_search", "type": "int", "default": 100, "required": False, "scope": "search", "description": "查询搜索宽度"},
         ],
         "example_code": {
             "Python": {
-                "create": _create("HNSWLVQ", {"nlocal": 16, "nbits": 8, "m_hnsw": 32}),
+                "create": _create("HNSWLVQ", {"nbits": 8, "m_hnsw": 32}),
                 "search": _search("demo_hnsw_lvq", {"ef_search": 128}),
             }
         },

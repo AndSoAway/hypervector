@@ -16,13 +16,12 @@ IndexHNSWLVQ::IndexHNSWLVQ() {
   is_trained = false;
 }
 
-IndexHNSWLVQ::IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
-                           MetricType metric)
-  : IndexHNSW(d, M_hnsw, metric) {
+IndexHNSWLVQ::IndexHNSWLVQ(int d, int nbits, int M_hnsw, MetricType metric)
+    : IndexHNSW(d, M_hnsw, metric) {
   HYPERVEC_THROW_IF_NOT_FMT(
     metric == kMetricL2, "IndexHNSWLVQ: supports kMetricL2 only, got metric=%d",
     static_cast<int>(metric));
-  storage = new IndexLVQ(d, nlocal, nbits, kMetricL2);
+  storage = new IndexLVQ(d, nbits, kMetricL2);
   own_fields = true;
   raw_storage = new IndexFlatL2(d);
   is_trained = false;

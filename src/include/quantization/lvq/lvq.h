@@ -10,83 +10,38 @@
 
 #include <index/index.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace hypervec {
 
-#define HYPERVEC_LVQ_DEFAULT_SEED 1234
-#define HYPERVEC_LVQ_DEFAULT_NITER 25
-#define HYPERVEC_LVQ_DEFAULT_NREDO 1
-#define HYPERVEC_LVQ_DEFAULT_MAX_POINTS_PER_CODEWORD 32
-#define HYPERVEC_LVQ_MAX_NBITS 16
-
-struct LVQParameters {
-  int niter = HYPERVEC_LVQ_DEFAULT_NITER;
-  int seed = HYPERVEC_LVQ_DEFAULT_SEED;
-  int nredo = HYPERVEC_LVQ_DEFAULT_NREDO;
-  /// Bound the total training rows to nlocal * ksub * this value. Set to 0
-  /// to use all rows, including for the underlying KMeans stages.
-  int max_points_per_codeword = HYPERVEC_LVQ_DEFAULT_MAX_POINTS_PER_CODEWORD;
-  bool verbose = false;
-};
-
-/// Compute the bounded input count shared by LVQ and residual IVF-LVQ.
-idx_t LVQTrainingCount(idx_t n, idx_t nlocal, idx_t ksub,
-                       const LVQParameters& params);
-
-/** Local Vector Quantization codec.
- *
- *  The codec first assigns each vector to one of `nlocal` local centroids.
- *  Each local cell owns a residual codebook with `ksub = 1 << nbits`
- *  codewords. A code stores (local_id, residual_code_id), and reconstructs as
- *  local_centroid[local_id] + residual_codebook[local_id, residual_code_id].
- *
- *  T1 scope: kMetricL2 only.
+/** LVQ-b: mean-center, then quantize each vector's components using its own
+ *  range and `nbits` per component. The code contains two float32 bounds
+ *  (lower and step) followed by bit-packed scalar values. L2 only.
  */
 struct LocalVectorQuantizer {
   idx_t d = 0;
-  idx_t nlocal = 0;
   int nbits = 0;
-  int local_nbits = 0;
-  idx_t ksub = 0;
   size_t code_size = 0;
   bool is_trained = false;
-
-  std::vector<float> local_centroids;
-  std::vector<float> residual_codebooks;
-  std::vector<float> decoded_codebooks;
+  std::vector<float> mean;
 
   LocalVectorQuantizer() = default;
-  LocalVectorQuantizer(idx_t d, idx_t nlocal, int nbits);
-
-  const float* GetLocalCentroid(idx_t local_id) const {
-    return local_centroids.data() + local_id * d;
-  }
-  float* GetLocalCentroid(idx_t local_id) {
-    return local_centroids.data() + local_id * d;
-  }
-
-  const float* GetResidualCodeword(idx_t local_id, idx_t code_id) const {
-    return residual_codebooks.data() + (local_id * ksub + code_id) * d;
-  }
-  float* GetResidualCodeword(idx_t local_id, idx_t code_id) {
-    return residual_codebooks.data() + (local_id * ksub + code_id) * d;
-  }
+  LocalVectorQuantizer(idx_t d, int nbits);
 
   void SetDerivedValues();
-  void BuildDecodedCodebooks();
-  void Train(idx_t n, const float* x, const LVQParameters& params = {});
+  void Train(idx_t n, const float* x);
   void ComputeCode(const float* x, uint8_t* code) const;
   void ComputeCodes(idx_t n, const float* x, uint8_t* codes) const;
   void Decode(const uint8_t* code, float* x) const;
   void DecodeBatch(idx_t n, const uint8_t* codes, float* x) const;
-  void ComputeDistanceTable(const float* x, float* dis_table) const;
-  float ApplyDistanceTable(const float* dis_table, const uint8_t* code) const;
+  // For LVQ the query buffer is a mean-centered query, rather than a PQ table.
+  void ComputeDistanceTable(const float* x, float* query_buffer) const;
+  float ApplyDistanceTable(const float* query_buffer,
+                           const uint8_t* code) const;
   void SearchL2(idx_t nx, const float* x, idx_t ncodes, const uint8_t* codes,
                 idx_t k, float* distances, idx_t* labels) const;
-  void DecodeCode(const uint8_t* code, idx_t* local_id,
-                  idx_t* code_id) const;
 };
 
 }  // namespace hypervec

@@ -80,8 +80,8 @@ class FakeHypervec:
         self.constructor_calls.append(("IndexIVFFlat", d, nlist, metric))
         return FakeIndexFlatL2(d, trained=False)
 
-    def IndexIVFLVQ(self, d: int, nlist: int, nlocal: int, nbits: int, metric: int):
-        self.constructor_calls.append(("IndexIVFLVQ", d, nlist, nlocal, nbits, metric))
+    def IndexIVFLVQ(self, d: int, nlist: int, nbits: int, metric: int):
+        self.constructor_calls.append(("IndexIVFLVQ", d, nlist, nbits, metric))
         return FakeIndexFlatL2(d, trained=False)
 
     def IndexIVFPQ(self, d: int, nlist: int, m_pq: int, nbits: int, metric: int):
@@ -92,8 +92,8 @@ class FakeHypervec:
         self.constructor_calls.append(("IndexHNSWFlat", d, m_hnsw, metric))
         return FakeIndexFlatL2(d)
 
-    def IndexHNSWLVQ(self, d: int, nlocal: int, nbits: int, m_hnsw: int, metric: int):
-        self.constructor_calls.append(("IndexHNSWLVQ", d, nlocal, nbits, m_hnsw, metric))
+    def IndexHNSWLVQ(self, d: int, nbits: int, m_hnsw: int, metric: int):
+        self.constructor_calls.append(("IndexHNSWLVQ", d, nbits, m_hnsw, metric))
         return FakeIndexFlatL2(d, trained=False)
 
     def IndexHNSWPQ(self, d: int, m_pq: int, nbits: int, m_hnsw: int, metric: int):
@@ -213,7 +213,7 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_pa
         ),
         (
             "IndexIVFLVQ",
-            {"nlist": 2, "nlocal": 2, "nbits": 1},
+            {"nlist": 2, "nbits": 1},
         ),
         (
             "IndexIVFPQ",
@@ -225,7 +225,7 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_pa
         ),
         (
             "IndexHNSWLVQ",
-            {"m_hnsw": 8, "nlocal": 2, "nbits": 1},
+            {"m_hnsw": 8, "nbits": 1},
         ),
         (
             "IndexHNSWPQ",

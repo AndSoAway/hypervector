@@ -400,7 +400,7 @@ struct IndexHNSWFlat : Index {
 };
 
 struct IndexLVQ : Index {
-  IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
+  IndexLVQ(idx_t d, int nbits, MetricType metric = kMetricL2);
 };
 
 %nodefaultctor IndexIVF;
@@ -415,7 +415,7 @@ struct IndexIVFFlat : IndexIVF {
 };
 
 struct IndexIVFLVQ : IndexIVF {
-  IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
+  IndexIVFLVQ(idx_t d, idx_t nlist, int nbits,
               MetricType metric = kMetricL2);
 };
 
@@ -425,7 +425,7 @@ struct IndexIVFPQ : IndexIVF {
 };
 
 struct IndexHNSWLVQ : Index {
-  IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
+  IndexHNSWLVQ(int d, int nbits, int M_hnsw,
                MetricType metric = kMetricL2);
 };
 

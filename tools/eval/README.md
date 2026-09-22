@@ -23,3 +23,10 @@ that was never retrieved by the index. Exact-storage graph/IVF indexes and
 DiskANN (which already reranks with raw nodes) do not need this additional
 stage. Reading the float32 base increases process memory by approximately
 `n * d * 4` bytes and exact scoring adds query work.
+
+LVQ now uses mean-centered, per-vector scalar quantization: `nbits` (1–8)
+applies **to each dimension**, and `nlocal` is no longer a valid parameter.
+For example, LVQ-8 on 300 dimensions uses 308 bytes per vector (300 packed
+bytes plus two float32 per-vector parameters). The old whole-vector codebook
+format is incompatible; rebuild previously saved LVQ, IVF-LVQ, and HNSW-LVQ
+indexes from the original vectors.

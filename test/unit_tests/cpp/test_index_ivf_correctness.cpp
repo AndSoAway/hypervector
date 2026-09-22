@@ -155,7 +155,7 @@ TEST(IndexIVFCorrectness, NonPositiveNprobeIsRejected) {
                hypervec::HypervecException);
 }
 
-TEST(IndexIVFCorrectness, FailedQuantizerTrainingDoesNotPartiallyCommit) {
+TEST(IndexIVFCorrectness, FailedTrainingDoesNotPartiallyCommit) {
   constexpr hypervec::idx_t d = 4;
   const auto insufficient = RandomVectors(4, d, 2002);
 
@@ -166,15 +166,15 @@ TEST(IndexIVFCorrectness, FailedQuantizerTrainingDoesNotPartiallyCommit) {
   EXPECT_FALSE(pq.pq.is_trained);
   EXPECT_EQ(pq.centroids, pq_centroids);
 
-  hypervec::IndexIVFLVQ lvq(d, 2, 8, 2);
+  hypervec::IndexIVFLVQ lvq(d, 2, 2);
   const auto lvq_centroids = lvq.centroids;
-  EXPECT_THROW(lvq.Train(4, insufficient.data()), hypervec::HypervecException);
+  EXPECT_THROW(lvq.Train(1, insufficient.data()), hypervec::HypervecException);
   EXPECT_FALSE(lvq.is_trained);
   EXPECT_FALSE(lvq.lvq.is_trained);
   EXPECT_EQ(lvq.centroids, lvq_centroids);
 }
 
-TEST(IndexIVFCorrectness, FailedQuantizerRetrainingPreservesUsableState) {
+TEST(IndexIVFCorrectness, FailedPqOrLvqRetrainingPreservesUsableState) {
   constexpr hypervec::idx_t d = 4;
   const auto training = RandomVectors(16, d, 2003);
   const auto insufficient = RandomVectors(2, d, 2004);
@@ -192,15 +192,15 @@ TEST(IndexIVFCorrectness, FailedQuantizerRetrainingPreservesUsableState) {
   EXPECT_EQ(pq.pq.centroids, pq_codebooks);
   EXPECT_EQ(pq.precomputed_table, pq_table);
 
-  hypervec::IndexIVFLVQ lvq(d, 2, 4, 2);
+  hypervec::IndexIVFLVQ lvq(d, 2, 2);
   lvq.Train(16, training.data());
   const auto lvq_coarse = lvq.centroids;
-  const auto lvq_codebooks = lvq.lvq.decoded_codebooks;
-  EXPECT_THROW(lvq.Train(2, insufficient.data()), hypervec::HypervecException);
+  const auto lvq_mean = lvq.lvq.mean;
+  EXPECT_THROW(lvq.Train(1, insufficient.data()), hypervec::HypervecException);
   EXPECT_TRUE(lvq.is_trained);
   EXPECT_TRUE(lvq.lvq.is_trained);
   EXPECT_EQ(lvq.centroids, lvq_coarse);
-  EXPECT_EQ(lvq.lvq.decoded_codebooks, lvq_codebooks);
+  EXPECT_EQ(lvq.lvq.mean, lvq_mean);
 }
 
 TEST(IndexIVFCorrectness, InvalidPrecomputedModeDoesNotCommitTraining) {
@@ -224,7 +224,7 @@ TEST(IndexIVFCorrectness, QuantizedAddsRollBackEveryTouchedList) {
   pq.Train(16, training.data());
   ExpectCompressedAddRollback(&pq);
 
-  hypervec::IndexIVFLVQ lvq(d, 2, 2, 2);
+  hypervec::IndexIVFLVQ lvq(d, 2, 2);
   lvq.Train(16, training.data());
   ExpectCompressedAddRollback(&lvq);
 }

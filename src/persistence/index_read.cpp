@@ -159,30 +159,17 @@ size_t ValidatePqMetadata(const ProductQuantizer& pq) {
 }
 
 struct LvqPayloadSizes {
-  size_t local_centroids;
-  size_t residual_codebooks;
+  size_t mean;
 };
 
 LvqPayloadSizes ValidateLvqMetadata(const LocalVectorQuantizer& lvq) {
   HYPERVEC_THROW_IF_NOT_MSG(lvq.d > 0,
                             "LocalVectorQuantizer deserialize: d must be > 0");
   HYPERVEC_THROW_IF_NOT_MSG(
-      lvq.nlocal > 0, "LocalVectorQuantizer deserialize: nlocal must be > 0");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      lvq.nbits >= 1 && lvq.nbits <= HYPERVEC_LVQ_MAX_NBITS,
+      lvq.nbits >= 1 && lvq.nbits <= 8,
       "LocalVectorQuantizer deserialize: nbits is out of range");
-  const size_t local_centroids =
-      mul_no_overflow(static_cast<size_t>(lvq.nlocal),
-                      static_cast<size_t>(lvq.d), "LVQ local centroids");
-  const size_t residual_per_local =
-      mul_no_overflow(size_t{1} << lvq.nbits, static_cast<size_t>(lvq.d),
-                      "LVQ residual codebooks");
-  const size_t residual_codebooks =
-      mul_no_overflow(static_cast<size_t>(lvq.nlocal), residual_per_local,
-                      "LVQ residual codebooks");
-  ValidateElementCount<float>(local_centroids, "LVQ local centroids");
-  ValidateElementCount<float>(residual_codebooks, "LVQ residual codebooks");
-  return {local_centroids, residual_codebooks};
+  ValidateElementCount<float>(static_cast<size_t>(lvq.d), "LVQ mean");
+  return {static_cast<size_t>(lvq.d)};
 }
 
 size_t ValidateIvfMetadata(const IndexIVF& index) {
@@ -498,16 +485,20 @@ static void read_pq(ProductQuantizer& pq, IOReader* f) {
 }
 
 static void read_lvq(LocalVectorQuantizer& lvq, IOReader* f) {
+  uint32_t marker;
+  READ1(marker);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      marker == fourcc("LvQ2"),
+      "LVQ index uses an unsupported legacy format; rebuild the index");
   READ1(lvq.d);
-  READ1(lvq.nlocal);
   READ1(lvq.nbits);
   const LvqPayloadSizes sizes = ValidateLvqMetadata(lvq);
   lvq.SetDerivedValues();
-  ReadVectorExact(lvq.local_centroids, sizes.local_centroids, f,
-                  "LVQ local centroids");
-  ReadVectorExact(lvq.residual_codebooks, sizes.residual_codebooks, f,
-                  "LVQ residual codebooks");
-  lvq.BuildDecodedCodebooks();
+  ReadVectorExact(lvq.mean, sizes.mean, f, "LVQ mean");
+  for (const float component : lvq.mean) {
+    HYPERVEC_THROW_IF_NOT_MSG(std::isfinite(component),
+                              "LVQ deserialize: non-finite mean");
+  }
   lvq.is_trained = true;
 }
 

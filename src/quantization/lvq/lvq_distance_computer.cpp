@@ -21,8 +21,7 @@ LVQDistanceComputer::LVQDistanceComputer(const LocalVectorQuantizer& lvq,
 }
 
 void LVQDistanceComputer::SetQuery(const float* x) {
-  const size_t table_size =
-    static_cast<size_t>(lvq.nlocal) * static_cast<size_t>(lvq.ksub);
+  const size_t table_size = static_cast<size_t>(lvq.d);
   if (dis_table.size() != table_size) {
     dis_table.resize(table_size);
   }

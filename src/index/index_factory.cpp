@@ -175,9 +175,8 @@ std::unique_ptr<Index> MakeOPQPQ(const IndexConfig& config) {
 
 std::unique_ptr<Index> MakeLVQ(const IndexConfig& config) {
   RequireL2(config, "lvq");
-  const idx_t nlocal = PositiveIndexParameter(config, "nlocal", 16);
   const int nbits = PositiveIntParameter(config, "nbits", 8);
-  return std::make_unique<IndexLVQ>(config.dimension, nlocal, nbits,
+  return std::make_unique<IndexLVQ>(config.dimension, nbits,
                                     config.metric_type);
 }
 
@@ -200,9 +199,8 @@ std::unique_ptr<Index> MakeIVFPQ(const IndexConfig& config) {
 std::unique_ptr<Index> MakeIVFLVQ(const IndexConfig& config) {
   RequireL2(config, "ivf_lvq");
   const idx_t nlist = PositiveIndexParameter(config, "nlist", 1024);
-  const idx_t nlocal = PositiveIndexParameter(config, "nlocal", 16);
   const int nbits = PositiveIntParameter(config, "nbits", 8);
-  return std::make_unique<IndexIVFLVQ>(config.dimension, nlist, nlocal, nbits,
+  return std::make_unique<IndexIVFLVQ>(config.dimension, nlist, nbits,
                                        config.metric_type);
 }
 
@@ -383,15 +381,10 @@ std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
 
 std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
   RequireL2(config, "hnsw_lvq");
-  const idx_t nlocal = PositiveIndexParameter(config, "nlocal", 16);
-  HYPERVEC_THROW_IF_NOT_FMT(nlocal <= std::numeric_limits<int>::max(),
-                            "index parameter 'nlocal' must be at most %d",
-                            std::numeric_limits<int>::max());
   const int nbits = PositiveIntParameter(config, "nbits", 8);
   const int degree = HnswDegree(config);
   auto index = std::make_unique<IndexHNSWLVQ>(
-      static_cast<int>(config.dimension), static_cast<int>(nlocal), nbits,
-      degree, config.metric_type);
+      static_cast<int>(config.dimension), nbits, degree, config.metric_type);
   ConfigureHNSW(index.get(), config);
   return index;
 }
@@ -427,15 +420,14 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"opqpq", "IndexOPQPQ"},
                       {"m_pq", "nbits", "opq_iterations", "opq_training_rows"}},
                      MakeOPQPQ);
-  registry->Register({"lvq", {"IndexLVQ"}, {"nlocal", "nbits"}}, MakeLVQ);
+  registry->Register({"lvq", {"IndexLVQ"}, {"nbits"}}, MakeLVQ);
   registry->Register(
       {"ivf_flat", {"ivf", "ivfflat", "IndexIVFFlat"}, {"nlist"}}, MakeIVFFlat);
   registry->Register(
       {"ivf_pq", {"ivfpq", "IndexIVFPQ"}, {"nlist", "m_pq", "nbits"}},
       MakeIVFPQ);
-  registry->Register(
-      {"ivf_lvq", {"ivflvq", "IndexIVFLVQ"}, {"nlist", "nlocal", "nbits"}},
-      MakeIVFLVQ);
+  registry->Register({"ivf_lvq", {"ivflvq", "IndexIVFLVQ"}, {"nlist", "nbits"}},
+                     MakeIVFLVQ);
   registry->Register({"ivf_rabitq",
                       {"ivfrabitq", "IndexIVFRaBitQ"},
                       {"nlist", "random_seed", "rotation_rounds"}},
@@ -448,10 +440,9 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"hnswpq", "IndexHNSWPQ"},
                       HnswParameterNames({"m_pq", "nbits"})},
                      MakeHNSWPQ);
-  registry->Register({"hnsw_lvq",
-                      {"hnswlvq", "IndexHNSWLVQ"},
-                      HnswParameterNames({"nlocal", "nbits"})},
-                     MakeHNSWLVQ);
+  registry->Register(
+      {"hnsw_lvq", {"hnswlvq", "IndexHNSWLVQ"}, HnswParameterNames({"nbits"})},
+      MakeHNSWLVQ);
   registry->Register(
       {"nsw_flat",
        {"nsw", "nswflat", "IndexNSWFlat"},

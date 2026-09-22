@@ -24,8 +24,7 @@ namespace hypervec {
  */
 class LocalVectorQuantizerAdapter final : public Quantizer {
  public:
-  explicit LocalVectorQuantizerAdapter(LocalVectorQuantizer& lvq,
-                                       LVQParameters parameters = {});
+  explicit LocalVectorQuantizerAdapter(LocalVectorQuantizer& lvq);
   explicit LocalVectorQuantizerAdapter(const LocalVectorQuantizer& lvq);
 
   std::string_view TypeName() const noexcept override { return "lvq"; }
@@ -47,7 +46,6 @@ class LocalVectorQuantizerAdapter final : public Quantizer {
  private:
   const LocalVectorQuantizer& lvq_;
   LocalVectorQuantizer* mutable_lvq_;
-  LVQParameters parameters_;
 };
 
 }  // namespace hypervec

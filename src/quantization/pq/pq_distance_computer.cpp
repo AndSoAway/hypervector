@@ -16,9 +16,10 @@ namespace hypervec {
 
 PQDistanceComputer::PQDistanceComputer(const ProductQuantizer& pq,
                                        const uint8_t* codes, size_t code_size)
-  : pq(pq)
-  , codes(codes)
-  , code_size(code_size) {
+    : pq(pq),
+      codes(codes),
+      code_size(code_size),
+      distance_kernel_(pq.GetDistanceKernel()) {
   HYPERVEC_THROW_IF_NOT(pq.is_trained);
   HYPERVEC_THROW_IF_NOT(code_size == pq.code_size);
 }
@@ -34,8 +35,8 @@ void PQDistanceComputer::SetQuery(const float* x) {
 
 float PQDistanceComputer::operator()(idx_t i) {
   HYPERVEC_THROW_IF_NOT(!dis_table.empty());
-  return pq.ApplyDistanceTable(dis_table.data(),
-                               codes + static_cast<size_t>(i) * code_size);
+  return distance_kernel_(pq, dis_table.data(),
+                          codes + static_cast<size_t>(i) * code_size);
 }
 
 float PQDistanceComputer::symmetric_dis(idx_t i, idx_t j) {

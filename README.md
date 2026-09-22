@@ -57,8 +57,10 @@ existing distance computers retain their selected kernel. Runtime SIMD changes
 neither the index format nor its parameters. Floating-point accumulation order
 may change slightly. LVQ8 also uses an AVX2 distance kernel, selected once per
 distance computer or scan, shared by LVQ, IVF-LVQ and HNSW-LVQ. LVQ1–7 retain
-their generic bit-packed implementation. Dedicated PQ/RaBitQ scanning and
-AVX-512 kernels are not yet enabled.
+their generic bit-packed implementation. PQ4/PQ8/PQ16 table scans use portable
+bit-width-specialized kernels with independent accumulators, selected once per
+scanner (also effective in `generic` builds). Other PQ widths retain the generic
+decoder. Dedicated RaBitQ scanning and AVX-512 kernels are not yet enabled.
 
 To build the C++ unit tests with an installed GoogleTest package:
 

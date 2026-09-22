@@ -49,6 +49,9 @@ struct PQDistanceComputer : DistanceComputer {
   float operator()(idx_t i) override;
 
   float symmetric_dis(idx_t i, idx_t j) override;
+
+ private:
+  ProductQuantizer::DistanceKernel distance_kernel_;
 };
 
 }  // namespace hypervec

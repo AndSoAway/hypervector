@@ -52,6 +52,7 @@ set(HYPERVEC_TEST_SRC
   test_simdlib.cpp
   test_kmeans.cpp
   test_pq.cpp
+  test_pq_lookup.cpp
   test_quantizer_protocol.cpp
   test_rabitq_quantizer.cpp
   test_index_ivf_rabitq.cpp

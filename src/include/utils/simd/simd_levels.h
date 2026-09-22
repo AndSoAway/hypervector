@@ -41,7 +41,7 @@ enum class SIMDLevel {
  * not permanent API.
  ***************************************************************/
 #ifdef HYPERVEC_ENABLE_DD
-// DD dispatches to the highest optional SIMD level at runtime.
+// DD selects an optional SIMD level at runtime.
 // On ARM64, NEON is mandatory (always available via COMPILE_SIMD_ARM_NEON),
 // so the baseline is ARM_NEON. On x86, the baseline is NONE.
 #if defined(COMPILE_SIMD_ARM_NEON)

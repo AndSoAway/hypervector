@@ -22,6 +22,9 @@
 #define THE_SIMD_LEVEL SIMDLevel::NONE
 #endif
 
+#ifdef HYPERVEC_FP32_AVX512_KERNELS
+#include "utils/distances/distances_fp32_avx512.h"
+#endif
 #include <utils/distances/simd_impl/distances_autovec-inl.h>
 #include <utils/distances/simd_impl/distances_simdlib256.h>
 

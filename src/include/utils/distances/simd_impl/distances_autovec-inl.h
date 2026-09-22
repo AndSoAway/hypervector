@@ -25,6 +25,7 @@ constexpr hypervec::SIMDLevel SL = THE_SIMD_LEVEL;
  * vectorizing them given the appropriate flags.
  ******************************************************************/
 
+#ifndef HYPERVEC_FP32_AVX512_KERNELS
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_BEGIN
 template <>
 float fvec_norm_L2sqr<SL>(const float* x, size_t d) {
@@ -65,6 +66,7 @@ float fvec_inner_product<SL>(const float* x, const float* y, size_t d) {
   return res;
 }
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_END
+#endif
 
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_BEGIN
 template <>
@@ -92,6 +94,7 @@ float fvec_Linf<SL>(const float* x, const float* y, size_t d) {
 }
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_END
 
+#ifndef HYPERVEC_FP32_AVX512_KERNELS
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_BEGIN
 template <>
 void fvec_inner_product_batch_4<SL>(const float* x, const float* y0,
@@ -146,6 +149,7 @@ void fvec_L2sqr_batch_4<SL>(const float* x, const float* y0, const float* y1,
   dis3 = d3;
 }
 HYPERVEC_PRAGMA_IMPRECISE_FUNCTION_END
+#endif
 
 /******************************************************************
  * VectorDistance::operator() specializations — defined out-of-class

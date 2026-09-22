@@ -35,18 +35,13 @@ struct RestoreLevel {
 TEST(RuntimeSimd, Environment) {
 #ifdef HYPERVEC_ENABLE_DD
   const char* env = std::getenv("HYPERVEC_SIMD_LEVEL");
-  if (env != nullptr &&
-      (std::string(env) == "INVALID" || std::string(env) == "AVX512" ||
-       (std::string(env) == "AVX2" &&
-        !SIMDConfig::is_simd_level_available(SIMDLevel::AVX2)))) {
-    EXPECT_THROW(SIMDConfig::get_level(), HypervecException);
-    return;
-  }
-  if (env != nullptr && std::string(env) == "NONE") {
-    EXPECT_EQ(SIMDConfig::get_level(), SIMDLevel::NONE);
-  }
-  if (env != nullptr && std::string(env) == "AVX2") {
-    EXPECT_EQ(SIMDConfig::get_level(), SIMDLevel::AVX2);
+  if (env != nullptr) {
+    if (std::string(env) == "INVALID" ||
+        !SIMDConfig::is_simd_level_available(to_simd_level(env))) {
+      EXPECT_THROW(SIMDConfig::get_level(), HypervecException);
+      return;
+    }
+    EXPECT_EQ(SIMDConfig::get_level(), to_simd_level(env));
   }
 #endif
   EXPECT_EQ(SIMDConfig::get_level(), SIMDConfig::get_dispatched_level());
@@ -62,19 +57,27 @@ TEST(RuntimeSimd, RejectsInvalidLevelsWithoutChangingSelection) {
     EXPECT_EQ(SIMDConfig::get_level(), before);
   }
 #ifdef HYPERVEC_ENABLE_DD
-  const char* unavailable = "AVX512";
+  const char* unavailable = "AVX512_SPR";
   EXPECT_THROW(SIMDConfig config(&unavailable), HypervecException);
   EXPECT_EQ(SIMDConfig::get_level(), before);
 #endif
+}
+
+TEST(RuntimeSimd, AutomaticSelectionKeepsAVX2Default) {
+  const auto expected = SIMDConfig::is_simd_level_available(SIMDLevel::AVX2)
+                            ? SIMDLevel::AVX2
+                            : SIMDLevel::NONE;
+  EXPECT_EQ(SIMDConfig::auto_detect_simd_level(), expected);
 }
 
 TEST(RuntimeSimd, DistancesTailsUnalignedAndBatch) {
   const RestoreLevel restore;
   std::mt19937 random(123);
   std::uniform_real_distribution<float> value(-1.0F, 1.0F);
-  std::vector<size_t> dimensions = {99, 128, 299, 300, 301, 768};
+  std::vector<size_t> dimensions = {99,  128, 299, 300,  301, 511,
+                                    512, 513, 768, 1024, 1025};
   for (size_t d = 0; d <= 65; ++d) dimensions.push_back(d);
-  for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2}) {
+  for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2, SIMDLevel::AVX512}) {
     if (!SIMDConfig::is_simd_level_available(level)) continue;
     SIMDConfig::set_level(level);
     for (size_t d : dimensions) {
@@ -89,6 +92,9 @@ TEST(RuntimeSimd, DistancesTailsUnalignedAndBatch) {
         float* y = ys.get() + offset + 1;
         for (size_t j = 0; j < d; ++j) x[j] = value(random);
         for (size_t j = 0; j < 4 * d; ++j) y[j] = value(random);
+        double norm = 0;
+        for (size_t j = 0; j < d; ++j) norm += static_cast<double>(x[j]) * x[j];
+        EXPECT_NEAR(fvec_norm_L2sqr(x, d), norm, 2e-6 * std::max(size_t{1}, d));
         float l2[4], ip[4], batch_l2[4], batch_ip[4];
         fvec_L2sqr_ny(l2, x, y, d, 4);
         fvec_inner_products_ny(ip, x, y, d, 4);
@@ -119,29 +125,41 @@ TEST(RuntimeSimd, DistancesTailsUnalignedAndBatch) {
 
 TEST(RuntimeSimd, PreservesNonFiniteDistanceSemantics) {
   const RestoreLevel restore;
-  for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2}) {
+  for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2, SIMDLevel::AVX512}) {
     if (!SIMDConfig::is_simd_level_available(level)) continue;
     SIMDConfig::set_level(level);
-    std::vector<float> x(33, 1), y(33, 2);
-    y[17] = std::numeric_limits<float>::infinity();
-    EXPECT_TRUE(std::isinf(fvec_L2sqr(x.data(), y.data(), x.size())));
-    EXPECT_TRUE(std::isinf(fvec_inner_product(x.data(), y.data(), x.size())));
-    y[17] = std::numeric_limits<float>::quiet_NaN();
-    EXPECT_TRUE(std::isnan(fvec_L2sqr(x.data(), y.data(), x.size())));
-    EXPECT_TRUE(std::isnan(fvec_inner_product(x.data(), y.data(), x.size())));
+    // Exercise the main vector loop as well as the masked final lane.
+    for (size_t position : {size_t{17}, size_t{64}}) {
+      std::vector<float> x(65, 1), y(65, 2);
+      y[position] = std::numeric_limits<float>::infinity();
+      EXPECT_TRUE(std::isinf(fvec_L2sqr(x.data(), y.data(), x.size())));
+      EXPECT_TRUE(std::isinf(fvec_inner_product(x.data(), y.data(), x.size())));
+      EXPECT_TRUE(std::isinf(fvec_norm_L2sqr(y.data(), y.size())));
+      y[position] = std::numeric_limits<float>::quiet_NaN();
+      EXPECT_TRUE(std::isnan(fvec_L2sqr(x.data(), y.data(), x.size())));
+      EXPECT_TRUE(std::isnan(fvec_inner_product(x.data(), y.data(), x.size())));
+      EXPECT_TRUE(std::isnan(fvec_norm_L2sqr(y.data(), y.size())));
+      float results[4];
+      fvec_L2sqr_batch_4(x.data(), y.data(), y.data(), y.data(), y.data(),
+                         x.size(), results[0], results[1], results[2],
+                         results[3]);
+      for (float result : results) EXPECT_TRUE(std::isnan(result));
+    }
   }
 }
 
 TEST(RuntimeSimd, ConcurrentSelectionAndDistanceCalls) {
   const RestoreLevel restore;
-  const auto fastest = SIMDConfig::auto_detect_simd_level();
+  const auto fastest = SIMDConfig::is_simd_level_available(SIMDLevel::AVX512)
+                           ? SIMDLevel::AVX512
+                           : SIMDConfig::auto_detect_simd_level();
   std::vector<std::thread> workers;
   for (int t = 0; t < 4; ++t) {
     workers.emplace_back([fastest] {
-      const float x[9] = {}, y[9] = {1, 2, 3};
+      const float x[65] = {}, y[65] = {1, 2, 3};
       for (int i = 0; i < 1000; ++i) {
         SIMDConfig::set_level(i % 2 == 0 ? SIMDLevel::NONE : fastest);
-        EXPECT_EQ(fvec_L2sqr(x, y, 9), 14);
+        EXPECT_EQ(fvec_L2sqr(x, y, 65), 14);
       }
     });
   }
@@ -180,13 +198,14 @@ TEST(RuntimeSimd, LVQDistanceTailsAndBitWidths) {
           SIMDConfig::set_level(SIMDLevel::NONE);
           const auto baseline = lvq.GetDistanceKernel();
           EXPECT_NEAR(baseline(lvq, centered, code), expected, tolerance);
-          for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2}) {
+          for (auto level :
+               {SIMDLevel::NONE, SIMDLevel::AVX2, SIMDLevel::AVX512}) {
             if (!SIMDConfig::is_simd_level_available(level)) continue;
             SIMDConfig::set_level(level);
             SCOPED_TRACE(::testing::Message()
                          << to_string(level) << " d=" << d << " bits=" << bits);
             if (bits != 8) EXPECT_EQ(lvq.GetDistanceKernel(), baseline);
-            if (bits == 8 && level == SIMDLevel::AVX2) {
+            if (bits == 8 && level != SIMDLevel::NONE) {
               EXPECT_NE(lvq.GetDistanceKernel(), baseline);
             }
             EXPECT_NEAR(lvq.ApplyDistanceTable(centered, code), expected,
@@ -201,6 +220,20 @@ TEST(RuntimeSimd, LVQDistanceTailsAndBitWidths) {
       }
     }
   }
+}
+
+TEST(RuntimeSimd, AVX512RetainsLVQ8AVX2Kernel) {
+  const RestoreLevel restore;
+  if (!SIMDConfig::is_simd_level_available(SIMDLevel::AVX512)) GTEST_SKIP();
+  ASSERT_TRUE(SIMDConfig::is_simd_level_available(SIMDLevel::AVX2));
+  LocalVectorQuantizer lvq(300, 8);
+  SIMDConfig::set_level(SIMDLevel::NONE);
+  const auto generic = lvq.GetDistanceKernel();
+  SIMDConfig::set_level(SIMDLevel::AVX2);
+  const auto avx2 = lvq.GetDistanceKernel();
+  ASSERT_NE(generic, avx2);
+  SIMDConfig::set_level(SIMDLevel::AVX512);
+  EXPECT_EQ(lvq.GetDistanceKernel(), avx2);
 }
 
 TEST(RuntimeSimd, LVQScanMatchesBaseline) {

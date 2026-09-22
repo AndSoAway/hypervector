@@ -124,7 +124,7 @@ gtest_discover_tests(hypervec_test
   PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=1")
 
 if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
-  foreach(level NONE AVX2 INVALID AVX512)
+  foreach(level NONE AVX2 INVALID AVX512 AVX512_SPR)
     add_test(NAME RuntimeSimdEnv.${level}
       COMMAND hypervec_test --gtest_filter=RuntimeSimd.Environment)
     set_tests_properties(RuntimeSimdEnv.${level} PROPERTIES

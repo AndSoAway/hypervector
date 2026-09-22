@@ -23,6 +23,16 @@ uint64_t DetectSupportedLevels() {
   __builtin_cpu_init();
   if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
     mask |= uint64_t{1} << static_cast<int>(SIMDLevel::AVX2);
+#ifdef COMPILE_SIMD_AVX512
+    // Match every ISA flag used by the isolated AVX-512 object. The AVX2
+    // prerequisite also makes per-kernel AVX2 fallback safe at this level.
+    if (__builtin_cpu_supports("avx512f") &&
+        __builtin_cpu_supports("avx512dq") &&
+        __builtin_cpu_supports("avx512bw") &&
+        __builtin_cpu_supports("avx512vl")) {
+      mask |= uint64_t{1} << static_cast<int>(SIMDLevel::AVX512);
+    }
+#endif
   }
 #endif
   return mask;
@@ -85,6 +95,8 @@ bool SIMDConfig::is_simd_level_available(SIMDLevel selected) {
 }
 
 SIMDLevel SIMDConfig::auto_detect_simd_level() {
+  // AVX-512 is available via explicit selection. Retain the established
+  // automatic policy until end-to-end gains justify changing the default.
   return is_simd_level_available(SIMDLevel::AVX2) ? SIMDLevel::AVX2
                                                   : SIMDLevel::NONE;
 }

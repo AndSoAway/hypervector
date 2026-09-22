@@ -106,7 +106,7 @@ if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
   if(NOT HYPERVEC_COMPILER_HAS_AVX2)
     message(FATAL_ERROR "dd requires compiler support for AVX2/FMA; use generic")
   endif()
-  # Only this object may contain optional ISA instructions. Neither callers
+  # Only kernel objects may contain optional ISA instructions. Neither callers
   # nor the dispatcher inherit AVX flags, including installed consumers.
   add_library(hypervec_avx2_kernels OBJECT
     utils/distances/distances_simd.cpp
@@ -121,6 +121,23 @@ if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
   target_sources(hypervec PRIVATE $<TARGET_OBJECTS:hypervec_avx2_kernels>)
   # Inline template dispatch in public headers must agree with the core.
   target_compile_definitions(hypervec PUBLIC HYPERVEC_ENABLE_DD COMPILE_SIMD_AVX2)
+
+  check_cxx_compiler_flag("-mavx512f -mavx512dq -mavx512bw -mavx512vl"
+    HYPERVEC_COMPILER_HAS_AVX512)
+  if(HYPERVEC_COMPILER_HAS_AVX512)
+    add_library(hypervec_avx512_kernels OBJECT utils/distances/distances_simd.cpp)
+    target_include_directories(hypervec_avx512_kernels PRIVATE
+      include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(hypervec_avx512_kernels PRIVATE
+      -mavx2 -mfma -mavx512f -mavx512dq -mavx512bw -mavx512vl)
+    target_compile_definitions(hypervec_avx512_kernels PRIVATE
+      HYPERVEC_ENABLE_DD COMPILE_SIMD_AVX2 COMPILE_SIMD_AVX512
+      HYPERVEC_FP32_AVX512_KERNELS THE_SIMD_LEVEL=SIMDLevel::AVX512)
+    set_target_properties(hypervec_avx512_kernels PROPERTIES
+      POSITION_INDEPENDENT_CODE ON INTERPROCEDURAL_OPTIMIZATION OFF)
+    target_sources(hypervec PRIVATE $<TARGET_OBJECTS:hypervec_avx512_kernels>)
+    target_compile_definitions(hypervec PUBLIC COMPILE_SIMD_AVX512)
+  endif()
 endif()
 
 target_include_directories(hypervec

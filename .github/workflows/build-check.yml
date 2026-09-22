@@ -127,3 +127,18 @@ jobs:
           HYPERVEC_SIMD_LEVEL=AVX2 qemu-x86_64 -cpu Nehalem \
             build/development/test/unit_tests/cpp/hypervec_test \
             --gtest_filter=RuntimeSimd.Environment
+          HYPERVEC_SIMD_LEVEL=AVX512 qemu-x86_64 -cpu Nehalem \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter=RuntimeSimd.Environment
+
+      - name: Verify AVX2 fallback without AVX-512
+        if: matrix.name == 'GCC-runtime-SIMD'
+        env:
+          OMP_NUM_THREADS: 1
+        run: |
+          qemu-x86_64 -cpu Haswell \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter='RuntimeSimd.*:SIMDConfig.*'
+          HYPERVEC_SIMD_LEVEL=AVX512 qemu-x86_64 -cpu Haswell \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter=RuntimeSimd.Environment

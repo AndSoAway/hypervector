@@ -17,12 +17,16 @@
 
 namespace hypervec {
 
+// These helpers intentionally retain 256-bit operations at the AVX-512 level.
+constexpr auto kSimd256 = simd256_level_selector<THE_SIMD_LEVEL>::value;
+using DistanceSimd8 = simd8float32_tpl<kSimd256>;
+
 template <>
 void fvec_sub<THE_SIMD_LEVEL>(size_t d, const float* a, const float* b,
                               float* c) {
   size_t i;
   for (i = 0; i + 7 < d; i += 8) {
-    simd8float32_tpl<THE_SIMD_LEVEL> ci, ai, bi;
+    DistanceSimd8 ci, ai, bi;
     ai.loadu(a + i);
     bi.loadu(b + i);
     ci = ai - bi;
@@ -38,7 +42,7 @@ void fvec_add<THE_SIMD_LEVEL>(size_t d, const float* a, const float* b,
                               float* c) {
   size_t i;
   for (i = 0; i + 7 < d; i += 8) {
-    simd8float32_tpl<THE_SIMD_LEVEL> ci, ai, bi;
+    DistanceSimd8 ci, ai, bi;
     ai.loadu(a + i);
     bi.loadu(b + i);
     ci = ai + bi;
@@ -52,9 +56,9 @@ void fvec_add<THE_SIMD_LEVEL>(size_t d, const float* a, const float* b,
 template <>
 void fvec_add<THE_SIMD_LEVEL>(size_t d, const float* a, float b, float* c) {
   size_t i;
-  simd8float32_tpl<THE_SIMD_LEVEL> bv(b);
+  DistanceSimd8 bv(b);
   for (i = 0; i + 7 < d; i += 8) {
-    simd8float32_tpl<THE_SIMD_LEVEL> ci, ai;
+    DistanceSimd8 ci, ai;
     ai.loadu(a + i);
     ci = ai + bv;
     ci.storeu(c + i);
@@ -140,7 +144,7 @@ void compute_PQ_dis_tables_dsub2<THE_SIMD_LEVEL>(size_t d, size_t ksub,
   for (size_t m0 = 0; m0 < M; m0 += 4) {
     int m1 = std::min(M, m0 + 4);
     for (int k0 = 0; k0 < ksub; k0 += 8) {
-      simd8float32_tpl<THE_SIMD_LEVEL> centroids[8];
+      DistanceSimd8 centroids[8];
       for (int k = 0; k < 8; k++) {
         ALIGNED(32) float centroid[8];
         size_t wp = 0;
@@ -150,25 +154,27 @@ void compute_PQ_dis_tables_dsub2<THE_SIMD_LEVEL>(size_t d, size_t ksub,
           centroid[wp++] = all_centroids[rp + 1];
           rp += 2 * ksub;
         }
-        centroids[k] = simd8float32_tpl<THE_SIMD_LEVEL>(centroid);
+        centroids[k] = DistanceSimd8(centroid);
       }
       for (size_t i = 0; i < nx; i++) {
-        simd8float32_tpl<THE_SIMD_LEVEL> xi;
+        DistanceSimd8 xi;
         if (m1 == m0 + 4) {
           xi.loadu(x + i * d + m0 * 2);
         } else {
-          xi = load_simd8float32_partial<THE_SIMD_LEVEL>(x + i * d + m0 * 2,
-                                                         2 * (m1 - m0));
+          xi = load_simd8float32_partial<
+              simd256_level_selector<THE_SIMD_LEVEL>::value>(x + i * d + m0 * 2,
+                                                             2 * (m1 - m0));
         }
 
         if (is_inner_product) {
-          pq2_8cents_table<THE_SIMD_LEVEL, true>(
-            centroids, xi, dis_tables + (i * M + m0) * ksub + k0, ksub,
-            m1 - m0);
+          pq2_8cents_table<simd256_level_selector<THE_SIMD_LEVEL>::value, true>(
+              centroids, xi, dis_tables + (i * M + m0) * ksub + k0, ksub,
+              m1 - m0);
         } else {
-          pq2_8cents_table<THE_SIMD_LEVEL, false>(
-            centroids, xi, dis_tables + (i * M + m0) * ksub + k0, ksub,
-            m1 - m0);
+          pq2_8cents_table<simd256_level_selector<THE_SIMD_LEVEL>::value,
+                           false>(centroids, xi,
+                                  dis_tables + (i * M + m0) * ksub + k0, ksub,
+                                  m1 - m0);
         }
       }
     }

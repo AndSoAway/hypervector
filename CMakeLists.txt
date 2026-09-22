@@ -27,7 +27,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 set(HYPERVEC_OPT_LEVEL "generic" CACHE STRING
-    "CPU optimization level: generic or dd (runtime AVX2 with fallback)")
+    "CPU optimization level: generic or dd (runtime AVX2/AVX512 with fallback)")
 set_property(CACHE HYPERVEC_OPT_LEVEL PROPERTY STRINGS generic dd)
 
 option(BUILD_TESTING "Build the HyperVec test suite" OFF)

@@ -193,7 +193,8 @@ float ScalarDistance(const LocalVectorQuantizer& lvq, const float* query_buffer,
 
 auto LocalVectorQuantizer::GetDistanceKernel() const -> DistanceKernel {
 #ifdef COMPILE_SIMD_AVX2
-  if (nbits == 8 && SIMDConfig::get_level() == SIMDLevel::AVX2) {
+  const auto level = SIMDConfig::get_level();
+  if (nbits == 8 && (level == SIMDLevel::AVX2 || level == SIMDLevel::AVX512)) {
     return LVQ8DistanceAVX2;
   }
 #endif

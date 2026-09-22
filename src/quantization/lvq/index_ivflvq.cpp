@@ -60,7 +60,8 @@ class LVQInvertedListScanner final : public InvertedListScanner {
         coarse_centroids_(coarse_centroids),
         dimension_(dimension),
         list_count_(list_count),
-        by_residual_(by_residual) {
+        by_residual_(by_residual),
+        distance_kernel_(lvq.GetDistanceKernel()) {
     HYPERVEC_THROW_IF_NOT_MSG(lvq.is_trained,
                               "LVQ scanner requires a trained quantizer");
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -116,7 +117,7 @@ class LVQInvertedListScanner final : public InvertedListScanner {
         "LVQ scanner SetQuery and SetList must be called before scanning");
     HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
                               "LVQ scanner code must not be null");
-    return lvq_.ApplyDistanceTable(distance_table_.data(), code);
+    return distance_kernel_(lvq_, distance_table_.data(), code);
   }
 
  private:
@@ -125,6 +126,7 @@ class LVQInvertedListScanner final : public InvertedListScanner {
   idx_t dimension_;
   idx_t list_count_;
   bool by_residual_;
+  LocalVectorQuantizer::DistanceKernel distance_kernel_;
   const float* query_ = nullptr;
   std::vector<float> residual_query_;
   std::vector<float> distance_table_;

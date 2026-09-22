@@ -13,9 +13,11 @@
 namespace hypervec {
 
 LVQDistanceComputer::LVQDistanceComputer(const LocalVectorQuantizer& lvq,
-                                         const uint8_t* codes,
-                                         size_t code_size)
-  : lvq(lvq), codes(codes), code_size(code_size) {
+                                         const uint8_t* codes, size_t code_size)
+    : lvq(lvq),
+      codes(codes),
+      code_size(code_size),
+      distance_kernel_(lvq.GetDistanceKernel()) {
   HYPERVEC_THROW_IF_NOT(lvq.is_trained);
   HYPERVEC_THROW_IF_NOT(code_size == lvq.code_size);
 }
@@ -30,8 +32,8 @@ void LVQDistanceComputer::SetQuery(const float* x) {
 
 float LVQDistanceComputer::operator()(idx_t i) {
   HYPERVEC_THROW_IF_NOT(!dis_table.empty());
-  return lvq.ApplyDistanceTable(dis_table.data(),
-                                codes + static_cast<size_t>(i) * code_size);
+  return distance_kernel_(lvq, dis_table.data(),
+                          codes + static_cast<size_t>(i) * code_size);
 }
 
 float LVQDistanceComputer::symmetric_dis(idx_t i, idx_t j) {

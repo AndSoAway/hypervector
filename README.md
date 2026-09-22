@@ -55,8 +55,10 @@ C++ callers can inspect `hypervec::SIMDConfig::get_level_name()` from
 `<utils/simd/simd_levels.h>`. Set the environment before using the library;
 existing distance computers retain their selected kernel. Runtime SIMD changes
 neither the index format nor its parameters. Floating-point accumulation order
-may change slightly. Dedicated LVQ/PQ/RaBitQ scanning and AVX-512 kernels are
-not enabled by this first distance-kernel implementation.
+may change slightly. LVQ8 also uses an AVX2 distance kernel, selected once per
+distance computer or scan, shared by LVQ, IVF-LVQ and HNSW-LVQ. LVQ1–7 retain
+their generic bit-packed implementation. Dedicated PQ/RaBitQ scanning and
+AVX-512 kernels are not yet enabled.
 
 To build the C++ unit tests with an installed GoogleTest package:
 

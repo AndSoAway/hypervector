@@ -7,6 +7,9 @@
  */
 
 #include <gtest/gtest.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <quantization/lvq/lvq.h>
+#include <quantization/lvq/lvq_distance_computer.h>
 #include <utils/distances/distances.h>
 #include <utils/log/exception.h>
 #include <utils/simd/simd_levels.h>
@@ -143,6 +146,113 @@ TEST(RuntimeSimd, ConcurrentSelectionAndDistanceCalls) {
     });
   }
   for (auto& worker : workers) worker.join();
+}
+
+TEST(RuntimeSimd, LVQDistanceTailsAndBitWidths) {
+  const RestoreLevel restore;
+  std::mt19937 random(456);
+  std::uniform_real_distribution<float> value(-3, 3);
+  std::vector<size_t> dimensions = {99, 128, 299, 300, 301, 768};
+  for (size_t d = 1; d <= 65; ++d) dimensions.push_back(d);
+  for (size_t d : dimensions) {
+    std::vector<float> base(4 * d), query(d), decoded(d);
+    for (auto& v : base) v = value(random);
+    for (auto& v : query) v = value(random);
+    for (int bits = 1; bits <= 8; ++bits) {
+      LocalVectorQuantizer lvq(d, bits);
+      lvq.Train(4, base.data());
+      auto buffer = std::make_unique<float[]>(d + 1);
+      float* centered = buffer.get() + 1;
+      lvq.ComputeDistanceTable(query.data(), centered);
+      for (size_t offset : {size_t{1}, size_t{3}}) {
+        auto storage = std::make_unique<uint8_t[]>(offset + lvq.code_size);
+        uint8_t* code = storage.get() + offset;
+        // Encoding the mean exercises step=0, including AVX and scalar tails.
+        for (const float* source : {base.data(), lvq.mean.data()}) {
+          lvq.ComputeCode(source, code);
+          lvq.Decode(code, decoded.data());
+          double expected = 0;
+          for (size_t j = 0; j < d; ++j) {
+            const double diff = static_cast<double>(query[j]) - decoded[j];
+            expected += diff * diff;
+          }
+          const double tolerance = 1e-5 * std::max(1.0, expected);
+          SIMDConfig::set_level(SIMDLevel::NONE);
+          const auto baseline = lvq.GetDistanceKernel();
+          EXPECT_NEAR(baseline(lvq, centered, code), expected, tolerance);
+          for (auto level : {SIMDLevel::NONE, SIMDLevel::AVX2}) {
+            if (!SIMDConfig::is_simd_level_available(level)) continue;
+            SIMDConfig::set_level(level);
+            SCOPED_TRACE(::testing::Message()
+                         << to_string(level) << " d=" << d << " bits=" << bits);
+            if (bits != 8) EXPECT_EQ(lvq.GetDistanceKernel(), baseline);
+            if (bits == 8 && level == SIMDLevel::AVX2) {
+              EXPECT_NE(lvq.GetDistanceKernel(), baseline);
+            }
+            EXPECT_NEAR(lvq.ApplyDistanceTable(centered, code), expected,
+                        tolerance);
+            LVQDistanceComputer dc(lvq, code, lvq.code_size);
+            dc.SetQuery(query.data());
+            // Captured kernels remain valid after the global selection changes.
+            SIMDConfig::set_level(SIMDLevel::NONE);
+            EXPECT_NEAR(dc(0), expected, tolerance);
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(RuntimeSimd, LVQScanMatchesBaseline) {
+  const RestoreLevel restore;
+  constexpr idx_t d = 33, n = 127, nq = 4, k = 10;
+  std::vector<float> base(n * d), queries(nq * d);
+  std::mt19937 random(789);
+  std::uniform_real_distribution<float> value(-1, 1);
+  for (auto& v : base) v = value(random);
+  for (auto& v : queries) v = value(random);
+  LocalVectorQuantizer lvq(d, 8);
+  lvq.Train(n, base.data());
+  std::vector<uint8_t> codes(n * lvq.code_size);
+  lvq.ComputeCodes(n, base.data(), codes.data());
+  std::vector<float> expected(nq * k), actual(nq * k);
+  std::vector<idx_t> expected_ids(nq * k), actual_ids(nq * k);
+  SIMDConfig::set_level(SIMDLevel::NONE);
+  lvq.SearchL2(nq, queries.data(), n, codes.data(), k, expected.data(),
+               expected_ids.data());
+  SIMDConfig::set_level(SIMDConfig::auto_detect_simd_level());
+  lvq.SearchL2(nq, queries.data(), n, codes.data(), k, actual.data(),
+               actual_ids.data());
+  EXPECT_EQ(expected_ids, actual_ids);
+  for (size_t i = 0; i < actual.size(); ++i) {
+    EXPECT_NEAR(actual[i], expected[i], 1e-5 * std::max(1.0F, expected[i]));
+  }
+}
+
+TEST(RuntimeSimd, IVFLVQ8ResidualAndRawScansMatchBaseline) {
+  const RestoreLevel restore;
+  constexpr idx_t d = 33, n = 256, nq = 4, k = 10;
+  std::vector<float> base(n * d), queries(nq * d);
+  std::mt19937 random(987);
+  std::uniform_real_distribution<float> value(-1, 1);
+  for (auto& v : base) v = value(random);
+  for (auto& v : queries) v = value(random);
+  for (bool residual : {false, true}) {
+    SIMDConfig::set_level(SIMDLevel::NONE);
+    IndexIVFLVQ index(d, 4, 8);
+    index.by_residual = residual;
+    index.nprobe = 4;
+    index.Build(n, base.data());
+    std::vector<float> expected(nq * k), actual(nq * k);
+    std::vector<idx_t> expected_ids(nq * k), actual_ids(nq * k);
+    index.Search(nq, queries.data(), k, expected.data(), expected_ids.data());
+    SIMDConfig::set_level(SIMDConfig::auto_detect_simd_level());
+    index.Search(nq, queries.data(), k, actual.data(), actual_ids.data());
+    EXPECT_EQ(expected_ids, actual_ids);
+    for (size_t i = 0; i < actual.size(); ++i) {
+      EXPECT_NEAR(actual[i], expected[i], 1e-5 * std::max(1.0F, expected[i]));
+    }
+  }
 }
 
 }  // namespace

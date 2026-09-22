@@ -8,6 +8,7 @@
 
 #include <quantization/lvq/lvq.h>
 #include <utils/log/assert.h>
+#include <utils/simd/simd_levels.h>
 #include <utils/structures/heap.h>
 
 #include <algorithm>
@@ -16,6 +17,8 @@
 #include <limits>
 #include <utility>
 #include <vector>
+
+#include "quantization/lvq/lvq_distance_kernels.h"
 
 namespace hypervec {
 namespace {
@@ -157,8 +160,12 @@ void LocalVectorQuantizer::ComputeDistanceTable(const float* x,
   }
 }
 
-float LocalVectorQuantizer::ApplyDistanceTable(const float* query_buffer,
-                                               const uint8_t* code) const {
+namespace {
+
+float ScalarDistance(const LocalVectorQuantizer& lvq, const float* query_buffer,
+                     const uint8_t* code) {
+  const idx_t d = lvq.d;
+  const int nbits = lvq.nbits;
   float lower, step;
   std::memcpy(&lower, code, sizeof(float));
   std::memcpy(&step, code + sizeof(float), sizeof(float));
@@ -182,6 +189,22 @@ float LocalVectorQuantizer::ApplyDistanceTable(const float* query_buffer,
   return squared;
 }
 
+}  // namespace
+
+auto LocalVectorQuantizer::GetDistanceKernel() const -> DistanceKernel {
+#ifdef COMPILE_SIMD_AVX2
+  if (nbits == 8 && SIMDConfig::get_level() == SIMDLevel::AVX2) {
+    return LVQ8DistanceAVX2;
+  }
+#endif
+  return ScalarDistance;
+}
+
+float LocalVectorQuantizer::ApplyDistanceTable(const float* query_buffer,
+                                               const uint8_t* code) const {
+  return GetDistanceKernel()(*this, query_buffer, code);
+}
+
 void LocalVectorQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
                                     const uint8_t* codes, idx_t k,
                                     float* distances, idx_t* labels) const {
@@ -199,6 +222,7 @@ void LocalVectorQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
                                 labels != nullptr &&
                                 (ncodes == 0 || codes != nullptr),
                             "LVQ: null search buffer");
+  const auto distance_kernel = GetDistanceKernel();
 #pragma omp parallel
   {
     std::vector<float> query(static_cast<size_t>(d));
@@ -210,8 +234,8 @@ void LocalVectorQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
       heap_heapify<CMax<float, idx_t>>(k, heap_dis, heap_ids);
       float threshold = heap_dis[0];
       for (idx_t j = 0; j < ncodes; ++j) {
-        const float dis = ApplyDistanceTable(
-            query.data(), codes + static_cast<size_t>(j) * code_size);
+        const float dis = distance_kernel(
+            *this, query.data(), codes + static_cast<size_t>(j) * code_size);
         if (CMax<float, idx_t>::cmp(threshold, dis)) {
           heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis, j);
           threshold = heap_dis[0];

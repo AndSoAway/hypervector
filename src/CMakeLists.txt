@@ -108,8 +108,11 @@ if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
   endif()
   # Only this object may contain optional ISA instructions. Neither callers
   # nor the dispatcher inherit AVX flags, including installed consumers.
-  add_library(hypervec_avx2_kernels OBJECT utils/distances/distances_simd.cpp)
-  target_include_directories(hypervec_avx2_kernels PRIVATE include)
+  add_library(hypervec_avx2_kernels OBJECT
+    utils/distances/distances_simd.cpp
+    quantization/lvq/lvq_distance_avx2.cpp)
+  target_include_directories(hypervec_avx2_kernels PRIVATE
+    include ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_options(hypervec_avx2_kernels PRIVATE -mavx2 -mfma)
   target_compile_definitions(hypervec_avx2_kernels PRIVATE
     HYPERVEC_ENABLE_DD COMPILE_SIMD_AVX2 THE_SIMD_LEVEL=SIMDLevel::AVX2)

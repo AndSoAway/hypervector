@@ -40,6 +40,11 @@ struct LocalVectorQuantizer {
   void ComputeDistanceTable(const float* x, float* query_buffer) const;
   float ApplyDistanceTable(const float* query_buffer,
                            const uint8_t* code) const;
+  using DistanceKernel = float (*)(const LocalVectorQuantizer&, const float*,
+                                   const uint8_t*);
+  // Select once per scanner/search, not once per stored vector. The returned
+  // function handles this quantizer's bit width and current CPU/OS support.
+  DistanceKernel GetDistanceKernel() const;
   void SearchL2(idx_t nx, const float* x, idx_t ncodes, const uint8_t* codes,
                 idx_t k, float* distances, idx_t* labels) const;
 };

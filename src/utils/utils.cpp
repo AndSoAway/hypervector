@@ -36,10 +36,10 @@ std::string get_compile_options() {
 
 #ifdef HYPERVEC_ENABLE_DD
   options += "DD ";
-  int supported = SIMDConfig::supported_simd_levels;
   for (int i = 0; i < static_cast<int>(SIMDLevel::COUNT); ++i) {
     auto level = static_cast<SIMDLevel>(i);
-    if ((supported & (1 << i)) && level != SIMDLevel::NONE) {
+    if (SIMDConfig::is_simd_level_available(level) &&
+        level != SIMDLevel::NONE) {
       options += to_string(level) + " ";
     }
   }

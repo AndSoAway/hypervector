@@ -10,6 +10,7 @@
 
 #include <utils/common/platform_macros.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -114,7 +115,7 @@ SIMDLevel to_simd_level(const std::string& level_str);
  * In DD mode:
  *   - get_level() returns the runtime-detected or user-set level
  *   - set_level() changes the runtime level (if level is supported)
- *   - supported_simd_levels() returns bitmask of all compiled-in levels
+ *   - supported_simd_levels is the compiled-in AND CPU/OS-supported bitmask
  *
  * In static mode:
  *   - get_level() returns the compiled-in level
@@ -122,10 +123,12 @@ SIMDLevel to_simd_level(const std::string& level_str);
  *   - supported_simd_levels() returns bitmask with single level
  */
 struct HYPERVEC_API SIMDConfig {
-  static SIMDLevel level;
+  // Use get_level()/set_level(); changing kernels is atomic, but existing
+  // DistanceComputers retain the implementation selected at creation time.
+  static std::atomic<SIMDLevel> level;
 
   /// Returns bitmask of supported SIMD levels (1 << SIMDLevel).
-  static uint64_t supported_simd_levels;
+  static const uint64_t supported_simd_levels;
 
   static SIMDLevel auto_detect_simd_level();
 
@@ -136,7 +139,7 @@ struct HYPERVEC_API SIMDConfig {
   static SIMDLevel get_level();
   static std::string get_level_name();
 
-  /// Check if a SIMD level is available (compiled in).
+  /// Check if a SIMD level is both compiled in and safe on this CPU/OS.
   static bool is_simd_level_available(SIMDLevel level);
 
   /// Returns the SIMD level via the dispatch mechanism.

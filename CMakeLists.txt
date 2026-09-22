@@ -27,8 +27,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 set(HYPERVEC_OPT_LEVEL "generic" CACHE STRING
-    "CPU optimization level (currently supported: generic)")
-set_property(CACHE HYPERVEC_OPT_LEVEL PROPERTY STRINGS generic)
+    "CPU optimization level: generic or dd (runtime AVX2 with fallback)")
+set_property(CACHE HYPERVEC_OPT_LEVEL PROPERTY STRINGS generic dd)
 
 option(BUILD_TESTING "Build the HyperVec test suite" OFF)
 option(HYPERVEC_UNIT_TESTS_ONLY "Skip performance benchmarks" OFF)
@@ -48,10 +48,10 @@ if(NOT DEFINED BLA_VENDOR AND "$ENV{BLA_VENDOR}" STREQUAL "")
   set(BLA_VENDOR "Generic" CACHE STRING "BLAS/LAPACK provider")
 endif()
 
-if(NOT HYPERVEC_OPT_LEVEL STREQUAL "generic")
+if(NOT HYPERVEC_OPT_LEVEL MATCHES "^(generic|dd)$")
   message(FATAL_ERROR
     "HYPERVEC_OPT_LEVEL='${HYPERVEC_OPT_LEVEL}' is unavailable. The current "
-    "CMake build only provides the portable 'generic' library target.")
+    "CMake build supports 'generic' and 'dd', not separate ISA libraries.")
 endif()
 
 if(HYPERVEC_ENABLE_MKL)

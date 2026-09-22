@@ -27,9 +27,19 @@ jobs:
           - name: GCC
             cc: gcc
             cxx: g++
+            opt: generic
           - name: Clang
             cc: clang
             cxx: clang++
+            opt: generic
+          - name: GCC-runtime-SIMD
+            cc: gcc
+            cxx: g++
+            opt: dd
+          - name: Clang-runtime-SIMD
+            cc: clang
+            cxx: clang++
+            opt: dd
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -45,7 +55,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake ninja-build libomp-dev \
-            libopenblas-dev liblapack-dev libgtest-dev
+            libopenblas-dev liblapack-dev libgtest-dev qemu-user
 
       - name: Build release core
         run: |
@@ -53,7 +63,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
             -DHYPERVEC_FETCH_DEPS=OFF \
-            -DHYPERVEC_OPT_LEVEL=generic
+            -DHYPERVEC_OPT_LEVEL=${{ matrix.opt }}
           grep -Fqx 'BLA_VENDOR:STRING=Generic' build/core/CMakeCache.txt
           cmake --build build/core --parallel 2
 
@@ -77,7 +87,7 @@ jobs:
             -DHYPERVEC_FETCH_DEPS=OFF \
             -DHYPERVEC_ENABLE_EXTRAS=ON \
             -DHYPERVEC_ENABLE_EVAL=ON \
-            -DHYPERVEC_OPT_LEVEL=generic
+            -DHYPERVEC_OPT_LEVEL=${{ matrix.opt }}
           cmake --build build/development --parallel 2
 
       - name: Run C++ tests
@@ -90,6 +100,12 @@ jobs:
             build/development/test/unit_tests/cpp/hypervec_test \
             --gtest_filter=ProductQuantizer.SearchL2RecallVsBruteForce
 
+      - name: Verify runtime generic fallback
+        if: matrix.opt == 'dd'
+        run: |
+          HYPERVEC_SIMD_LEVEL=NONE ctest --test-dir build/development \
+            --output-on-failure --no-tests=error --timeout 120
+
       - name: Verify unavailable target rejection
         if: matrix.name == 'GCC'
         run: |
@@ -99,3 +115,15 @@ jobs:
             echo "::error::The unavailable avx2 target was accepted."
             exit 1
           fi
+
+      - name: Verify fallback on an emulated CPU without AVX
+        if: matrix.name == 'GCC-runtime-SIMD'
+        env:
+          OMP_NUM_THREADS: 1
+        run: |
+          qemu-x86_64 -cpu Nehalem \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter='RuntimeSimd.*:SIMDConfig.*'
+          HYPERVEC_SIMD_LEVEL=AVX2 qemu-x86_64 -cpu Nehalem \
+            build/development/test/unit_tests/cpp/hypervec_test \
+            --gtest_filter=RuntimeSimd.Environment

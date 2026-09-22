@@ -96,6 +96,30 @@ set(HYPERVEC_PUBLIC_HEADERS "${HYPERVEC_PUBLIC_HEADERS}" PARENT_SCOPE)
 add_library(hypervec ${HYPERVEC_SRC})
 add_library(hypervec::hypervec ALIAS hypervec)
 
+if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" OR
+     NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+    message(FATAL_ERROR "dd currently requires x86-64 and GCC or Clang; use generic")
+  endif()
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-mavx2 -mfma" HYPERVEC_COMPILER_HAS_AVX2)
+  if(NOT HYPERVEC_COMPILER_HAS_AVX2)
+    message(FATAL_ERROR "dd requires compiler support for AVX2/FMA; use generic")
+  endif()
+  # Only this object may contain optional ISA instructions. Neither callers
+  # nor the dispatcher inherit AVX flags, including installed consumers.
+  add_library(hypervec_avx2_kernels OBJECT utils/distances/distances_simd.cpp)
+  target_include_directories(hypervec_avx2_kernels PRIVATE include)
+  target_compile_options(hypervec_avx2_kernels PRIVATE -mavx2 -mfma)
+  target_compile_definitions(hypervec_avx2_kernels PRIVATE
+    HYPERVEC_ENABLE_DD COMPILE_SIMD_AVX2 THE_SIMD_LEVEL=SIMDLevel::AVX2)
+  set_target_properties(hypervec_avx2_kernels PROPERTIES
+    POSITION_INDEPENDENT_CODE ON INTERPROCEDURAL_OPTIMIZATION OFF)
+  target_sources(hypervec PRIVATE $<TARGET_OBJECTS:hypervec_avx2_kernels>)
+  # Inline template dispatch in public headers must agree with the core.
+  target_compile_definitions(hypervec PUBLIC HYPERVEC_ENABLE_DD COMPILE_SIMD_AVX2)
+endif()
+
 target_include_directories(hypervec
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

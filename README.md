@@ -22,10 +22,11 @@ extension additionally requires Python development files, NumPy, and SWIG.
 
 ### Building from source
 
-The current CMake build provides the portable `generic` CPU target. Other
-optimization levels, the MKL-specific switch, and the C API switch are reserved
-but not implemented; requesting one fails during configuration instead of
-silently producing the wrong build.
+The default `generic` build uses portable compiler-generated code (which may
+include baseline SIMD). On x86-64 with GCC/Clang, `HYPERVEC_OPT_LEVEL=dd` adds
+AVX2/FMA distance kernels to the same library and selects them only when both
+CPU and OS support them. Other optimization levels, the MKL-specific switch,
+and the C API switch remain unavailable.
 
 The default configuration builds only the core library and does not download
 dependencies:
@@ -37,6 +38,25 @@ cmake -S . -B build/release \
   -DBUILD_TESTING=OFF
 cmake --build build/release -j
 ```
+
+To enable runtime SIMD dispatch, use `-DHYPERVEC_OPT_LEVEL=dd` in a separate
+build directory. Only the kernel object receives AVX2/FMA compiler flags;
+do not add global `-march=native` flags to a portable build. C++ and Python
+use the same dispatch; no separate AVX Python module is needed.
+
+In a `dd` build, `HYPERVEC_SIMD_LEVEL=NONE` forces the baseline distance
+implementation, and `HYPERVEC_SIMD_LEVEL=AVX2` requests AVX2/FMA. Unsupported
+or invalid requests raise an exception on first dispatch, rather than execute
+unsupported instructions. Leave the variable unset for automatic selection.
+This differs from `HYPERVEC_OPT_LEVEL`, which controls the build (and the
+legacy Python module loader), not runtime kernel selection.
+
+C++ callers can inspect `hypervec::SIMDConfig::get_level_name()` from
+`<utils/simd/simd_levels.h>`. Set the environment before using the library;
+existing distance computers retain their selected kernel. Runtime SIMD changes
+neither the index format nor its parameters. Floating-point accumulation order
+may change slightly. Dedicated LVQ/PQ/RaBitQ scanning and AVX-512 kernels are
+not enabled by this first distance-kernel implementation.
 
 To build the C++ unit tests with an installed GoogleTest package:
 

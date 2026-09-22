@@ -18,7 +18,9 @@
 #include <cstdio>
 #include <cstring>
 
+#ifndef THE_SIMD_LEVEL
 #define THE_SIMD_LEVEL SIMDLevel::NONE
+#endif
 
 #include <utils/distances/simd_impl/distances_autovec-inl.h>
 #include <utils/distances/simd_impl/distances_simdlib256.h>
@@ -26,22 +28,22 @@
 namespace hypervec {
 
 /*******
-Functions with SIMDLevel::NONE
+Shared implementations compiled separately for each supported SIMD level.
 */
 
 template <>
-void fvec_madd<SIMDLevel::NONE>(size_t n, const float* a, float bf,
-                                const float* b, float* c) {
+void fvec_madd<THE_SIMD_LEVEL>(size_t n, const float* a, float bf,
+                               const float* b, float* c) {
   for (size_t i = 0; i < n; i++) {
     c[i] = a[i] + bf * b[i];
   }
 }
 
 template <>
-void fvec_L2sqr_ny_transposed<SIMDLevel::NONE>(float* dis, const float* x,
-                                               const float* y,
-                                               const float* y_sqlen, size_t d,
-                                               size_t d_offset, size_t ny) {
+void fvec_L2sqr_ny_transposed<THE_SIMD_LEVEL>(float* dis, const float* x,
+                                              const float* y,
+                                              const float* y_sqlen, size_t d,
+                                              size_t d_offset, size_t ny) {
   float x_sqlen = 0;
   for (size_t j = 0; j < d; j++) {
     x_sqlen += x[j] * x[j];
@@ -58,31 +60,31 @@ void fvec_L2sqr_ny_transposed<SIMDLevel::NONE>(float* dis, const float* x,
 }
 
 template <>
-void fvec_inner_products_ny<SIMDLevel::NONE>(float* ip, const float* x,
-                                             const float* y, size_t d,
-                                             size_t ny) {
+void fvec_inner_products_ny<THE_SIMD_LEVEL>(float* ip, const float* x,
+                                            const float* y, size_t d,
+                                            size_t ny) {
   // BLAS sgemv was tried here and was slower than the scalar loop
   // for the typical sizes in this codebase.
   for (size_t i = 0; i < ny; i++) {
-    ip[i] = fvec_inner_product(x, y, d);
+    ip[i] = fvec_inner_product<THE_SIMD_LEVEL>(x, y, d);
     y += d;
   }
 }
 
 template <>
-void fvec_L2sqr_ny<SIMDLevel::NONE>(float* dis, const float* x, const float* y,
-                                    size_t d, size_t ny) {
+void fvec_L2sqr_ny<THE_SIMD_LEVEL>(float* dis, const float* x, const float* y,
+                                   size_t d, size_t ny) {
   for (size_t i = 0; i < ny; i++) {
-    dis[i] = fvec_L2sqr(x, y, d);
+    dis[i] = fvec_L2sqr<THE_SIMD_LEVEL>(x, y, d);
     y += d;
   }
 }
 
 template <>
-size_t fvec_L2sqr_ny_nearest<SIMDLevel::NONE>(float* distances_tmp_buffer,
-                                              const float* x, const float* y,
-                                              size_t d, size_t ny) {
-  fvec_L2sqr_ny<SIMDLevel::NONE>(distances_tmp_buffer, x, y, d, ny);
+size_t fvec_L2sqr_ny_nearest<THE_SIMD_LEVEL>(float* distances_tmp_buffer,
+                                             const float* x, const float* y,
+                                             size_t d, size_t ny) {
+  fvec_L2sqr_ny<THE_SIMD_LEVEL>(distances_tmp_buffer, x, y, d, ny);
 
   size_t nearest_idx = 0;
   float min_dis = HUGE_VALF;
@@ -98,11 +100,11 @@ size_t fvec_L2sqr_ny_nearest<SIMDLevel::NONE>(float* distances_tmp_buffer,
 }
 
 template <>
-size_t fvec_L2sqr_ny_nearest_y_transposed<SIMDLevel::NONE>(
-  float* distances_tmp_buffer, const float* x, const float* y,
-  const float* y_sqlen, size_t d, size_t d_offset, size_t ny) {
-  fvec_L2sqr_ny_transposed<SIMDLevel::NONE>(distances_tmp_buffer, x, y, y_sqlen,
-                                            d, d_offset, ny);
+size_t fvec_L2sqr_ny_nearest_y_transposed<THE_SIMD_LEVEL>(
+    float* distances_tmp_buffer, const float* x, const float* y,
+    const float* y_sqlen, size_t d, size_t d_offset, size_t ny) {
+  fvec_L2sqr_ny_transposed<THE_SIMD_LEVEL>(distances_tmp_buffer, x, y, y_sqlen,
+                                           d, d_offset, ny);
 
   size_t nearest_idx = 0;
   float min_dis = HUGE_VALF;
@@ -118,8 +120,8 @@ size_t fvec_L2sqr_ny_nearest_y_transposed<SIMDLevel::NONE>(
 }
 
 template <>
-int fvec_madd_and_argmin<SIMDLevel::NONE>(size_t n, const float* a, float bf,
-                                          const float* b, float* c) {
+int fvec_madd_and_argmin<THE_SIMD_LEVEL>(size_t n, const float* a, float bf,
+                                         const float* b, float* c) {
   float vmin = 1e20;
   int imin = -1;
 

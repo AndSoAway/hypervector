@@ -60,7 +60,8 @@ distance computer or scan, shared by LVQ, IVF-LVQ and HNSW-LVQ. LVQ1–7 retain
 their generic bit-packed implementation. PQ4/PQ8/PQ16 table scans use portable
 bit-width-specialized kernels with independent accumulators, selected once per
 scanner (also effective in `generic` builds). Other PQ widths retain the generic
-decoder. Dedicated RaBitQ scanning and AVX-512 kernels are not yet enabled.
+decoder. RaBitQ table scans also use portable independent accumulators, retaining
+double-precision tables and estimates. AVX-512 kernels are not yet enabled.
 
 To build the C++ unit tests with an installed GoogleTest package:
 

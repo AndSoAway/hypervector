@@ -10,6 +10,7 @@
 
 #include <persistence/io.h>
 #include <persistence/io_macros.h>
+#include <utils/algo/bm25/bm25.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
@@ -149,30 +150,10 @@ float SparseRow::dot(const SparseRow& other, DocValueComputer computer,
 
 float SparseRow::dot_bm25(const SparseRow& query_idf, const BM25Params& params,
                           float doc_len) const {
-  const size_t n_doc = nnz();
-  const size_t n_q = query_idf.nnz();
-  const SparseElement* doc = data();
-  const SparseElement* q = query_idf.data();
-  const float avgdl = std::max(params.avgdl, 1.0f);
-  // BM25 denominator norm term is constant across matched terms for a document.
-  const float norm = params.k1 * (1.0f - params.b + params.b * doc_len / avgdl);
-  float acc = 0.0f;
-  size_t i = 0;
-  size_t j = 0;
-  while (i < n_doc && j < n_q) {
-    if (doc[i].index < q[j].index) {
-      ++i;
-    } else if (doc[i].index > q[j].index) {
-      ++j;
-    } else {
-      const float tf = doc[i].value;
-      const float weighted = tf * (params.k1 + 1.0f) / (tf + norm);
-      acc += q[j].value * weighted;  // query value = IDF
-      ++i;
-      ++j;
-    }
-  }
-  return acc;
+  // Convenience member wrapper over the free BM25Score function (bm25.h),
+  // which is the single source of truth for BM25 scoring.  `*this` is the
+  // document (TF values); query_idf holds the query IDF weights.
+  return BM25Score(query_idf, *this, params, doc_len);
 }
 
 void write_sparse_row(const SparseRow& row, IOWriter* f) {

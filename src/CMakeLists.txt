@@ -40,6 +40,7 @@ set(HYPERVEC_SRC
   utils/structures/sparse_row.cpp
   utils/structures/term_dictionary.cpp
   utils/algo/kmeans/kmeans.cpp
+  utils/algo/bm25/analyzer_cn.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
   quantization/pq/index_pq.cpp
@@ -90,6 +91,7 @@ set(HYPERVEC_HEADERS
   include/utils/structures/term_dictionary.h
   include/utils/algo/kmeans/kmeans.h
   include/utils/algo/sparse_vector/sparse_inverted_index.h
+  include/utils/algo/bm25/analyzer.h
   include/quantization/pq/pq.h
   include/quantization/pq/pq_distance_computer.h
   include/quantization/pq/index_pq.h
@@ -169,4 +171,15 @@ install(FILES ${PROJECT_BINARY_DIR}/cmake/hypervec-config.cmake
 
 install(EXPORT hypervec-targets
   DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypervec
+)
+
+# ---------------------------------------------------------------------------
+# cppjieba (Chinese segmentation, header-only + dict files)
+# ---------------------------------------------------------------------------
+include(${CMAKE_SOURCE_DIR}/cmake/thirdparty/fetch_cppjieba.cmake)
+# cppjieba is header-only; attach its include paths directly so the install
+# export set does not need to know about the cppjieba_iface target.
+target_include_directories(hypervec PRIVATE
+  ${cppjieba_SOURCE_DIR}/include
+  ${cppjieba_SOURCE_DIR}/deps/limonp/include
 )

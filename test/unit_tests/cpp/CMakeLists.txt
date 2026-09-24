@@ -6,6 +6,7 @@
 # HNSW-only test configuration
 
 set(HYPERVEC_TEST_SRC
+  test_analyzer.cpp
   test_heap.cpp
   test_sparse_row.cpp
   test_term_dictionary.cpp
@@ -75,6 +76,13 @@ target_link_libraries(hypervec_test PRIVATE
   OpenMP::OpenMP_CXX
   ${OMP_LIB}
   GTest::gtest_main
+  cppjieba_iface
+)
+
+# Inject the cppjieba dict directory so test_analyzer.cpp can locate dict files
+# without hard-coding the FetchContent build path.
+target_compile_definitions(hypervec_test PRIVATE
+  CPPJIEBA_DICT_DIR="${CPPJIEBA_DICT_DIR}"
 )
 
 if(WIN32)

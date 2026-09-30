@@ -167,27 +167,23 @@ double SearchConcurrent(const Index& index, const SearchEvaluationInput& input,
 
 double NearestRankPercentile(const std::vector<double>& sorted_values,
                              double percentile) {
+  if (sorted_values.empty()) {
+    return 0.0;
+  }
   const long double rank =
       std::ceil(static_cast<long double>(percentile) * sorted_values.size());
   const size_t offset = std::max<size_t>(1, static_cast<size_t>(rank)) - 1U;
   return sorted_values[offset];
 }
 
-}  // namespace
-
-double ComputeRecallAtK(const NeighborLabelsView& results,
-                        const NeighborLabelsView& ground_truth, idx_t k) {
-  ValidateLabelsView(results, "result");
-  ValidateLabelsView(ground_truth, "ground-truth");
-  HYPERVEC_THROW_IF_NOT_MSG(k > 0, "recall k must be positive");
-  HYPERVEC_THROW_IF_NOT_MSG(results.query_count == ground_truth.query_count,
-                            "result and ground-truth query counts must match");
-  HYPERVEC_THROW_IF_NOT_MSG(results.neighbors_per_query >= k,
-                            "result rows must contain at least k labels");
-  HYPERVEC_THROW_IF_NOT_MSG(ground_truth.neighbors_per_query >= k,
-                            "ground-truth rows must contain at least k labels");
-  ValidateGroundTruth(ground_truth, k);
-
+/** Recall over already-validated inputs.
+ *
+ * ComputeRecallAtK() is public and validates its ground truth itself. When an
+ * caller has already rejected an unusable ground truth up front, this avoids
+ * re-walking every query row a second time.
+ */
+double RecallAtKValidated(const NeighborLabelsView& results,
+                          const NeighborLabelsView& ground_truth, idx_t k) {
   size_t matches = 0;
   for (idx_t query = 0; query < results.query_count; ++query) {
     const size_t result_offset =
@@ -215,6 +211,23 @@ double ComputeRecallAtK(const NeighborLabelsView& results,
   return static_cast<double>(matches) / static_cast<double>(denominator);
 }
 
+}  // namespace
+
+double ComputeRecallAtK(const NeighborLabelsView& results,
+                        const NeighborLabelsView& ground_truth, idx_t k) {
+  ValidateLabelsView(results, "result");
+  ValidateLabelsView(ground_truth, "ground-truth");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0, "recall k must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(results.query_count == ground_truth.query_count,
+                            "result and ground-truth query counts must match");
+  HYPERVEC_THROW_IF_NOT_MSG(results.neighbors_per_query >= k,
+                            "result rows must contain at least k labels");
+  HYPERVEC_THROW_IF_NOT_MSG(ground_truth.neighbors_per_query >= k,
+                            "ground-truth rows must contain at least k labels");
+  ValidateGroundTruth(ground_truth, k);
+  return RecallAtKValidated(results, ground_truth, k);
+}
+
 SearchEvaluationResult EvaluateSearch(const Index& index,
                                       const SearchEvaluationInput& input,
                                       const SearchEvaluationOptions& options,
@@ -230,6 +243,11 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
                             "evaluation query_batch_size must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(options.concurrency > 0,
                             "evaluation concurrency must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options.concurrency == 1 || options.index_is_read_only,
+      "concurrent evaluation shares one Index across threads but the caller "
+      "has not asserted it is read-only; set index_is_read_only or use "
+      "concurrency 1");
   HYPERVEC_THROW_IF_NOT_MSG(
       input.ground_truth.query_count == input.query_count,
       "evaluation and ground-truth query counts must match");
@@ -296,7 +314,7 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
   evaluation.k = options.k;
   evaluation.measured_runs = options.measured_runs;
   evaluation.recall_at_k =
-      ComputeRecallAtK(results, input.ground_truth, options.k);
+      RecallAtKValidated(results, input.ground_truth, options.k);
   evaluation.elapsed_seconds = elapsed_seconds;
   evaluation.mean_latency_ms =
       elapsed_seconds * 1000.0 / static_cast<double>(measured_queries);

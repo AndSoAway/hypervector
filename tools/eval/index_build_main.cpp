@@ -31,6 +31,7 @@
 #include "eval/artifact_fingerprint.h"
 #include "eval/json_util.h"
 #include "eval/process_memory.h"
+#include "eval/provenance.h"
 
 namespace {
 
@@ -50,11 +51,13 @@ struct CommandLine {
   std::string training_query_path;
   std::string output_path;
   std::string json_output_path;
+  std::string provenance_path;
   std::string index_type;
   hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
   bool has_metric = false;
   std::vector<ConfigParameter> parameters;
   std::vector<std::string> parameter_assignments;
+  bool use_id_map = false;
   bool list_indexes = false;
   bool show_help = false;
 };
@@ -70,6 +73,8 @@ void PrintUsage(std::ostream& output) {
       << "  --metric METRIC                 l2, inner_product, or cosine\n"
       << "  --index-param NAME=TYPE:VALUE   Repeatable typed factory option\n"
       << "                                   TYPE: int, double, bool, string\n"
+      << "  --use-id-map                  Wrap in IndexIDMap so Add and\n"
+      << "                                   results use external IDs\n"
       << "  --json-output REPORT.json       Optional build manifest\n"
       << "  --list-indexes                  List registered indexes and "
          "options\n"
@@ -166,6 +171,8 @@ CommandLine ParseCommandLine(int argc, char** argv) {
     const std::string_view argument = argv[position];
     if (argument == "--help") {
       command.show_help = true;
+    } else if (argument == "--use-id-map") {
+      command.use_id_map = true;
     } else if (argument == "--list-indexes") {
       command.list_indexes = true;
     } else if (argument == "--input") {
@@ -183,6 +190,8 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.semantic_metric =
           ParseMetric(RequireValue(argc, argv, &position, argument));
       command.has_metric = true;
+    } else if (argument == "--provenance") {
+      command.provenance_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--index-param") {
       const std::string_view assignment =
           RequireValue(argc, argv, &position, argument);
@@ -298,6 +307,8 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
     training_fingerprint =
         hypervec::eval_cli::FingerprintFile(command.training_query_path);
   }
+  const hypervec::eval_cli::ExecutionEnvironment environment =
+      hypervec::eval_cli::CurrentExecutionEnvironment();
   std::ofstream output(command.json_output_path,
                        std::ios::out | std::ios::trunc);
   if (!output.is_open()) {
@@ -381,6 +392,14 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
          << hypervec::eval_cli::PeakResidentSetSource() << "\",\n"
          << "    \"measurement_point\": \"after_index_write\"\n"
          << "  },\n"
+         // Build duration is thread-count sensitive and several index types
+         // expose no build_threads option, so the effective limits are
+         // recorded with the timing they produced.
+         << "  \"environment\": {\n"
+         << "    \"omp_max_threads\": " << environment.omp_max_threads << ",\n"
+         << "    \"hardware_concurrency\": " << environment.hardware_concurrency
+         << "\n"
+         << "  },\n"
          << "  \"timing\": {\n"
          << "    \"build_seconds\": " << build_seconds << ",\n"
          << "    \"write_seconds\": " << write_seconds << "\n"
@@ -402,6 +421,9 @@ int Run(const CommandLine& command) {
   hypervec::IndexConfig config(
       command.index_type, base.dimension,
       hypervec::IndexMetricForSemanticMetric(command.semantic_metric));
+  // use_id_map is a structural IndexConfig field, not a factory parameter, so
+  // it cannot be reached through the NAME=TYPE:VALUE channel.
+  config.use_id_map = command.use_id_map;
   for (const ConfigParameter& parameter : command.parameters) {
     ApplyParameter(parameter, &config);
   }
@@ -438,6 +460,14 @@ int Run(const CommandLine& command) {
       std::chrono::duration<double>(build_end - build_start).count();
   const double write_seconds =
       std::chrono::duration<double>(write_end - write_start).count();
+  if (!command.provenance_path.empty()) {
+    hypervec::eval_cli::WriteProvenance(
+        command.provenance_path,
+        {{"base_sha256",
+          hypervec::eval_cli::FingerprintFile(command.input_path).sha256},
+         {"index_sha256",
+          hypervec::eval_cli::FingerprintFile(command.output_path).sha256}});
+  }
   const std::optional<uint64_t> peak_rss_bytes =
       hypervec::eval_cli::PeakResidentSetBytes();
   WriteJsonManifest(command, *index, base, training_queries.vector_count,
@@ -446,15 +476,18 @@ int Run(const CommandLine& command) {
   std::cout << "index_type=" << command.index_type << '\n';
   std::cout << "metric="
             << hypervec::SemanticMetricName(command.semantic_metric) << '\n';
-  std::cout << "index_metric="
-            << (index->metric_type == hypervec::kMetricL2 ? "l2"
-                                                          : "inner_product")
-            << '\n';
+  std::cout << "index_metric=" << IndexMetricName(index->metric_type) << '\n';
   std::cout << "dimension=" << base.dimension << '\n';
   std::cout << "vector_count=" << base.vector_count << '\n';
   std::cout << "training_query_count=" << training_queries.vector_count << '\n';
   std::cout << "build_seconds=" << build_seconds << '\n';
   std::cout << "write_seconds=" << write_seconds << '\n';
+  const hypervec::eval_cli::ExecutionEnvironment environment =
+      hypervec::eval_cli::CurrentExecutionEnvironment();
+  std::cout << "omp_max_threads=" << environment.omp_max_threads << '\n';
+  std::cout << "hardware_concurrency=" << environment.hardware_concurrency
+            << '\n';
+  std::cout << "use_id_map=" << (command.use_id_map ? "true" : "false") << '\n';
   std::cout << "peak_rss_bytes=";
   if (peak_rss_bytes.has_value()) {
     std::cout << *peak_rss_bytes;

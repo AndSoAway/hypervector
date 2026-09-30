@@ -159,6 +159,7 @@ TEST(SearchEvaluator, ConcurrentCallersShareOnlyReadOnlyIndex) {
   options.warmup_runs = 1;
   options.measured_runs = 2;
   options.concurrency = 4;
+  options.index_is_read_only = true;
 
   const auto result = hypervec::EvaluateSearch(index, input, options);
   EXPECT_EQ(result.concurrency, 4U);
@@ -196,6 +197,7 @@ TEST(SearchEvaluator, ConcurrentHNSWSearchMatchesSequentialSearch) {
   options.warmup_runs = 1;
   options.measured_runs = 2;
   options.concurrency = 4;
+  options.index_is_read_only = true;
   const auto result = hypervec::EvaluateSearch(index, input, options);
   EXPECT_EQ(result.concurrency, 4U);
   EXPECT_EQ(result.latency_sample_count, 16U);

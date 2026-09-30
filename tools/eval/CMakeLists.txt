@@ -5,9 +5,15 @@
 
 add_library(hypervec_eval_support STATIC
   artifact_fingerprint.cpp
+  index_format_identity.cpp
+  provenance.cpp
   process_memory.cpp)
+# The eval/-prefixed include form and index_format_identity.cpp's use of the
+# persistence registry headers both need paths beyond this directory.
 target_include_directories(hypervec_eval_support
-  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+         "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_link_libraries(hypervec_eval_support PUBLIC hypervec)
 
 add_executable(hypervec_eval main.cpp)
 target_link_libraries(hypervec_eval PRIVATE hypervec hypervec_eval_support)
@@ -16,7 +22,8 @@ add_executable(hypervec_dataset dataset_main.cpp)
 target_link_libraries(hypervec_dataset PRIVATE hypervec)
 
 add_executable(hypervec_ground_truth ground_truth_main.cpp)
-target_link_libraries(hypervec_ground_truth PRIVATE hypervec)
+target_link_libraries(hypervec_ground_truth PRIVATE hypervec
+  hypervec_eval_support)
 
 add_executable(hypervec_build index_build_main.cpp)
 target_link_libraries(hypervec_build PRIVATE hypervec hypervec_eval_support)

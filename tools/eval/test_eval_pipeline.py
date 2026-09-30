@@ -49,6 +49,15 @@ def assert_process_memory(resources, measurement_point):
         assert resources["peak_rss_source"] == "getrusage.ru_maxrss"
 
 
+def read_provenance(path):
+    record = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            record[key] = value
+    return record
+
+
 def main():
     ground_truth_tool = Path(sys.argv[1]).resolve()
     build_tool = Path(sys.argv[2]).resolve()
@@ -129,8 +138,16 @@ def main():
         )
 
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        assert report["format"] == "hypervec-eval-report-v1"
-        assert report["index"]["family"] == "generic"
+        assert report["format"] == "hypervec-eval-report-v2"
+        # The parameter family collapses several index types; the persisted
+        # format name must identify the concrete algorithm.
+        assert report["index"]["parameter_family"] == "generic"
+        # An L2 "flat" request builds IndexFlatL2, which persists under its own
+        # IFlm tag; the old parameter family reported all of these as "generic".
+        assert report["index"]["format_name"] == "flat_l2"
+        assert report["index"]["format_tag"] == "IFlm"
+        assert report["execution"]["environment"]["omp_max_threads"] > 0
+        assert "index_load_rss_delta_bytes" in report["resources"]
         assert report["index"]["metric"] == "l2"
         assert report["index"]["vector_count"] == 3
         assert report["workload"]["query_count"] == 4
@@ -175,6 +192,63 @@ def main():
         assert_fingerprint(rerank_report["rerank"]["exact_base"], base)
         assert rerank_report["metrics"]["recall_at_k"] == 1.0
 
+        # An unsatisfiable depth must be rejected, not silently cap recall.
+        oversized = subprocess.run(
+            [str(eval_tool), "--index", str(index), "--queries", str(queries),
+             "--ground-truth", str(ground_truth), "--metric", "l2",
+             "--k", "99", "--warmup-runs", "0", "--measured-runs", "1"],
+            check=False, text=True, capture_output=True)
+        assert oversized.returncode == 1
+        assert "exceeds the number of vectors" in oversized.stderr
+
+        # A flat index accepts no runtime parameter, so sweep HNSW over ef_search.
+        hnsw = directory / "hnsw.index"
+        run(build_tool, "--input", base, "--output", hnsw,
+            "--index-type", "hnsw_flat", "--metric", "l2",
+            "--index-param", "m_hnsw=int:8")
+        sweep_path = directory / "sweep-report.json"
+        run(eval_tool, "--index", hnsw, "--queries", queries,
+            "--ground-truth", ground_truth, "--metric", "l2", "--k", 2,
+            "--warmup-runs", 0, "--measured-runs", 1,
+            "--sweep", "ef_search=8,16,32",
+            "--json-output", sweep_path)
+        sweep = json.loads(sweep_path.read_text(encoding="utf-8"))
+        points = sweep["search_sweep"]["points"]
+        assert [point["value"] for point in points] == [8, 16, 32]
+        assert all(point["recall_at_k"] == 1.0 for point in points)
+        assert sweep["index"]["format_name"] == "hnsw_flat"
+
+        # Provenance: a ground truth must name the base the index was built
+        # from; a stale or mismatched file must be rejected.
+        gt_prov = directory / "gt.prov"
+        build_prov = directory / "build.prov"
+        run(ground_truth_tool, "--base", base, "--queries", queries,
+            "--output", ground_truth, "--k", 2, "--metric", "l2",
+            "--provenance", gt_prov)
+        run(build_tool, "--input", base, "--output", index,
+            "--index-type", "flat", "--metric", "l2",
+            "--provenance", build_prov)
+        assert read_provenance(gt_prov)["base_sha256"] ==             read_provenance(build_prov)["base_sha256"]
+        run(eval_tool, "--index", index, "--queries", queries,
+            "--ground-truth", ground_truth, "--metric", "l2", "--k", 2,
+            "--warmup-runs", 0, "--measured-runs", 1,
+            "--build-provenance", build_prov,
+            "--ground-truth-provenance", gt_prov)
+
+        # Row-count-matching but different bytes: the hash check, not a shape
+        # error, must be what rejects this ground truth.
+        stale_gt = directory / "stale.ivecs"
+        run(ground_truth_tool, "--base", base, "--queries", queries,
+            "--output", stale_gt, "--k", 3, "--metric", "l2")
+        mismatched = subprocess.run(
+            [str(eval_tool), "--index", str(index), "--queries", str(queries),
+             "--ground-truth", str(stale_gt), "--metric", "l2", "--k", "2",
+             "--warmup-runs", "0", "--measured-runs", "1",
+             "--ground-truth-provenance", str(gt_prov)],
+            check=False, text=True, capture_output=True)
+        assert mismatched.returncode == 1
+        assert "not the file hypervec_ground_truth" in mismatched.stderr
+
         concurrent_report_path = directory / "concurrent-report.json"
         run(
             eval_tool,
@@ -194,6 +268,7 @@ def main():
             2,
             "--concurrency",
             4,
+            "--assume-read-only",
             "--json-output",
             concurrent_report_path,
         )

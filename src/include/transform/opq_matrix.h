@@ -18,6 +18,10 @@ struct OPQParameters {
   /// Number of alternating PQ and orthogonal-Procrustes updates.
   int iterations = 8;
 
+  /// Maximum rows used to learn the rotation; 0 disables sampling. The
+  /// index still encodes all input rows after training.
+  idx_t max_training_rows = 16384;
+
   /// Controls the temporary ProductQuantizer trained at every update.
   PQParameters pq_parameters;
 };

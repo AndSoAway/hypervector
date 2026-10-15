@@ -23,6 +23,30 @@
 
 namespace hypervec {
 
+std::vector<idx_t> SampleKMeansTrainingRows(idx_t count, idx_t sample_count,
+                                            int seed) {
+  HYPERVEC_THROW_IF_NOT_MSG(count >= 0,
+                            "KMeans sample count must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(sample_count >= 0 && sample_count <= count,
+                            "KMeans sample size must be in [0, input count]");
+
+  std::vector<idx_t> rows(static_cast<size_t>(sample_count));
+  for (idx_t i = 0; i < sample_count; ++i) {
+    rows[static_cast<size_t>(i)] = i;
+  }
+
+  RandomGenerator random(seed);
+  for (idx_t i = sample_count; i < count; ++i) {
+    const uint64_t position = static_cast<uint64_t>(random.rand_int64()) %
+                              (static_cast<uint64_t>(i) + 1U);
+    if (position < static_cast<uint64_t>(sample_count)) {
+      rows[static_cast<size_t>(position)] = i;
+    }
+  }
+  std::sort(rows.begin(), rows.end());
+  return rows;
+}
+
 namespace {
 
 /// Reject metrics whose mathematical centroid update is not yet implemented.
@@ -220,6 +244,9 @@ float LloydOnce(idx_t n, const float* x, idx_t d, idx_t k, float* centroids,
 float RunKMeans(idx_t n, const float* x, idx_t d, idx_t k, float* centroids,
                 const KMeansParameters& params) {
   CheckMetricSupported(params.metric);
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "KMeans: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(d > 0, "KMeans: d must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0, "KMeans: k must be positive");
   HYPERVEC_THROW_IF_NOT_FMT(
     n >= k,
     "KMeans: need at least k=%ld training vectors, got %ld",
@@ -228,9 +255,43 @@ float RunKMeans(idx_t n, const float* x, idx_t d, idx_t k, float* centroids,
     params.niter > 0, "KMeans: niter must be > 0, got %d", params.niter);
   HYPERVEC_THROW_IF_NOT_FMT(
     params.nredo > 0, "KMeans: nredo must be > 0, got %d", params.nredo);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      params.max_points_per_centroid >= 0,
+      "KMeans: max_points_per_centroid must be non-negative, got %d",
+      params.max_points_per_centroid);
+
+  idx_t training_count = n;
+  if (params.max_points_per_centroid > 0) {
+    const size_t training_limit =
+        mul_no_overflow(static_cast<size_t>(k),
+                        static_cast<size_t>(params.max_points_per_centroid),
+                        "KMeans training sample limit");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        training_limit <=
+            static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+        "KMeans training sample limit exceeds idx_t");
+    training_count = std::min(n, static_cast<idx_t>(training_limit));
+  }
+
+  std::vector<float> sampled_vectors;
+  const float* training_vectors = x;
+  if (training_count < n) {
+    const std::vector<idx_t> rows =
+        SampleKMeansTrainingRows(n, training_count, params.seed);
+    sampled_vectors.resize(mul_no_overflow(static_cast<size_t>(training_count),
+                                           static_cast<size_t>(d),
+                                           "KMeans sampled training vectors"));
+    for (idx_t i = 0; i < training_count; ++i) {
+      std::memcpy(sampled_vectors.data() + i * d,
+                  x + rows[static_cast<size_t>(i)] * d,
+                  static_cast<size_t>(d) * sizeof(float));
+    }
+    training_vectors = sampled_vectors.data();
+  }
 
   if (params.nredo == 1) {
-    return LloydOnce(n, x, d, k, centroids, params, params.seed);
+    return LloydOnce(training_count, training_vectors, d, k, centroids, params,
+                     params.seed);
   }
 
   // nredo > 1: keep the run with the lowest loss
@@ -238,8 +299,8 @@ float RunKMeans(idx_t n, const float* x, idx_t d, idx_t k, float* centroids,
   float best_loss = std::numeric_limits<float>::infinity();
 
   for (int redo = 0; redo < params.nredo; redo++) {
-    const float loss =
-      LloydOnce(n, x, d, k, centroids, params, params.seed + redo);
+    const float loss = LloydOnce(training_count, training_vectors, d, k,
+                                 centroids, params, params.seed + redo);
     if (params.verbose) {
       std::fprintf(stderr, "KMeans redo %d/%d loss = %.6g\n",
                    redo + 1, params.nredo, static_cast<double>(loss));

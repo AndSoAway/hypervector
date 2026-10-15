@@ -207,6 +207,10 @@ TEST(VamanaBuilder, RejectsInvalidOptionsAndDistancesTransactionally) {
   EXPECT_THROW((hypervec::VamanaBuilder(
                    hypervec::VamanaBuildOptions{4, 4, 4, 1.0F, 0, 0})),
                hypervec::HypervecException);
+  auto invalid_threads = hypervec::VamanaBuildOptions{};
+  invalid_threads.build_threads = 0;
+  EXPECT_THROW(static_cast<void>(hypervec::VamanaBuilder(invalid_threads)),
+               hypervec::HypervecException);
 
   const hypervec::VamanaBuilder builder(
       hypervec::VamanaBuildOptions{1, 1, 2, 1.2F, 1, 42});

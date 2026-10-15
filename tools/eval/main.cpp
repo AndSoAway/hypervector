@@ -8,6 +8,7 @@
 
 #include <eval/search_evaluator.h>
 #include <eval/semantic_metric.h>
+#include <index/refine/index_rerank.h>
 #include <index/search_parameters_factory.h>
 #include <persistence/index_io.h>
 
@@ -39,6 +40,8 @@ struct CommandLine {
   std::string index_path;
   std::string query_path;
   std::string ground_truth_path;
+  std::string rerank_base_path;
+  hypervec::idx_t rerank_candidates = 0;
   std::string json_output_path;
   hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
   bool has_metric = false;
@@ -46,6 +49,7 @@ struct CommandLine {
   size_t warmup_runs = 1;
   size_t measured_runs = 3;
   hypervec::idx_t query_batch_size = 0;
+  size_t concurrency = 1;
   hypervec::SearchConfig search_config;
   std::vector<std::string> search_parameters;
   bool show_help = false;
@@ -60,9 +64,14 @@ void PrintUsage(std::ostream& output) {
       << "  --warmup-runs N          Untimed full-query runs (default: 1)\n"
       << "  --measured-runs N        Timed full-query runs (default: 3)\n"
       << "  --query-batch-size N     Queries per timed Search call\n"
-      << "                           (default: all queries)\n"
+      << "                           (default: all queries; 1 if concurrent)\n"
+      << "  --concurrency N        Concurrent independent Search callers "
+         "(default: 1)\n"
       << "  --metric METRIC          l2, inner_product, or cosine\n"
       << "  --search-param NAME=VALUE  Repeatable integer/bool runtime option\n"
+      << "  --rerank-base BASE.fvecs  Exact vectors, in index label order\n"
+      << "  --rerank-candidates N    Approximate candidates before exact "
+         "top-k\n"
       << "  --json-output REPORT.json  Optional reproducible result report\n"
       << "  --help                   Show this message\n";
 }
@@ -142,6 +151,15 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.query_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--ground-truth") {
       command.ground_truth_path = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--rerank-base") {
+      command.rerank_base_path = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--rerank-candidates") {
+      const int64_t count =
+          ParseInteger(RequireValue(argc, argv, &position, argument), argument);
+      if (count <= 0 || count > (std::numeric_limits<hypervec::idx_t>::max)()) {
+        throw std::runtime_error("--rerank-candidates must be positive");
+      }
+      command.rerank_candidates = count;
     } else if (argument == "--json-output") {
       command.json_output_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--metric") {
@@ -170,6 +188,9 @@ CommandLine ParseCommandLine(int argc, char** argv) {
         throw std::runtime_error("--query-batch-size must be positive");
       }
       command.query_batch_size = static_cast<hypervec::idx_t>(value);
+    } else if (argument == "--concurrency") {
+      command.concurrency = ParseRunCount(
+          RequireValue(argc, argv, &position, argument), argument, false);
     } else if (argument == "--search-param") {
       const std::string_view assignment =
           RequireValue(argc, argv, &position, argument);
@@ -192,12 +213,20 @@ void ValidateCommand(const CommandLine& command) {
     throw std::runtime_error(
         "--index, --queries, --ground-truth, and --metric are required");
   }
+  if (command.rerank_base_path.empty() != (command.rerank_candidates == 0) ||
+      (command.rerank_candidates > 0 &&
+       command.rerank_candidates < command.k)) {
+    throw std::runtime_error(
+        "rerank requires both --rerank-base and --rerank-candidates >= k");
+  }
   if (!command.json_output_path.empty()) {
     const std::filesystem::path output =
         NormalizedPath(command.json_output_path);
     if (output == NormalizedPath(command.index_path) ||
         output == NormalizedPath(command.query_path) ||
-        output == NormalizedPath(command.ground_truth_path)) {
+        output == NormalizedPath(command.ground_truth_path) ||
+        (!command.rerank_base_path.empty() &&
+         output == NormalizedPath(command.rerank_base_path))) {
       throw std::runtime_error(
           "JSON output must differ from evaluation inputs");
     }
@@ -254,6 +283,12 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
       hypervec::eval_cli::FingerprintFile(command.query_path);
   const hypervec::eval_cli::ArtifactFingerprint ground_truth_fingerprint =
       hypervec::eval_cli::FingerprintFile(command.ground_truth_path);
+  const std::optional<hypervec::eval_cli::ArtifactFingerprint>
+      rerank_fingerprint =
+          command.rerank_base_path.empty()
+              ? std::nullopt
+              : std::make_optional(hypervec::eval_cli::FingerprintFile(
+                    command.rerank_base_path));
   std::ofstream output(command.json_output_path,
                        std::ios::out | std::ios::trunc);
   if (!output.is_open()) {
@@ -280,6 +315,18 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
   WriteJsonNumber(output, index.metric_arg);
   output << "\n"
          << "  },\n"
+         << "  \"rerank\": {\n"
+         << "    \"enabled\": "
+         << (rerank_fingerprint.has_value() ? "true" : "false") << ",\n"
+         << "    \"candidates\": " << command.rerank_candidates << ",\n"
+         << "    \"exact_base\": ";
+  if (rerank_fingerprint.has_value()) {
+    hypervec::eval_cli::WriteArtifactJson(output, command.rerank_base_path,
+                                          *rerank_fingerprint, "    ");
+  } else {
+    output << "null";
+  }
+  output << "\n  },\n"
          << "  \"workload\": {\n"
          << "    \"queries\": \""
          << hypervec::eval_cli::JsonEscape(
@@ -304,7 +351,8 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
            << hypervec::eval_cli::JsonEscape(command.search_parameters[offset])
            << "\"";
   }
-  output << "]\n"
+  output << "],\n"
+         << "    \"concurrency\": " << result.concurrency << "\n"
          << "  },\n"
          << "  \"artifacts\": {\n"
          << "    \"index\": ";
@@ -381,6 +429,20 @@ int Run(const CommandLine& command) {
 
   std::unique_ptr<hypervec::SearchParameters> parameters =
       hypervec::CreateSearchParameters(*index, command.search_config);
+  hypervec::FloatVectorDataset rerank_base;
+  std::unique_ptr<hypervec::IndexRerank> reranked;
+  const hypervec::Index* search_index = index.get();
+  if (!command.rerank_base_path.empty()) {
+    rerank_base = hypervec::ReadFvecsFile(command.rerank_base_path);
+    if (rerank_base.dimension != index->d ||
+        rerank_base.vector_count != index->n_total) {
+      throw std::runtime_error("exact rerank base shape does not match index");
+    }
+    reranked = std::make_unique<hypervec::IndexRerank>(
+        *index, rerank_base.values.data(), rerank_base.vector_count,
+        command.rerank_candidates);
+    search_index = reranked.get();
+  }
   const hypervec::SearchEvaluationInput input{
       queries.values.data(),
       queries.vector_count,
@@ -391,8 +453,9 @@ int Run(const CommandLine& command) {
   options.warmup_runs = command.warmup_runs;
   options.measured_runs = command.measured_runs;
   options.query_batch_size = command.query_batch_size;
+  options.concurrency = command.concurrency;
   const hypervec::SearchEvaluationResult result =
-      hypervec::EvaluateSearch(*index, input, options, parameters.get());
+      hypervec::EvaluateSearch(*search_index, input, options, parameters.get());
   const hypervec::SearchParameterDescriptor descriptor =
       hypervec::DescribeSearchParameters(*index);
   const std::optional<uint64_t> peak_rss_bytes =
@@ -406,12 +469,14 @@ int Run(const CommandLine& command) {
             << hypervec::SemanticMetricName(command.semantic_metric) << '\n';
   std::cout << "query_count=" << result.query_count << '\n';
   std::cout << "k=" << result.k << '\n';
+  std::cout << "rerank_candidates=" << command.rerank_candidates << '\n';
   std::cout << "measured_runs=" << result.measured_runs << '\n';
   std::cout << "recall_at_k=" << result.recall_at_k << '\n';
   std::cout << "elapsed_seconds=" << result.elapsed_seconds << '\n';
   std::cout << "mean_latency_ms=" << result.mean_latency_ms << '\n';
   std::cout << "queries_per_second=" << result.queries_per_second << '\n';
   std::cout << "query_batch_size=" << result.query_batch_size << '\n';
+  std::cout << "concurrency=" << result.concurrency << '\n';
   std::cout << "latency_sample_count=" << result.latency_sample_count << '\n';
   std::cout << "batch_latency_p50_ms=" << result.batch_latency_p50_ms << '\n';
   std::cout << "batch_latency_p95_ms=" << result.batch_latency_p95_ms << '\n';

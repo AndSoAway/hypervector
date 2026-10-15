@@ -6,9 +6,11 @@
  * source tree.
  */
 
+#include <omp.h>
 #include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
@@ -171,6 +173,10 @@ void LinearTransform::Apply(idx_t n, const float* x, float* output) const {
     x = input_copy.data();
   }
 
+  // Each output row is independent. Keep small searches serial to avoid
+  // thread launch overhead; parallelize the large OPQ training/add batches.
+#pragma omp parallel for if (n >= 256 && d_in >= 64 && d_out >= 64) \
+    num_threads(std::min(32, omp_get_max_threads())) schedule(static)
   for (idx_t i = 0; i < n; ++i) {
     for (idx_t row = 0; row < d_out; ++row) {
       double value = bias.empty() ? 0.0 : bias[row];

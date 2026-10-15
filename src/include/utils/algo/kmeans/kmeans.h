@@ -11,6 +11,8 @@
 #include <index/index.h>
 #include <utils/distances/metric_type.h>
 
+#include <vector>
+
 namespace hypervec {
 
 /// Project-wide default seed for k-means random initialization. Exposed as a
@@ -22,8 +24,13 @@ namespace hypervec {
 /// and PQ ksub=256 training sets.
 #define HYPERVEC_KMEANS_DEFAULT_NITER 25
 
-/// Tunables for RunKMeans. Defaults preserve historical IVF behaviour
-/// (L2 metric, mean-update, niter=25, seed=1234, nredo=1).
+/// Default upper bound on training rows per centroid. The resulting sample
+/// remains large enough for stable centroid estimates while preventing
+/// clustering cost from growing with the full collection indefinitely.
+#define HYPERVEC_KMEANS_DEFAULT_MAX_POINTS_PER_CENTROID 256
+
+/// Tunables for RunKMeans. Defaults preserve the established numerical
+/// settings while bounding work for large training collections.
 struct KMeansParameters {
   /// Number of Lloyd iterations per redo.
   int niter = HYPERVEC_KMEANS_DEFAULT_NITER;
@@ -34,6 +41,10 @@ struct KMeansParameters {
   /// Number of independent random restarts; the run with the lowest objective
   /// is returned. PQ training typically benefits from nredo > 1.
   int nredo = 1;
+
+  /// Maximum sampled training rows per centroid. Set to 0 to use every input
+  /// row. Sampling is deterministic for a fixed seed.
+  int max_points_per_centroid = HYPERVEC_KMEANS_DEFAULT_MAX_POINTS_PER_CENTROID;
 
   /// Print per-iteration objective and redo summaries to stderr.
   bool verbose = false;
@@ -62,6 +73,15 @@ struct KMeansParameters {
   float metric_arg = 0.0f;
 };
 
+/** Select a deterministic uniform sample without replacement.
+ *
+ * Returned row IDs are sorted to make gathering from row-major datasets
+ * cache-friendly. This helper is shared with PQ so every clustering caller
+ * uses the same sampling semantics.
+ */
+std::vector<idx_t> SampleKMeansTrainingRows(idx_t count, idx_t sample_count,
+                                            int seed);
+
 /** Lloyd's k-means with random init (sample without replacement). The
  *  assignment kernel and centroid update rule are selected by
  *  `params.metric`; see KMeansParameters::metric for supported values.
@@ -79,15 +99,16 @@ struct KMeansParameters {
  *  @param d         vector dimension
  *  @param k         number of centroids
  *  @param centroids output centroids, size k * d, row-major
- *  @param params    tunables; default-constructed value reproduces historical
- *                   IVF behaviour (L2, niter=25, seed=1234, nredo=1)
- *  @return          final objective value, lower is better. For dissimilarity
- *                   metrics (kMetricL2) this is the sum of squared distances;
- *                   for similarity metrics (kMetricInnerProduct) the sign is
- *                   flipped (-Σ similarity) so `nredo` selection always picks
- *                   the run with the smallest returned value.
+ *  @param params    training and sampling tunables
+ *  @return          final objective value over the effective training sample,
+ *                   lower is better. For dissimilarity metrics (kMetricL2)
+ *                   this is the sum of squared distances; for similarity
+ *                   metrics (kMetricInnerProduct) the sign is flipped
+ *                   (-Σ similarity) so `nredo` selection always picks the run
+ *                   with the smallest returned value.
  *  @throws HypervecException if params.metric is not supported, n < k,
- *                            niter <= 0, or nredo <= 0.
+ *                            niter <= 0, nredo <= 0, or the sample limit is
+ *                            negative.
  */
 float RunKMeans(idx_t n, const float* x, idx_t d, idx_t k, float* centroids,
                 const KMeansParameters& params = {});

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -159,6 +160,77 @@ TEST(NNDescentBuilder, RefinesRandomGraphWithDeterministicRecall) {
   }
 }
 
+TEST(NNDescentBuilder, ParallelRefinementMaintainsComparableRecall) {
+  constexpr size_t kCount = 128;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>((node * 37) % kCount);
+  }
+  hypervec::NNDescentOptions options{10, 15, 0.001, 42};
+  ScalarDistanceComputer sequential_distance(values);
+  hypervec::NNDescentStats baseline_stats;
+  const auto baseline = hypervec::NNDescentBuilder(options).Build(
+      sequential_distance, kCount, &baseline_stats);
+  const double baseline_recall = Recall(baseline, values, options.max_degree);
+
+  for (size_t threads : {size_t{4}, size_t{32}, size_t{64}}) {
+    options.build_threads = threads;
+    ScalarDistanceComputer distance(values);
+    hypervec::NNDescentStats stats;
+    const auto graph = hypervec::NNDescentBuilder(options).Build(
+        distance, kCount, &stats,
+        [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+    EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+    EXPECT_LE(stats.iterations, options.max_iterations);
+    EXPECT_GT(stats.refinement_distance_computations, 0U);
+    EXPECT_GE(Recall(graph, values, options.max_degree),
+              baseline_recall - 0.05);
+  }
+}
+
+TEST(NNDescentBuilder, ConcurrentRefinementHandlesLargeGraphs) {
+  constexpr size_t kCount = 16401;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>((node * 37) % kCount);
+  }
+  hypervec::NNDescentOptions options{4, 3, 0.0, 1729};
+  options.sample_rate = 0.6;
+  for (size_t threads : {size_t{4}, size_t{32}, size_t{64}}) {
+    options.build_threads = threads;
+    ScalarDistanceComputer distance(values);
+    hypervec::NNDescentStats stats;
+    const auto graph = hypervec::NNDescentBuilder(options).Build(
+        distance, kCount, &stats,
+        [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+    EXPECT_TRUE(hypervec::ValidateGraph(graph).IsStructurallyValid());
+    EXPECT_EQ(graph.NodeCount(), kCount);
+    EXPECT_GT(stats.refinement_distance_computations, 0U);
+    EXPECT_GE(stats.iterations, 1U);
+  }
+}
+
+TEST(NNDescentBuilder, ParallelFailuresDoNotPublishStats) {
+  std::vector<float> values(32);
+  for (size_t node = 0; node < values.size(); ++node) {
+    values[node] = static_cast<float>(node);
+  }
+  hypervec::NNDescentOptions options{6, 4, 0.0, 42};
+  options.build_threads = 4;
+  hypervec::NNDescentBuilder builder(options);
+  ScalarDistanceComputer distance(values);
+  hypervec::NNDescentStats stats;
+  stats.iterations = 9;
+  EXPECT_THROW(builder.Build(distance, values.size(), &stats),
+               hypervec::HypervecException);
+  EXPECT_EQ(stats.iterations, 9U);
+  EXPECT_THROW(
+      builder.Build(distance, values.size(), &stats,
+                    [] { return std::make_unique<NaNDistanceComputer>(); }),
+      hypervec::HypervecException);
+  EXPECT_EQ(stats.iterations, 9U);
+}
+
 TEST(NNDescentBuilder, HandlesEmptyAndSingletonGraphs) {
   ScalarDistanceComputer distance({1.0F});
   const hypervec::NNDescentBuilder builder(
@@ -193,6 +265,20 @@ TEST(NNDescentBuilder, ValidatesOptionsAndDoesNotPublishFailedStats) {
   EXPECT_THROW((hypervec::NNDescentBuilder(hypervec::NNDescentOptions{
                    1, 1, std::numeric_limits<double>::infinity(), 1})),
                hypervec::HypervecException);
+  hypervec::NNDescentOptions invalid_sample_rate;
+  invalid_sample_rate.sample_rate = 0.0;
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
+  invalid_sample_rate.sample_rate = 1.1;
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
+  invalid_sample_rate.sample_rate = std::numeric_limits<double>::infinity();
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_sample_rate}),
+               hypervec::HypervecException);
+  hypervec::NNDescentOptions invalid_threads;
+  invalid_threads.build_threads = 0;
+  EXPECT_THROW((hypervec::NNDescentBuilder{invalid_threads}),
+               hypervec::HypervecException);
 
   NaNDistanceComputer distance;
   const hypervec::NNDescentBuilder builder(
@@ -210,6 +296,10 @@ TEST(NNDescentStats, ResetAndCombineAccumulateBuilds) {
   update.initial_distance_computations = 3;
   update.refinement_distance_computations = 5;
   update.neighbor_updates = 6;
+  update.sampled_old_neighbors = 7;
+  update.sampled_new_neighbors = 8;
+  update.sampled_neighbors_trimmed = 9;
+  update.peak_sampled_neighbors = 10;
   update.converged = true;
 
   aggregate.Combine(update);
@@ -217,6 +307,10 @@ TEST(NNDescentStats, ResetAndCombineAccumulateBuilds) {
   EXPECT_EQ(aggregate.initial_distance_computations, 3U);
   EXPECT_EQ(aggregate.refinement_distance_computations, 5U);
   EXPECT_EQ(aggregate.neighbor_updates, 6U);
+  EXPECT_EQ(aggregate.sampled_old_neighbors, 7U);
+  EXPECT_EQ(aggregate.sampled_new_neighbors, 8U);
+  EXPECT_EQ(aggregate.sampled_neighbors_trimmed, 9U);
+  EXPECT_EQ(aggregate.peak_sampled_neighbors, 10U);
   EXPECT_TRUE(aggregate.converged);
 
   aggregate.Reset();

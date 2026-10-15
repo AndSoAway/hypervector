@@ -21,14 +21,17 @@
 #include <utils/structures/sorting.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <random>
@@ -470,6 +473,7 @@ class GraphAppendGuard {
     if (node < 0 || static_cast<size_t>(node) >= old_count_) {
       return;
     }
+    std::lock_guard<std::mutex> guard(mutex_);
     const size_t index = static_cast<size_t>(node);
     if (!captured_.insert(index).second) {
       return;
@@ -500,6 +504,7 @@ class GraphAppendGuard {
   std::mt19937 old_rng_;
   std::unordered_set<size_t> captured_;
   std::vector<NodeSnapshot> snapshots_;
+  std::mutex mutex_;
   bool committed_ = false;
 };
 
@@ -517,7 +522,7 @@ const Index& RequireHnswStorage(const Index* storage) {
  **************************************************************/
 
 IndexHNSW::IndexHNSW(int d, int M, MetricType metric)
-  : Index(d, metric), hnsw(M), storage(nullptr) {}
+    : Index(d, metric), hnsw(M), storage(nullptr) {}
 
 IndexHNSW::IndexHNSW(Index* storage, int M)
     : Index(RequireHnswStorage(storage).d,
@@ -565,6 +570,8 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
                         Index* secondary_storage) {
   const idx_t n0 = n_total;
   ValidateAppendState(*this, n, x, secondary_storage);
+  HYPERVEC_THROW_IF_NOT_MSG(build_threads > 0,
+                            "IndexHNSW::Add: build_threads must be positive");
   if (n == 0) {
     return;
   }
@@ -598,11 +605,58 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
   VisitedTable vt(new_total, hnsw.use_visited_hashset);
   const std::function<void(storage_idx_t)> before_node_mutation =
       [&graph_guard](storage_idx_t node) { graph_guard.CaptureNode(node); };
-  for (idx_t i = n0; i < new_total; i++) {
-    int pt_level = hnsw.levels[i] - 1;  // levels store level+1 (1-based)
-    dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
-                      false, before_node_mutation);
+  idx_t first = n0;
+  if (first == 0) {
+    dis->SetQuery(x);
+    hnsw.AddWithLocks(*dis, hnsw.levels[0] - 1, 0, lock_array.Get(), vt, false,
+                      before_node_mutation);
+    ++first;
+  }
+  const int workers =
+      static_cast<int>(std::min<idx_t>(build_threads, new_total - first));
+  if (workers > 1) {
+    std::vector<std::unique_ptr<DistanceComputer>> distances;
+    std::vector<std::unique_ptr<VisitedTable>> visited;
+    distances.reserve(static_cast<size_t>(workers));
+    visited.reserve(static_cast<size_t>(workers));
+    for (int worker = 0; worker < workers; ++worker) {
+      distances.emplace_back(storage_distance_computer(construction_storage));
+      visited.push_back(
+          std::make_unique<VisitedTable>(new_total, hnsw.use_visited_hashset));
+    }
+    std::exception_ptr error;
+    std::mutex error_mutex;
+    std::atomic<bool> failed{false};
+#pragma omp parallel for num_threads(workers) schedule(dynamic, 1)
+    for (idx_t i = first; i < new_total; ++i) {
+      if (failed.load()) {
+        continue;
+      }
+      const size_t worker = static_cast<size_t>(omp_get_thread_num());
+      try {
+        DistanceComputer& worker_distance = *distances[worker];
+        worker_distance.SetQuery(x + (i - n0) * d);
+        hnsw.AddWithLocks(worker_distance, hnsw.levels[i] - 1,
+                          static_cast<int>(i), lock_array.Get(),
+                          *visited[worker], false, before_node_mutation, true);
+      } catch (...) {
+        std::lock_guard<std::mutex> guard(error_mutex);
+        if (error == nullptr) {
+          error = std::current_exception();
+        }
+        failed.store(true);
+      }
+    }
+    if (error != nullptr) {
+      std::rethrow_exception(error);
+    }
+  } else {
+    for (idx_t i = first; i < new_total; i++) {
+      const int pt_level = hnsw.levels[i] - 1;
+      dis->SetQuery(x + (i - n0) * d);
+      hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(),
+                        vt, false, before_node_mutation);
+    }
   }
 
   n_total = new_total;
@@ -1189,9 +1243,7 @@ DistanceComputer* IndexHNSW::GetDistanceComputer() const {
  * IndexHNSWFlat implementation
  **************************************************************/
 
-IndexHNSWFlat::IndexHNSWFlat() {
-  is_trained = true;
-}
+IndexHNSWFlat::IndexHNSWFlat() { is_trained = true; }
 
 static Index* make_hnsw_flat_storage(int d, MetricType metric) {
   if (metric == kMetricL2) {

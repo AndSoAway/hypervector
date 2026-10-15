@@ -118,6 +118,7 @@ int HnswDegree(const IndexConfig& config) {
 }
 
 void ConfigureHNSW(IndexHNSW* index, const IndexConfig& config) {
+  index->build_threads = PositiveIntParameter(config, "build_threads", 1);
   index->hnsw.ef_construction = PositiveIntParameter(
       config, "ef_construction", index->hnsw.ef_construction);
   index->hnsw.ef_search =
@@ -161,6 +162,12 @@ std::unique_ptr<Index> MakeOPQPQ(const IndexConfig& config) {
   const int opq_iterations = PositiveIntParameter(config, "opq_iterations", 8);
   auto opq = std::make_unique<OPQMatrix>(config.dimension, m_pq, nbits);
   opq->parameters.iterations = opq_iterations;
+  const int64_t training_rows =
+      config.GetInteger("opq_training_rows", opq->parameters.max_training_rows);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      training_rows >= 0,
+      "index parameter 'opq_training_rows' must be non-negative");
+  opq->parameters.max_training_rows = training_rows;
   auto pq = std::make_unique<IndexPQ>(config.dimension, m_pq, nbits,
                                       config.metric_type);
   return std::make_unique<IndexPreTransform>(std::move(opq), std::move(pq));
@@ -234,6 +241,8 @@ std::unique_ptr<Index> MakeDiskANN(const IndexConfig& config) {
   options.alpha = static_cast<float>(config.GetDouble("alpha", 1.2));
   options.build_passes =
       static_cast<size_t>(PositiveIntParameter(config, "build_passes", 2));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   if (config.HasParameter("random_seed")) {
     const int64_t random_seed = config.GetInteger("random_seed", 0);
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -265,6 +274,8 @@ std::unique_ptr<Index> MakeVamana(const IndexConfig& config) {
   options.alpha = static_cast<float>(config.GetDouble("alpha", 1.2));
   options.build_passes =
       static_cast<size_t>(PositiveIntParameter(config, "build_passes", 2));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   if (config.HasParameter("random_seed")) {
     const int64_t random_seed = config.GetInteger("random_seed", 0);
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -287,6 +298,8 @@ std::unique_ptr<Index> MakeNSWFlat(const IndexConfig& config) {
       static_cast<size_t>(PositiveIntParameter(config, "ef_construction", 64));
   options.ef_search =
       static_cast<size_t>(PositiveIntParameter(config, "ef_search", 16));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   options.check_relative_distance =
       config.GetBoolean("check_relative_distance", true);
   options.fill_to_max_degree = config.GetBoolean("fill_to_max_degree", true);
@@ -299,7 +312,9 @@ std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
   options.knn_degree =
       static_cast<size_t>(PositiveIntParameter(config, "knn_degree", 64));
   options.nn_descent_iterations = static_cast<size_t>(
-      PositiveIntParameter(config, "nn_descent_iterations", 10));
+      PositiveIntParameter(config, "nn_descent_iterations", 30));
+  options.build_threads =
+      static_cast<size_t>(PositiveIntParameter(config, "build_threads", 1));
   options.nn_descent_convergence_threshold =
       config.GetDouble("nn_descent_convergence_threshold", 0.001);
   if (config.HasParameter("random_seed")) {
@@ -384,6 +399,7 @@ std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
 std::vector<std::string> HnswParameterNames(
     std::initializer_list<std::string_view> storage_parameters = {}) {
   std::vector<std::string> names = {"m_hnsw",
+                                    "build_threads",
                                     "ef_construction",
                                     "ef_search",
                                     "check_relative_distance",
@@ -397,18 +413,20 @@ std::vector<std::string> HnswParameterNames(
 }
 
 void RegisterBuiltins(IndexRegistry* registry) {
-  registry->Register({"diskann",
-                      {"disk_ann", "IndexDiskANN", "IndexDiskANNFlat"},
-                      {"max_degree", "build_search_width",
-                       "candidate_pool_size", "alpha", "build_passes",
-                       "random_seed", "search_width", "check_relative_distance",
-                       "page_size", "cache_capacity_pages", "node_data_path"}},
-                     MakeDiskANN);
+  registry->Register(
+      {"diskann",
+       {"disk_ann", "IndexDiskANN", "IndexDiskANNFlat"},
+       {"max_degree", "build_search_width", "candidate_pool_size", "alpha",
+        "build_passes", "build_threads", "random_seed", "search_width",
+        "check_relative_distance", "page_size", "cache_capacity_pages",
+        "node_data_path"}},
+      MakeDiskANN);
   registry->Register({"flat", {"IndexFlat"}, {}}, MakeFlat);
   registry->Register({"pq", {"IndexPQ"}, {"m_pq", "nbits"}}, MakePQ);
-  registry->Register(
-      {"opq_pq", {"opqpq", "IndexOPQPQ"}, {"m_pq", "nbits", "opq_iterations"}},
-      MakeOPQPQ);
+  registry->Register({"opq_pq",
+                      {"opqpq", "IndexOPQPQ"},
+                      {"m_pq", "nbits", "opq_iterations", "opq_training_rows"}},
+                     MakeOPQPQ);
   registry->Register({"lvq", {"IndexLVQ"}, {"nlocal", "nbits"}}, MakeLVQ);
   registry->Register(
       {"ivf_flat", {"ivf", "ivfflat", "IndexIVFFlat"}, {"nlist"}}, MakeIVFFlat);
@@ -434,15 +452,16 @@ void RegisterBuiltins(IndexRegistry* registry) {
                       {"hnswlvq", "IndexHNSWLVQ"},
                       HnswParameterNames({"nlocal", "nbits"})},
                      MakeHNSWLVQ);
-  registry->Register({"nsw_flat",
-                      {"nsw", "nswflat", "IndexNSWFlat"},
-                      {"max_degree", "ef_construction", "ef_search",
-                       "check_relative_distance", "fill_to_max_degree"}},
-                     MakeNSWFlat);
+  registry->Register(
+      {"nsw_flat",
+       {"nsw", "nswflat", "IndexNSWFlat"},
+       {"max_degree", "ef_construction", "ef_search", "build_threads",
+        "check_relative_distance", "fill_to_max_degree"}},
+      MakeNSWFlat);
   registry->Register(
       {"nsg_flat",
        {"nsg", "nsgflat", "IndexNSGFlat"},
-       {"knn_degree", "nn_descent_iterations",
+       {"knn_degree", "nn_descent_iterations", "build_threads",
         "nn_descent_convergence_threshold", "random_seed", "max_degree",
         "build_search_width", "candidate_pool_size", "ef_search",
         "check_relative_distance"}},
@@ -456,7 +475,7 @@ void RegisterBuiltins(IndexRegistry* registry) {
       {"vamana_flat",
        {"vamana", "vamanaflat", "IndexVamana", "IndexVamanaFlat"},
        {"max_degree", "build_search_width", "candidate_pool_size", "alpha",
-        "build_passes", "random_seed", "search_width",
+        "build_passes", "build_threads", "random_seed", "search_width",
         "check_relative_distance"}},
       MakeVamana);
 }

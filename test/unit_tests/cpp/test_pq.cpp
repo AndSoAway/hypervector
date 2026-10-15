@@ -222,6 +222,27 @@ TEST(ProductQuantizer, TrainAndReconstructLowMSE) {
   EXPECT_LT(mse, 0.7) << "PQ reconstruction MSE too high: " << mse;
 }
 
+TEST(ProductQuantizer, TrainingSampleLimitIsDeterministicAndValidated) {
+  const hypervec::idx_t d = 8, M = 4;
+  const int nbits = 2;
+  const hypervec::idx_t n = 128;
+  const std::vector<float> x = MakeClusteredData(d, 8, n / 8, 71);
+
+  hypervec::PQParameters params;
+  params.niter = 3;
+  params.max_points_per_centroid = 2;
+
+  hypervec::ProductQuantizer first(d, M, nbits);
+  hypervec::ProductQuantizer second(d, M, nbits);
+  first.Train(n, x.data(), params);
+  second.Train(n, x.data(), params);
+  EXPECT_EQ(first.centroids, second.centroids);
+
+  params.max_points_per_centroid = -1;
+  hypervec::ProductQuantizer invalid(d, M, nbits);
+  EXPECT_THROW(invalid.Train(n, x.data(), params), hypervec::HypervecException);
+}
+
 TEST(ProductQuantizer, EncodeDecodeRoundtripIsCentroidExact) {
   // Decoding a freshly encoded vector must yield the concatenated
   // subcentroids — no loss beyond that. Verify by re-encoding the decoded
@@ -229,8 +250,8 @@ TEST(ProductQuantizer, EncodeDecodeRoundtripIsCentroidExact) {
   // is now exactly its own nearest centroid).
   const hypervec::idx_t d = 8, M = 4;
   const int nbits = 5;  // ksub=32, generic bit-packing path
-  const hypervec::idx_t n = 200;
-  const std::vector<float> x = MakeClusteredData(d, 32, n / 32, 23);
+  const hypervec::idx_t n = 32 * 8;
+  const std::vector<float> x = MakeClusteredData(d, 32, 8, 23);
 
   hypervec::ProductQuantizer pq(d, M, nbits);
   pq.Train(n, x.data());
@@ -287,8 +308,8 @@ TEST(ProductQuantizer, AdcSumEqualsL2OfDecodedVector) {
   // because each subvector contributes independently to L2².
   const hypervec::idx_t d = 16, M = 4;
   const int nbits = 8;
-  const hypervec::idx_t n = 1000;
-  const std::vector<float> x = MakeClusteredData(d, 64, n / 64, 41);
+  const hypervec::idx_t n = 64 * 16;
+  const std::vector<float> x = MakeClusteredData(d, 64, 16, 41);
 
   hypervec::ProductQuantizer pq(d, M, nbits);
   pq.Train(n, x.data());

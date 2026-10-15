@@ -37,6 +37,7 @@ VamanaIndexOptions GraphBuildOptions(const DiskAnnIndexOptions& options) {
   graph_options.candidate_pool_size = options.candidate_pool_size;
   graph_options.alpha = options.alpha;
   graph_options.build_passes = options.build_passes;
+  graph_options.build_threads = options.build_threads;
   graph_options.random_seed = options.random_seed;
   graph_options.search_width = options.search_width;
   graph_options.check_relative_distance = options.check_relative_distance;

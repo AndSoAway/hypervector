@@ -43,9 +43,16 @@ struct SearchEvaluationOptions {
   size_t measured_runs = 1;
   /** Queries per timed Index::Search call; zero uses the complete workload. */
   idx_t query_batch_size = 0;
+  /** Independent concurrent callers. With concurrency > 1 and no explicit
+   * batch size, each call searches one query. Requires a read-only index. */
+  size_t concurrency = 1;
 };
 
-/** Aggregate batch-search quality and timing metrics. */
+/** Aggregate batch-search quality and timing metrics.
+ * With concurrency > 1, mean_latency_ms is wall time divided by the total
+ * query count (inverse throughput), NOT mean individual query latency. For
+ * per-query latency percentiles, use query_batch_size=1.
+ */
 struct SearchEvaluationResult {
   idx_t query_count = 0;
   idx_t k = 0;
@@ -55,6 +62,7 @@ struct SearchEvaluationResult {
   double mean_latency_ms = 0.0;
   double queries_per_second = 0.0;
   idx_t query_batch_size = 0;
+  size_t concurrency = 1;
   size_t latency_sample_count = 0;
   double batch_latency_p50_ms = 0.0;
   double batch_latency_p95_ms = 0.0;
@@ -65,8 +73,12 @@ struct SearchEvaluationResult {
  *
  * Warmup runs are not timed. Recall is computed from the final measured run;
  * latency and QPS cover every measured run. Batch latency uses nearest-rank
- * percentiles over individual Index::Search calls. Search exceptions
- * propagate.
+ * percentiles over individual Index::Search calls. Concurrent evaluation
+ * shares a read-only Index and SearchParameters across independent callers;
+ * callers must not mutate either while evaluation runs. It does not promise
+ * thread safety for arbitrary user-provided Index implementations. Each
+ * concurrent worker limits nested OpenMP search parallelism to one thread.
+ * Search exceptions propagate after all workers finish.
  */
 SearchEvaluationResult EvaluateSearch(
     const Index& index, const SearchEvaluationInput& input,

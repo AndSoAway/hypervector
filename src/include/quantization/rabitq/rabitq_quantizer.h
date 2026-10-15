@@ -10,6 +10,7 @@
 
 #include <quantization/quantizer.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -62,6 +63,14 @@ class RaBitQQuantizer final : public Quantizer {
                                 float query_norm_squared,
                                 const uint8_t* code) const;
 
+  /** Prepare per-query signed sums once instead of revisiting every float for
+   * every code in an inverted list. A nibble also handles padded dimensions. */
+  using DistanceLut = std::vector<std::array<double, 16>>;
+  void PrepareDistanceLut(const float* rotated_query, DistanceLut* lut) const;
+  float EstimateSquaredDistanceWithLut(float query_norm_squared,
+                                       const uint8_t* code,
+                                       const DistanceLut& lut) const;
+
  protected:
   void TrainImpl(idx_t count, const float* vectors) override;
   void EncodeImpl(idx_t count, const float* vectors,
@@ -72,7 +81,7 @@ class RaBitQQuantizer final : public Quantizer {
       EncodedVectorView store) const override;
 
  private:
-  void ApplyRotation(std::vector<float>* values) const;
+  void ApplyRotation(float* values) const;
   void ApplyInverseRotation(std::vector<float>* values) const;
   float ReadFactor(const uint8_t* code, size_t offset) const;
   void WriteFactor(float value, size_t offset, uint8_t* code) const;

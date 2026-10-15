@@ -6,9 +6,12 @@
  * source tree.
  */
 
+#include <omp.h>
 #include <transform/opq_matrix.h>
+#include <utils/algo/kmeans/kmeans.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
@@ -78,6 +81,8 @@ std::vector<float> SolveOrthogonalProcrustes(idx_t n, idx_t dimension,
       CheckedElementCount(dimension, dimension, "OPQ covariance matrix");
   std::vector<float> covariance(matrix_size);
   const double scale = 1.0 / static_cast<double>(n);
+#pragma omp parallel for if (n >= 256 && dimension >= 64) \
+    num_threads(std::min(32, omp_get_max_threads())) schedule(static)
   for (idx_t row = 0; row < dimension; ++row) {
     for (idx_t column = 0; column < dimension; ++column) {
       double sum = 0.0;
@@ -154,6 +159,8 @@ OPQMatrix::OPQMatrix(idx_t dimension, idx_t subquantizer_count, int nbits)
   HYPERVEC_THROW_IF_NOT_FMT(nbits >= 1 && nbits <= HYPERVEC_PQ_MAX_NBITS,
                             "OPQMatrix: nbits must be in [1, %d]",
                             HYPERVEC_PQ_MAX_NBITS);
+  parameters.max_training_rows =
+      std::max(parameters.max_training_rows, idx_t{1} << nbits);
 }
 
 bool OPQMatrix::RequiresTraining() const { return true; }
@@ -161,27 +168,47 @@ bool OPQMatrix::RequiresTraining() const { return true; }
 void OPQMatrix::Train(idx_t n, const float* x) {
   HYPERVEC_THROW_IF_NOT_MSG(parameters.iterations > 0,
                             "OPQMatrix::Train: iterations must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      parameters.max_training_rows >= 0,
+      "OPQMatrix::Train: max_training_rows must be non-negative");
   ValidateTrainingInput(n, d_in, x);
+
+  const idx_t training_count = parameters.max_training_rows == 0
+                                   ? n
+                                   : std::min(n, parameters.max_training_rows);
+  std::vector<float> sampled;
+  if (training_count < n) {
+    const auto rows = SampleKMeansTrainingRows(n, training_count,
+                                               parameters.pq_parameters.seed);
+    sampled.resize(CheckedElementCount(training_count, d_in, "OPQ sample"));
+    for (idx_t row = 0; row < training_count; ++row) {
+      std::copy_n(x + rows[static_cast<size_t>(row)] * d_in, d_in,
+                  sampled.data() + row * d_in);
+    }
+    x = sampled.data();
+  }
 
   LinearTransform candidate(d_in, d_out);
   candidate.SetTransform(IdentityMatrix(d_in), {}, true);
-  const size_t data_size = CheckedElementCount(n, d_in, "OPQ training data");
+  const size_t data_size =
+      CheckedElementCount(training_count, d_in, "OPQ training data");
   std::vector<float> rotated(data_size);
   std::vector<float> reconstructed(data_size);
 
   for (int iteration = 0; iteration < parameters.iterations; ++iteration) {
-    candidate.Apply(n, x, rotated.data());
+    candidate.Apply(training_count, x, rotated.data());
     ProductQuantizer pq(d_in, subquantizer_count, nbits);
-    pq.Train(n, rotated.data(), parameters.pq_parameters);
+    pq.Train(training_count, rotated.data(), parameters.pq_parameters);
 
-    const size_t code_count =
-        mul_no_overflow(static_cast<size_t>(n), pq.code_size, "OPQ PQ codes");
+    const size_t code_count = mul_no_overflow(
+        static_cast<size_t>(training_count), pq.code_size, "OPQ PQ codes");
     std::vector<uint8_t> codes(code_count);
-    pq.ComputeCodes(n, rotated.data(), codes.data());
-    pq.DecodeBatch(n, codes.data(), reconstructed.data());
+    pq.ComputeCodes(training_count, rotated.data(), codes.data());
+    pq.DecodeBatch(training_count, codes.data(), reconstructed.data());
 
-    candidate.SetTransform(
-        SolveOrthogonalProcrustes(n, d_in, x, reconstructed.data()), {}, true);
+    candidate.SetTransform(SolveOrthogonalProcrustes(training_count, d_in, x,
+                                                     reconstructed.data()),
+                           {}, true);
   }
 
   SetTransform(std::move(candidate.matrix), {}, true);

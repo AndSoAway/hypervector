@@ -83,6 +83,29 @@ TEST(IndexVamana, FlatL2BuildsFixedGraphAndMatchesExhaustiveSearch) {
   ExpectSameSearch(expected, index, queries, 3);
 }
 
+TEST(IndexVamana, ParallelBuildPreservesReachabilityAndSearch) {
+  constexpr size_t count = 1088;
+  std::vector<float> database(count * 2);
+  for (size_t node = 0; node < count; ++node) {
+    database[2 * node] = static_cast<float>((node * 71) % count);
+    database[2 * node + 1] = static_cast<float>((node * 39) % count);
+  }
+  auto options = ExhaustiveOptions();
+  options.build_threads = 4;
+  hypervec::IndexVamanaFlat index(2, hypervec::kMetricL2, options);
+  index.Build(count, database.data());
+  EXPECT_EQ(index.BuildStats().nodes_processed, count * options.build_passes);
+  const auto report =
+      hypervec::ValidateGraph(index.Graph(), index.EntryPoint());
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, count);
+  float distances[2];
+  hypervec::idx_t labels[2];
+  index.Search(1, database.data() + 2 * 1000, 2, distances, labels);
+  EXPECT_EQ(labels[0], 1000);
+  EXPECT_FLOAT_EQ(distances[0], 0.0F);
+}
+
 TEST(IndexVamana, BuildsDuplicateVectorsWithoutBreakingReachability) {
   std::vector<float> database(20, 0.0F);
   hypervec::VamanaIndexOptions options = ExhaustiveOptions();

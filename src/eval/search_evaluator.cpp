@@ -7,14 +7,19 @@
  */
 
 #include <eval/search_evaluator.h>
+#include <omp.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -77,6 +82,87 @@ void SearchBatches(const Index& index, const SearchEvaluationInput& input,
     }
     first += count;
   }
+}
+
+// Each worker owns disjoint result rows for every run; no worker writes to
+// another's rows, and the index is read-only throughout evaluation.
+double SearchConcurrent(const Index& index, const SearchEvaluationInput& input,
+                        idx_t k, idx_t batch_size, size_t runs, size_t workers,
+                        float* distances, idx_t* labels,
+                        const SearchParameters* parameters,
+                        std::vector<double>* latency_samples_ms) {
+  const size_t batches =
+      1U + static_cast<size_t>((input.query_count - 1) / batch_size);
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::atomic<bool> failed{false};
+  std::exception_ptr error;
+  std::mutex error_mutex;
+  std::vector<std::jthread> threads;
+  threads.reserve(workers);
+  try {
+    for (size_t worker = 0; worker < workers; ++worker) {
+      threads.emplace_back([&, worker] {
+        // Avoid multiplying worker count by an index's own OpenMP query team.
+        omp_set_num_threads(1);
+        ready.fetch_add(1);
+        ready.notify_one();
+        start.wait(false);
+        try {
+          for (size_t run = 0; run < runs && !failed.load(); ++run) {
+            for (size_t batch = worker; batch < batches && !failed.load();
+                 batch += workers) {
+              const idx_t first = static_cast<idx_t>(batch * batch_size);
+              const idx_t count =
+                  std::min(batch_size, input.query_count - first);
+              const size_t query_offset =
+                  static_cast<size_t>(first) * static_cast<size_t>(index.d);
+              const size_t result_offset =
+                  static_cast<size_t>(first) * static_cast<size_t>(k);
+              const auto begin = std::chrono::steady_clock::now();
+              index.Search(count, input.queries + query_offset, k,
+                           distances + result_offset, labels + result_offset,
+                           parameters);
+              if (latency_samples_ms != nullptr) {
+                const auto end = std::chrono::steady_clock::now();
+                (*latency_samples_ms)[run * batches + batch] =
+                    std::chrono::duration<double, std::milli>(end - begin)
+                        .count();
+              }
+            }
+          }
+        } catch (...) {
+          std::lock_guard<std::mutex> guard(error_mutex);
+          if (error == nullptr) {
+            error = std::current_exception();
+          }
+          failed.store(true);
+        }
+      });
+    }
+  } catch (...) {
+    start.store(true);
+    start.notify_all();
+    throw;
+  }
+  for (;;) {
+    const size_t observed = ready.load();
+    if (observed == workers) {
+      break;
+    }
+    ready.wait(observed);
+  }
+  const auto begin = std::chrono::steady_clock::now();
+  start.store(true);
+  start.notify_all();
+  threads.clear();  // jthread joins before we read results or exceptions.
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - begin)
+          .count();
+  if (error != nullptr) {
+    std::rethrow_exception(error);
+  }
+  return elapsed;
 }
 
 double NearestRankPercentile(const std::vector<double>& sorted_values,
@@ -142,6 +228,8 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
                             "evaluation measured_runs must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(options.query_batch_size >= 0,
                             "evaluation query_batch_size must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(options.concurrency > 0,
+                            "evaluation concurrency must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(
       input.ground_truth.query_count == input.query_count,
       "evaluation and ground-truth query counts must match");
@@ -160,7 +248,7 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
       "evaluation measured query count exceeds size_t");
   const idx_t batch_size =
       options.query_batch_size == 0
-          ? input.query_count
+          ? (options.concurrency == 1 ? input.query_count : 1)
           : std::min(options.query_batch_size, input.query_count);
   const size_t batches_per_run =
       1U + static_cast<size_t>((input.query_count - 1) / batch_size);
@@ -170,22 +258,35 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
       "evaluation latency sample count exceeds size_t");
   std::vector<float> distances(output_count);
   std::vector<idx_t> labels(output_count);
-
-  for (size_t run = 0; run < options.warmup_runs; ++run) {
-    SearchBatches(index, input, options.k, batch_size, distances.data(),
-                  labels.data(), parameters, nullptr);
-  }
+  const size_t workers = std::min(options.concurrency, batches_per_run);
 
   std::vector<double> latency_samples_ms;
-  latency_samples_ms.reserve(options.measured_runs * batches_per_run);
-  const auto start = std::chrono::steady_clock::now();
-  for (size_t run = 0; run < options.measured_runs; ++run) {
-    SearchBatches(index, input, options.k, batch_size, distances.data(),
-                  labels.data(), parameters, &latency_samples_ms);
+  double elapsed_seconds = 0.0;
+  if (workers == 1) {
+    for (size_t run = 0; run < options.warmup_runs; ++run) {
+      SearchBatches(index, input, options.k, batch_size, distances.data(),
+                    labels.data(), parameters, nullptr);
+    }
+    latency_samples_ms.reserve(options.measured_runs * batches_per_run);
+    const auto start = std::chrono::steady_clock::now();
+    for (size_t run = 0; run < options.measured_runs; ++run) {
+      SearchBatches(index, input, options.k, batch_size, distances.data(),
+                    labels.data(), parameters, &latency_samples_ms);
+    }
+    elapsed_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+  } else {
+    if (options.warmup_runs > 0) {
+      SearchConcurrent(index, input, options.k, batch_size, options.warmup_runs,
+                       workers, distances.data(), labels.data(), parameters,
+                       nullptr);
+    }
+    latency_samples_ms.resize(options.measured_runs * batches_per_run);
+    elapsed_seconds = SearchConcurrent(
+        index, input, options.k, batch_size, options.measured_runs, workers,
+        distances.data(), labels.data(), parameters, &latency_samples_ms);
   }
-  const auto end = std::chrono::steady_clock::now();
-  const double elapsed_seconds =
-      std::chrono::duration<double>(end - start).count();
   const size_t measured_queries =
       options.measured_runs * static_cast<size_t>(input.query_count);
 
@@ -205,6 +306,7 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
           : (std::numeric_limits<double>::infinity)();
   std::sort(latency_samples_ms.begin(), latency_samples_ms.end());
   evaluation.query_batch_size = batch_size;
+  evaluation.concurrency = workers;
   evaluation.latency_sample_count = latency_samples_ms.size();
   evaluation.batch_latency_p50_ms =
       NearestRankPercentile(latency_samples_ms, 0.50);

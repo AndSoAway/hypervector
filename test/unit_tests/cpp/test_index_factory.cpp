@@ -55,6 +55,7 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("candidate_limit", 8)
       .SetInteger("knn_degree", 4)
       .SetInteger("nn_descent_iterations", 3)
+      .SetInteger("build_threads", 2)
       .SetDouble("nn_descent_convergence_threshold", 0.01)
       .SetInteger("random_seed", 7)
       .SetInteger("max_degree", 4)
@@ -172,6 +173,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
       .SetInteger("candidate_pool_size", 13)
       .SetDouble("alpha", 1.4)
       .SetInteger("build_passes", 3)
+      .SetInteger("build_threads", 4)
       .SetInteger("random_seed", 29)
       .SetInteger("search_width", 17)
       .SetBoolean("check_relative_distance", false)
@@ -186,6 +188,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(diskann->Options().candidate_pool_size, 13U);
   EXPECT_FLOAT_EQ(diskann->Options().alpha, 1.4F);
   EXPECT_EQ(diskann->Options().build_passes, 3U);
+  EXPECT_EQ(diskann->Options().build_threads, 4U);
   EXPECT_EQ(diskann->Options().random_seed, 29U);
   EXPECT_EQ(diskann->Options().search_width, 17U);
   EXPECT_FALSE(diskann->Options().check_relative_distance);
@@ -199,6 +202,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
       .SetInteger("candidate_pool_size", 13)
       .SetDouble("alpha", 1.4)
       .SetInteger("build_passes", 3)
+      .SetInteger("build_threads", 4)
       .SetInteger("random_seed", 31)
       .SetInteger("search_width", 17)
       .SetBoolean("check_relative_distance", false);
@@ -210,6 +214,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(vamana->Options().candidate_pool_size, 13U);
   EXPECT_FLOAT_EQ(vamana->Options().alpha, 1.4F);
   EXPECT_EQ(vamana->Options().build_passes, 3U);
+  EXPECT_EQ(vamana->Options().build_threads, 4U);
   EXPECT_EQ(vamana->Options().random_seed, 31U);
   EXPECT_EQ(vamana->Options().search_width, 17U);
   EXPECT_FALSE(vamana->Options().check_relative_distance);
@@ -240,7 +245,8 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   hypervec::IndexConfig opq_config("opq_pq", 12);
   opq_config.SetInteger("m_pq", 3)
       .SetInteger("nbits", 4)
-      .SetInteger("opq_iterations", 5);
+      .SetInteger("opq_iterations", 5)
+      .SetInteger("opq_training_rows", 1024);
   auto opq_base = hypervec::CreateIndex(opq_config);
   auto* opq_index = dynamic_cast<hypervec::IndexPreTransform*>(opq_base.get());
   ASSERT_NE(opq_index, nullptr);
@@ -251,11 +257,13 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(opq->subquantizer_count, 3);
   EXPECT_EQ(opq->nbits, 4);
   EXPECT_EQ(opq->parameters.iterations, 5);
+  EXPECT_EQ(opq->parameters.max_training_rows, 1024);
   EXPECT_EQ(opq_pq->pq.M, 3);
   EXPECT_EQ(opq_pq->pq.nbits, 4);
 
   hypervec::IndexConfig hnsw_config("hnsw_flat", 12);
   hnsw_config.SetInteger("m_hnsw", 11)
+      .SetInteger("build_threads", 32)
       .SetInteger("ef_construction", 53)
       .SetInteger("ef_search", 29)
       .SetBoolean("check_relative_distance", false)
@@ -269,6 +277,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(1), 11);
   EXPECT_EQ(hnsw->hnsw.ef_construction, 53);
   EXPECT_EQ(hnsw->hnsw.ef_search, 29);
+  EXPECT_EQ(hnsw->build_threads, 32);
   EXPECT_FALSE(hnsw->hnsw.check_relative_distance);
   EXPECT_FALSE(hnsw->hnsw.search_bounded_queue);
   EXPECT_EQ(hnsw->hnsw.use_visited_hashset, true);
@@ -278,6 +287,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   nsw_config.SetInteger("max_degree", 7)
       .SetInteger("ef_construction", 15)
       .SetInteger("ef_search", 9)
+      .SetInteger("build_threads", 4)
       .SetBoolean("check_relative_distance", false)
       .SetBoolean("fill_to_max_degree", false);
   auto nsw_base = hypervec::CreateIndex(nsw_config);
@@ -286,12 +296,14 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(nsw->Options().max_degree, 7U);
   EXPECT_EQ(nsw->Options().ef_construction, 15U);
   EXPECT_EQ(nsw->Options().ef_search, 9U);
+  EXPECT_EQ(nsw->Options().build_threads, 4U);
   EXPECT_FALSE(nsw->Options().check_relative_distance);
   EXPECT_FALSE(nsw->Options().fill_to_max_degree);
 
   hypervec::IndexConfig nsg_config("nsg_flat", 12);
   nsg_config.SetInteger("knn_degree", 9)
       .SetInteger("nn_descent_iterations", 6)
+      .SetInteger("build_threads", 32)
       .SetDouble("nn_descent_convergence_threshold", 0.02)
       .SetInteger("random_seed", 17)
       .SetInteger("max_degree", 7)
@@ -304,6 +316,7 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   ASSERT_NE(nsg, nullptr);
   EXPECT_EQ(nsg->Options().knn_degree, 9U);
   EXPECT_EQ(nsg->Options().nn_descent_iterations, 6U);
+  EXPECT_EQ(nsg->Options().build_threads, 32U);
   EXPECT_DOUBLE_EQ(nsg->Options().nn_descent_convergence_threshold, 0.02);
   EXPECT_EQ(nsg->Options().random_seed, 17U);
   EXPECT_EQ(nsg->Options().max_degree, 7U);
@@ -454,10 +467,18 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_hnsw_ef("hnsw_flat", 4);
   bad_hnsw_ef.SetInteger("ef_construction", 0);
   EXPECT_THROW(hypervec::CreateIndex(bad_hnsw_ef), hypervec::HypervecException);
+  hypervec::IndexConfig bad_hnsw_threads("hnsw_flat", 4);
+  bad_hnsw_threads.SetInteger("build_threads", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_hnsw_threads),
+               hypervec::HypervecException);
 
   hypervec::IndexConfig bad_nsw("nsw_flat", 4);
   bad_nsw.SetInteger("max_degree", 8).SetInteger("ef_construction", 4);
   EXPECT_THROW(hypervec::CreateIndex(bad_nsw), hypervec::HypervecException);
+  hypervec::IndexConfig bad_nsw_threads("nsw_flat", 4);
+  bad_nsw_threads.SetInteger("build_threads", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_nsw_threads),
+               hypervec::HypervecException);
 
   hypervec::IndexConfig bad_nsg("nsg_flat", 4);
   bad_nsg.SetDouble("nn_descent_convergence_threshold", 2.0);

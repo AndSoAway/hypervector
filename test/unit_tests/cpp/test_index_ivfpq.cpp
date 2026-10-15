@@ -11,7 +11,9 @@
 #include <index/ivf/index_ivf.h>
 #include <persistence/index_io.h>
 #include <quantization/pq/index_ivfpq.h>
+#include <utils/algo/kmeans/kmeans.h>
 #include <utils/common/range_search_result.h>
+#include <utils/distances/distances.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
@@ -90,6 +92,48 @@ TEST(IndexIVFPQ, TrainAddSearchSmoke) {
       EXPECT_TRUE(id == -1 || (id >= 0 && id < nb));
     }
   }
+}
+
+TEST(IndexIVFPQ, ResidualTrainingMatchesExplicitSample) {
+  constexpr hypervec::idx_t n = 1024;
+  constexpr hypervec::idx_t d = 4;
+  constexpr hypervec::idx_t ksub = 2;
+  const auto vectors = RandomVectors(n, d, 71, 5.0F);
+
+  hypervec::IndexIVFPQ index(d, 2, 2, 1);
+  index.Train(n, vectors.data());
+
+  const hypervec::idx_t training_count =
+      ksub * HYPERVEC_PQ_DEFAULT_MAX_POINTS_PER_CENTROID;
+  const auto rows = hypervec::SampleKMeansTrainingRows(
+      n, training_count, HYPERVEC_PQ_DEFAULT_SEED);
+  std::vector<float> residuals(static_cast<size_t>(training_count) * d);
+  for (hypervec::idx_t i = 0; i < training_count; ++i) {
+    const float* x = vectors.data() + rows[static_cast<size_t>(i)] * d;
+    hypervec::idx_t nearest = 0;
+    float best_distance = (std::numeric_limits<float>::infinity)();
+    for (hypervec::idx_t cell = 0; cell < index.nlist; ++cell) {
+      const float distance = hypervec::fvec_L2sqr(
+          x, index.centroids.data() + cell * d, static_cast<size_t>(d));
+      if (distance < best_distance) {
+        best_distance = distance;
+        nearest = cell;
+      }
+    }
+    for (hypervec::idx_t j = 0; j < d; ++j) {
+      residuals[static_cast<size_t>(i * d + j)] =
+          x[j] - index.centroids[static_cast<size_t>(nearest * d + j)];
+    }
+  }
+
+  hypervec::ProductQuantizer expected(d, 2, 1);
+  hypervec::PQParameters params;
+  params.max_points_per_centroid = 0;
+  expected.Train(training_count, residuals.data(), params);
+  EXPECT_EQ(index.pq.centroids, expected.centroids);
+
+  index.Add(n, vectors.data());
+  EXPECT_EQ(index.n_total, n);
 }
 
 TEST(IndexIVFPQ, RecallImprovesWithNprobe) {

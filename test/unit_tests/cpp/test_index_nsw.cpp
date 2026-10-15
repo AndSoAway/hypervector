@@ -137,6 +137,35 @@ TEST(IndexNSW, FlatL2MatchesExhaustiveSearchAcrossRepeatedAdds) {
   ExpectSameSearch(expected, index, queries, 3);
 }
 
+TEST(IndexNSW, ParallelBatchBuildPreservesGraphAndAppendSemantics) {
+  hypervec::NSWIndexOptions options;
+  options.max_degree = 12;
+  options.ef_construction = 40;
+  options.ef_search = 512;
+  options.build_threads = 4;
+  std::vector<float> database(512);
+  for (size_t i = 0; i < database.size(); ++i) {
+    database[i] = static_cast<float>((i * 193U) % 521U);
+  }
+  hypervec::IndexNSWFlat index(1, hypervec::kMetricL2, options);
+  index.Add(400, database.data());
+  index.Add(112, database.data() + 400);
+  EXPECT_THROW(index.SetBuildThreads(0), hypervec::HypervecException);
+  EXPECT_EQ(index.Options().build_threads, 4U);
+  EXPECT_EQ(index.n_total, 512);
+  EXPECT_EQ(index.BuildStats().inserted_nodes, 512U);
+  EXPECT_EQ(index.BuildStats().search.queries, 511U);
+  const auto report =
+      hypervec::ValidateGraph(index.Graph(), index.EntryPoint());
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, 512U);
+
+  const std::vector<float> queries = {2.0F, 200.0F, 510.0F};
+  hypervec::IndexFlatL2 expected(1);
+  expected.Add(512, database.data());
+  ExpectSameSearch(expected, index, queries, 3);
+}
+
 TEST(IndexNSW, SimilaritySearchRestoresExternalDistanceDirection) {
   const std::vector<float> database = {
       1.0F, 0.0F, 0.0F, 2.0F, 2.0F, 1.0F, 3.0F, 4.0F, 1.0F, 3.0F, 6.0F, 2.0F,
@@ -183,6 +212,9 @@ TEST(IndexNSW, PersistenceRoundtripPreservesStateAndAllowsAppend) {
   EXPECT_EQ(restored->Options().check_relative_distance,
             options.check_relative_distance);
   EXPECT_EQ(restored->Options().fill_to_max_degree, options.fill_to_max_degree);
+  EXPECT_EQ(restored->Options().build_threads, 1U);
+  restored->SetBuildThreads(4);
+  EXPECT_EQ(restored->Options().build_threads, 4U);
   ASSERT_EQ(restored->Graph().NodeCount(), source.Graph().NodeCount());
   for (size_t node = 0; node < source.Graph().NodeCount(); ++node) {
     const auto source_neighbors =

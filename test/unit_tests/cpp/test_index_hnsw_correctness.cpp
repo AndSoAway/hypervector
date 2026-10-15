@@ -11,7 +11,10 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <utils/common/range_search_result.h>
+#include <utils/common/result_handler.h>
 #include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
 #include <algorithm>
@@ -44,6 +47,16 @@ class ThrowingSearchDistanceComputer final : public hypervec::DistanceComputer {
 
  private:
   int* destruction_count_;
+};
+
+class CollectingResultHandler final : public hypervec::ResultHandler {
+ public:
+  bool AddResult(float distance, hypervec::idx_t id) override {
+    results.emplace_back(distance, id);
+    return false;
+  }
+
+  std::vector<std::pair<float, hypervec::idx_t>> results;
 };
 
 class ThrowingSearchStorage final : public hypervec::Index {
@@ -284,6 +297,23 @@ TEST(IndexHNSWCorrectness, SearchValidatesInputsAndAlignedState) {
                hypervec::HypervecException);
 }
 
+TEST(IndexHNSWCorrectness, SearchRejectsUnsupportedPanoramaMode) {
+  const std::array<float, 2> vector = {0.0F, 1.0F};
+  hypervec::IndexHNSWFlat index(2, 4);
+  index.Add(1, vector.data());
+  index.hnsw.is_panorama = true;
+
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+
+  hypervec::SearchParametersHNSW params;
+  params.bounded_queue = false;
+  EXPECT_THROW(index.Search(1, vector.data(), 1, &distance, &label, &params),
+               hypervec::HypervecException);
+}
+
 TEST(IndexHNSWCorrectness, SearchReturnsExternalSimilarityScores) {
   constexpr hypervec::idx_t dimension = 2;
   constexpr hypervec::idx_t count = 3;
@@ -317,6 +347,246 @@ TEST(IndexHNSWCorrectness, SearchReturnsExternalSimilarityScores) {
         actual.GetDistanceComputer());
     distance->SetQuery(query.data());
     EXPECT_FLOAT_EQ((*distance)(actual_labels[0]), actual_distances[0]);
+  }
+}
+
+TEST(IndexHNSWCorrectness, AuxiliarySearchUsesGraphMetricAndFiltering) {
+  constexpr hypervec::idx_t dimension = 2;
+  constexpr hypervec::idx_t count = 4;
+  const std::array<float, dimension * count> database = {
+      1.0F, 0.0F, 0.0F, 1.0F, 0.8F, 0.2F, 0.2F, 0.8F};
+  const std::array<float, dimension> query = {1.0F, 0.1F};
+  hypervec::IndexHNSWFlat index(dimension, 4, hypervec::kMetricInnerProduct);
+  index.Add(count, database.data());
+
+  hypervec::IDSelectorRange selector(0, 3);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.check_relative_distance = false;
+  params.sel = &selector;
+
+  CollectingResultHandler collected;
+  index.Search1(query.data(), collected, &params);
+  ASSERT_EQ(collected.results.size(), 3U);
+  for (const auto& [score, id] : collected.results) {
+    EXPECT_TRUE(selector.IsMember(id));
+    const float expected =
+        database[static_cast<size_t>(id) * dimension] +
+        0.1F * database[static_cast<size_t>(id) * dimension + 1];
+    EXPECT_FLOAT_EQ(score, expected);
+  }
+
+  hypervec::RangeSearchResult range(1);
+  index.RangeSearch(1, query.data(), 0.5F, &range, &params);
+  ASSERT_EQ(range.lims[1], 2U);
+  for (size_t result = 0; result < range.lims[1]; ++result) {
+    EXPECT_TRUE(range.labels[result] == 0 || range.labels[result] == 2);
+    EXPECT_GT(range.distances[result], 0.5F);
+  }
+}
+
+TEST(IndexHNSWCorrectness, AuxiliarySearchValidatesInputs) {
+  const std::array<float, 2> query = {0.0F, 1.0F};
+  hypervec::IndexHNSWFlat index(2, 4);
+
+  EXPECT_NO_THROW(index.RangeSearch(0, nullptr, 1.0F, nullptr));
+  CollectingResultHandler empty_collected;
+  EXPECT_THROW(index.Search1(nullptr, empty_collected),
+               hypervec::HypervecException);
+
+  hypervec::RangeSearchResult result(1);
+  hypervec::RangeSearchResult wrong_query_count(2);
+  EXPECT_THROW(index.RangeSearch(-1, nullptr, 1.0F, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, nullptr, 1.0F, &result),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, query.data(), 1.0F, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.RangeSearch(1, query.data(), 1.0F, &wrong_query_count),
+               hypervec::HypervecException);
+
+  index.Add(1, query.data());
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = 0;
+  EXPECT_THROW(index.RangeSearch(1, query.data(), 1.0F, &result, &params),
+               hypervec::HypervecException);
+  CollectingResultHandler collected;
+  EXPECT_THROW(index.Search1(query.data(), collected, &params),
+               hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, PublicLevel0SearchSupportsBatchesAndEntryModes) {
+  constexpr hypervec::idx_t count = 8;
+  constexpr hypervec::idx_t query_count = 2;
+  constexpr hypervec::idx_t k = 3;
+  constexpr int nprobe = 2;
+  const std::array<float, count> database = {0.0F, 1.0F, 2.0F, 3.0F,
+                                             4.0F, 5.0F, 6.0F, 7.0F};
+  const std::array<float, query_count> queries = {1.2F, 6.2F};
+  const std::array<hypervec::HNSW::storage_idx_t, query_count * nprobe>
+      entries = {0, 7, 7, 0};
+  const std::array<float, query_count * nprobe> entry_distances = {
+      1.44F, 33.64F, 0.64F, 38.44F};
+  const std::array<hypervec::idx_t, query_count * k> expected_labels = {
+      1, 2, 0, 6, 7, 5};
+  const std::array<float, query_count * k> expected_distances = {
+      0.04F, 0.64F, 1.44F, 0.04F, 0.64F, 1.44F};
+
+  hypervec::IndexHNSWFlat index(1, 8);
+  index.Add(count, database.data());
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.check_relative_distance = false;
+
+  for (int search_type : {1, 2}) {
+    std::array<float, query_count * k> distances{};
+    std::array<hypervec::idx_t, query_count * k> labels{};
+    index.SearchLevel0(query_count, queries.data(), k, entries.data(),
+                       entry_distances.data(), distances.data(), labels.data(),
+                       nprobe, search_type, &params);
+
+    EXPECT_EQ(labels, expected_labels);
+    for (size_t result = 0; result < distances.size(); ++result) {
+      EXPECT_NEAR(distances[result], expected_distances[result], 1e-5F);
+    }
+  }
+}
+
+TEST(IndexHNSWCorrectness, PublicLevel0SearchPreservesSimilarityDirection) {
+  constexpr hypervec::idx_t dimension = 2;
+  constexpr hypervec::idx_t count = 4;
+  constexpr hypervec::idx_t k = 3;
+  constexpr int nprobe = 2;
+  const std::array<float, dimension * count> database = {
+      1.0F, 0.0F, 0.0F, 1.0F, 0.8F, 0.2F, 0.2F, 0.8F};
+  const std::array<float, dimension> query = {1.0F, 0.1F};
+  const std::array<hypervec::HNSW::storage_idx_t, nprobe> entries = {0, 1};
+  const std::array<float, nprobe> entry_similarities = {1.0F, 0.1F};
+
+  hypervec::IndexFlatIP exact(dimension);
+  exact.Add(count, database.data());
+  hypervec::IndexHNSWFlat index(dimension, 4, hypervec::kMetricInnerProduct);
+  index.Add(count, database.data());
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.check_relative_distance = false;
+
+  std::array<float, k> expected_distances{};
+  std::array<hypervec::idx_t, k> expected_labels{};
+  std::array<float, k> actual_distances{};
+  std::array<hypervec::idx_t, k> actual_labels{};
+  exact.Search(1, query.data(), k, expected_distances.data(),
+               expected_labels.data());
+  index.SearchLevel0(1, query.data(), k, entries.data(),
+                     entry_similarities.data(), actual_distances.data(),
+                     actual_labels.data(), nprobe, 2, &params);
+
+  EXPECT_EQ(actual_labels, expected_labels);
+  for (size_t result = 0; result < actual_distances.size(); ++result) {
+    EXPECT_FLOAT_EQ(actual_distances[result], expected_distances[result]);
+  }
+}
+
+TEST(IndexHNSWCorrectness, PublicLevel0SearchValidatesInputsAndEmptyIndex) {
+  constexpr hypervec::idx_t k = 2;
+  const std::array<float, 2> query = {0.0F, 1.0F};
+  const hypervec::HNSW::storage_idx_t entry = -1;
+  const float entry_distance = 0.0F;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+  hypervec::IndexHNSWFlat index(2, 4);
+
+  EXPECT_NO_THROW(
+      index.SearchLevel0(0, nullptr, k, nullptr, nullptr, nullptr, nullptr));
+  index.SearchLevel0(1, query.data(), k, &entry, &entry_distance,
+                     distances.data(), labels.data());
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, k>{-1, -1}));
+  EXPECT_EQ(distances,
+            (std::array<float, k>{(std::numeric_limits<float>::max)(),
+                                  (std::numeric_limits<float>::max)()}));
+
+  EXPECT_THROW(
+      index.SearchLevel0(-1, nullptr, k, nullptr, nullptr, nullptr, nullptr),
+      hypervec::HypervecException);
+  EXPECT_THROW(index.SearchLevel0(1, nullptr, k, &entry, &entry_distance,
+                                  distances.data(), labels.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.SearchLevel0(1, query.data(), 0, &entry, &entry_distance,
+                                  distances.data(), labels.data()),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.SearchLevel0(1, query.data(), k, &entry, &entry_distance,
+                                  distances.data(), labels.data(), 0),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.SearchLevel0(1, query.data(), k, &entry, &entry_distance,
+                                  distances.data(), labels.data(), 1, 3),
+               hypervec::HypervecException);
+
+  index.Add(1, query.data());
+  const hypervec::HNSW::storage_idx_t invalid_entry = 1;
+  EXPECT_THROW(
+      index.SearchLevel0(1, query.data(), k, &invalid_entry, &entry_distance,
+                         distances.data(), labels.data()),
+      hypervec::HypervecException);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = 0;
+  const hypervec::HNSW::storage_idx_t valid_entry = 0;
+  EXPECT_THROW(
+      index.SearchLevel0(1, query.data(), k, &valid_entry, &entry_distance,
+                         distances.data(), labels.data(), 1, 1, &params),
+      hypervec::HypervecException);
+}
+
+TEST(IndexHNSWCorrectness, UnboundedQueueUsesSharedFilteredTraversal) {
+  constexpr hypervec::idx_t count = 32;
+  constexpr hypervec::idx_t k = 5;
+  std::array<float, count> database{};
+  for (size_t index = 0; index < database.size(); ++index) {
+    database[index] = static_cast<float>(index);
+  }
+  hypervec::IndexHNSWFlat index(1, 4);
+  index.Add(count, database.data());
+
+  hypervec::IDSelectorRange selector(10, 20);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.bounded_queue = false;
+  params.sel = &selector;
+  const float query = 12.25F;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+
+  index.Search(1, &query, k, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, k>{12, 13, 11, 14, 10}));
+  for (hypervec::idx_t label : labels) {
+    EXPECT_TRUE(selector.IsMember(label));
+  }
+}
+
+TEST(IndexHNSWCorrectness, BoundedQueueUsesSharedFilteredTraversal) {
+  constexpr hypervec::idx_t count = 32;
+  constexpr hypervec::idx_t k = 5;
+  std::array<float, count> database{};
+  for (size_t index = 0; index < database.size(); ++index) {
+    database[index] = static_cast<float>(index);
+  }
+  hypervec::IndexHNSWFlat index(1, 4);
+  index.Add(count, database.data());
+
+  hypervec::IDSelectorRange selector(10, 20);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = count;
+  params.bounded_queue = true;
+  params.sel = &selector;
+  const float query = 12.25F;
+  std::array<float, k> distances{};
+  std::array<hypervec::idx_t, k> labels{};
+
+  index.Search(1, &query, k, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, k>{12, 13, 11, 14, 10}));
+  for (hypervec::idx_t label : labels) {
+    EXPECT_TRUE(selector.IsMember(label));
   }
 }
 

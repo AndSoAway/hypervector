@@ -83,13 +83,12 @@ struct IndexHNSWPQ : IndexHNSW {
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
 
-  /// Not supported on IndexHNSWPQ. Throws with a clear message — IndexPQ
-  /// does not implement these and silent forwarding would surprise.
+  /// Run custom-handler and range queries through the HNSW graph using PQ ADC.
   void Search1(const float* x, ResultHandler& handler,
                SearchParameters* params = nullptr) const override;
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 };
 
 }  // namespace hypervec

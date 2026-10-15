@@ -10,12 +10,16 @@
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_validation.h>
 #include <index/vamana/index_vamana.h>
+#include <persistence/index_io.h>
+#include <persistence/io.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -189,6 +193,53 @@ TEST(IndexVamana, EnforcesStaticLifecycleAndSupportsResetRebuild) {
   EXPECT_EQ(index.BuildStats().nodes_processed, 0U);
   index.Build(2, database.data(), 1, database.data());
   EXPECT_EQ(index.n_total, 2);
+}
+
+TEST(IndexVamana, PersistenceRoundtripPreservesGraphAndSearch) {
+  const std::vector<float> database = {0.0F, 2.0F, 5.0F, 9.0F, 14.0F, 20.0F};
+  const std::vector<float> queries = {4.0F, 16.0F};
+  hypervec::IndexVamanaFlat source(1, hypervec::kMetricL2, ExhaustiveOptions());
+  source.Build(static_cast<hypervec::idx_t>(database.size()), database.data());
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  ASSERT_GE(writer.data.size(), sizeof(uint32_t));
+  uint32_t tag = 0;
+  std::memcpy(&tag, writer.data.data(), sizeof(tag));
+  EXPECT_EQ(tag, hypervec::fourcc("IVAf"));
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored =
+      dynamic_cast<hypervec::IndexVamanaFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->Options().max_degree, source.Options().max_degree);
+  EXPECT_EQ(restored->Options().search_width, source.Options().search_width);
+  EXPECT_EQ(restored->EntryPoint(), source.EntryPoint());
+  EXPECT_EQ(restored->Graph().Data(), source.Graph().Data());
+  EXPECT_EQ(restored->Graph().Degrees(), source.Graph().Degrees());
+  EXPECT_EQ(restored->BuildStats().nodes_processed, 0U);
+  ExpectSameSearch(source, *restored, queries, 3);
+}
+
+TEST(IndexVamana, PersistenceRoundtripKeepsEmptyIndexBuildable) {
+  hypervec::IndexVamanaFlat source(1, hypervec::kMetricL2, ExhaustiveOptions());
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(&source, &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> restored_base =
+      hypervec::ReadIndexUp(&reader);
+  auto* restored =
+      dynamic_cast<hypervec::IndexVamanaFlat*>(restored_base.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->n_total, 0);
+  EXPECT_EQ(restored->EntryPoint(), hypervec::kInvalidGraphId);
+
+  const std::array<float, 2> database = {1.0F, 2.0F};
+  restored->Build(2, database.data());
+  EXPECT_EQ(restored->n_total, 2);
 }
 
 TEST(IndexVamana, RestoreStateValidatesBeforeReplacingLiveIndex) {

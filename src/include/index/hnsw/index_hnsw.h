@@ -86,21 +86,24 @@ struct IndexHNSW : Index {
   /** Perform Search only on level 0, given the starting points for
    * each vertex.
    *
-   * @param search_type 1:perform one Search per nprobe, 2: enqueue
-   *                    all entry points
+   * @param nearest entry-point IDs, stored as n rows of nprobe IDs
+   * @param nearest_d entry-point distances or similarities in public metric
+   *                  direction, stored as n rows of nprobe values
+   * @param search_type 1: perform one Search per entry point; 2: enqueue all
+   *                    entry points for each query
    */
   void SearchLevel0(idx_t n, const float* x, idx_t k,
-                      const storage_idx_t* nearest, const float* nearest_d,
-                      float* distances, idx_t* labels, int nprobe = 1,
-                      int search_type = 1,
-                      const SearchParameters* params = nullptr) const;
+                    const storage_idx_t* nearest, const float* nearest_d,
+                    float* distances, idx_t* labels, int nprobe = 1,
+                    int search_type = 1,
+                    const SearchParameters* params = nullptr) const;
 
   /// alternative graph building
   void InitLevel0FromKnngraph(int k, const float* D, const idx_t* I);
 
   /// alternative graph building
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
-                                      const storage_idx_t* nearests);
+                                 const storage_idx_t* nearests);
 
   // reorder links from nearest to farthest
   void ReorderLinks();

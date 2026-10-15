@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -170,39 +171,117 @@ void CommitStoragePermutation(PreparedStoragePermutation* prepared) {
   }
 }
 
-void ValidateSearchState(const IndexHNSW& index) {
-  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
-                            "IndexHNSW::Search: storage must not be null");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index.n_total >= 0,
-      "IndexHNSW::Search: vector count must not be negative");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      index.storage->n_total == index.n_total,
-      "IndexHNSW::Search: storage and index counts differ");
+void ValidateHNSWState(const IndexHNSW& index, const char* operation) {
+  HYPERVEC_THROW_IF_NOT_FMT(index.storage != nullptr,
+                            "%s: storage must not be null", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(index.n_total >= 0,
+                            "%s: vector count must not be negative", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(index.storage->n_total == index.n_total,
+                            "%s: storage and index counts differ", operation);
 
   const size_t count = static_cast<size_t>(index.n_total);
-  HYPERVEC_THROW_IF_NOT_MSG(
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.levels.size() == count &&
           index.hnsw.offsets.size() == count + 1 &&
           index.hnsw.offsets.front() == 0 &&
           index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
-      "IndexHNSW::Search: graph storage is inconsistent");
+      "%s: graph storage is inconsistent", operation);
   if (count == 0) {
-    HYPERVEC_THROW_IF_NOT_MSG(
+    HYPERVEC_THROW_IF_NOT_FMT(
         index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
-        "IndexHNSW::Search: empty graph has an entry point or level");
+        "%s: empty graph has an entry point or level", operation);
     return;
   }
 
-  HYPERVEC_THROW_IF_NOT_MSG(
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.entry_point >= 0 &&
           static_cast<size_t>(index.hnsw.entry_point) < count,
-      "IndexHNSW::Search: entry point is outside the index");
-  HYPERVEC_THROW_IF_NOT_MSG(
+      "%s: entry point is outside the index", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(
       index.hnsw.max_level >= 0 &&
           index.hnsw.levels[static_cast<size_t>(index.hnsw.entry_point)] >
               index.hnsw.max_level,
-      "IndexHNSW::Search: entry-point level is inconsistent");
+      "%s: entry-point level is inconsistent", operation);
+}
+
+std::vector<NodeDistFarther> CollectLevel0Neighbors(const HNSW& graph,
+                                                    idx_t node_count,
+                                                    idx_t node,
+                                                    DistanceComputer& distance,
+                                                    const char* operation) {
+  size_t begin = 0;
+  size_t end = 0;
+  graph.NeighborRange(node, 0, &begin, &end);
+  std::vector<NodeDistFarther> neighbors;
+  neighbors.reserve(end - begin);
+  std::unordered_set<storage_idx_t> seen;
+  bool reached_end = false;
+  for (size_t offset = begin; offset < end; ++offset) {
+    const storage_idx_t neighbor = graph.neighbors[offset];
+    if (neighbor < 0) {
+      HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
+                                "%s: node %" PRId64
+                                " has an invalid neighbor sentinel",
+                                operation, static_cast<int64_t>(node));
+      reached_end = true;
+      continue;
+    }
+    HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
+                              "%s: node %" PRId64
+                              " has a neighbor after the end sentinel",
+                              operation, static_cast<int64_t>(node));
+    HYPERVEC_THROW_IF_NOT_FMT(static_cast<idx_t>(neighbor) < node_count,
+                              "%s: node %" PRId64
+                              " has an out-of-range neighbor %d",
+                              operation, static_cast<int64_t>(node), neighbor);
+    HYPERVEC_THROW_IF_NOT_FMT(static_cast<idx_t>(neighbor) != node,
+                              "%s: node %" PRId64 " contains a self link",
+                              operation, static_cast<int64_t>(node));
+    HYPERVEC_THROW_IF_NOT_FMT(seen.insert(neighbor).second,
+                              "%s: node %" PRId64
+                              " contains duplicate neighbor %d",
+                              operation, static_cast<int64_t>(node), neighbor);
+    const float value = distance.symmetric_dis(node, neighbor);
+    HYPERVEC_THROW_IF_NOT_FMT(!std::isnan(value),
+                              "%s: node %" PRId64
+                              " has a NaN distance to neighbor %d",
+                              operation, static_cast<int64_t>(node), neighbor);
+    neighbors.emplace_back(value, neighbor);
+  }
+  return neighbors;
+}
+
+void LinkLevel0Points(HNSW& graph, const Index& storage,
+                      DistanceComputer& distance, idx_t node_count,
+                      int dimension, int point_count,
+                      const storage_idx_t* points,
+                      const storage_idx_t* nearests, bool keep_max_size,
+                      const char* operation) {
+  OmpLockArray lock_array(static_cast<size_t>(node_count));
+  std::vector<omp_lock_t>& locks = lock_array.Get();
+  VisitedTable visited(static_cast<size_t>(node_count),
+                       graph.use_visited_hashset);
+  std::vector<float> query(static_cast<size_t>(dimension));
+  for (int input = 0; input < point_count; ++input) {
+    const storage_idx_t point = points[input];
+    const storage_idx_t nearest = nearests[input];
+    storage.Reconstruct(point, query.data());
+    distance.SetQuery(query.data());
+    const float nearest_distance = distance(nearest);
+    HYPERVEC_THROW_IF_NOT_FMT(
+        !std::isnan(nearest_distance),
+        "%s: point %d has a NaN distance to entry point %d", operation, point,
+        nearest);
+    omp_set_lock(&locks[static_cast<size_t>(point)]);
+    try {
+      graph.AddLinksStartingFrom(distance, point, nearest, nearest_distance, 0,
+                                 locks.data(), visited, keep_max_size);
+    } catch (...) {
+      omp_unset_lock(&locks[static_cast<size_t>(point)]);
+      throw;
+    }
+    omp_unset_lock(&locks[static_cast<size_t>(point)]);
+  }
 }
 
 void ValidateRuntimeEfSearch(const IndexHNSW& index,
@@ -424,6 +503,13 @@ class GraphAppendGuard {
   bool committed_ = false;
 };
 
+const Index& RequireHnswStorage(const Index* storage) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW: storage must not be null during construction");
+  return *storage;
+}
+
 }  // namespace
 
 /**************************************************************
@@ -434,7 +520,10 @@ IndexHNSW::IndexHNSW(int d, int M, MetricType metric)
   : Index(d, metric), hnsw(M), storage(nullptr) {}
 
 IndexHNSW::IndexHNSW(Index* storage, int M)
-  : Index(storage->d, storage->metric_type), hnsw(M), storage(storage) {
+    : Index(RequireHnswStorage(storage).d,
+            RequireHnswStorage(storage).metric_type),
+      hnsw(M),
+      storage(storage) {
   metric_arg = storage->metric_arg;
   is_trained = storage->is_trained;
 }
@@ -506,7 +595,7 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
   std::unique_ptr<DistanceComputer> dis(
       storage_distance_computer(construction_storage));
   OmpLockArray lock_array(static_cast<size_t>(new_total) + 1);
-  VisitedTable vt(new_total);
+  VisitedTable vt(new_total, hnsw.use_visited_hashset);
   const std::function<void(storage_idx_t)> before_node_mutation =
       [&graph_guard](storage_idx_t node) { graph_guard.CaptureNode(node); };
   for (idx_t i = n0; i < new_total; i++) {
@@ -525,9 +614,297 @@ void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
 }
 
 void IndexHNSW::Reset() {
-  hnsw.Reset();
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Reset: storage must not be null");
   storage->Reset();
+  hnsw.Reset();
   n_total = 0;
+}
+
+void IndexHNSW::ShrinkLevel0Neighbors(int size) {
+  constexpr const char* operation = "IndexHNSW::ShrinkLevel0Neighbors";
+  ValidateHNSWState(*this, operation);
+  const int capacity = hnsw.NbNeighbors(0);
+  HYPERVEC_THROW_IF_NOT_FMT(size > 0 && size <= capacity,
+                            "%s: size must be in [1, %d], got %d", operation,
+                            capacity, size);
+  if (n_total == 0) {
+    return;
+  }
+
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    const std::vector<NodeDistFarther> level_neighbors =
+        CollectLevel0Neighbors(hnsw, n_total, node, *dis, operation);
+    std::priority_queue<NodeDistFarther> candidates;
+    for (const NodeDistFarther& neighbor : level_neighbors) {
+      candidates.push(neighbor);
+    }
+
+    std::vector<NodeDistFarther> selected;
+    HNSW::ShrinkNeighborList(*dis, candidates, selected, size);
+    for (size_t offset = begin; offset < end; ++offset) {
+      const size_t selected_offset = offset - begin;
+      updated[offset] = selected_offset < selected.size()
+                            ? selected[selected_offset].id
+                            : storage_idx_t{-1};
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
+void IndexHNSW::InitLevel0FromKnngraph(int k, const float* distances,
+                                       const idx_t* labels) {
+  constexpr const char* operation = "IndexHNSW::InitLevel0FromKnngraph";
+  ValidateHNSWState(*this, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(k > 0, "%s: k must be positive, got %d", operation,
+                            k);
+  if (n_total == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_FMT(distances != nullptr,
+                            "%s: distances must not be null", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(labels != nullptr, "%s: labels must not be null",
+                            operation);
+  (void)mul_no_overflow(static_cast<size_t>(n_total), static_cast<size_t>(k),
+                        "IndexHNSW::InitLevel0FromKnngraph input size");
+
+  const int capacity = hnsw.NbNeighbors(0);
+  const bool similarity = IsSimilarityMetric(metric_type);
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    const size_t row_offset =
+        static_cast<size_t>(node) * static_cast<size_t>(k);
+    std::priority_queue<NodeDistFarther> candidates;
+    std::unordered_set<idx_t> seen;
+    bool reached_end = false;
+    for (int column = 0; column < k; ++column) {
+      const size_t input_offset = row_offset + static_cast<size_t>(column);
+      const idx_t neighbor = labels[input_offset];
+      if (neighbor < 0) {
+        HYPERVEC_THROW_IF_NOT_FMT(neighbor == -1,
+                                  "%s: node %" PRId64
+                                  " has an invalid neighbor sentinel",
+                                  operation, static_cast<int64_t>(node));
+        reached_end = true;
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT_FMT(!reached_end,
+                                "%s: node %" PRId64
+                                " has a neighbor after the end sentinel",
+                                operation, static_cast<int64_t>(node));
+      HYPERVEC_THROW_IF_NOT_FMT(neighbor < n_total,
+                                "%s: node %" PRId64
+                                " has an out-of-range neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      if (neighbor == node) {
+        continue;
+      }
+      HYPERVEC_THROW_IF_NOT_FMT(seen.insert(neighbor).second,
+                                "%s: node %" PRId64
+                                " contains duplicate neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      const float public_value = distances[input_offset];
+      HYPERVEC_THROW_IF_NOT_FMT(!std::isnan(public_value),
+                                "%s: node %" PRId64
+                                " has a NaN value for neighbor %" PRId64,
+                                operation, static_cast<int64_t>(node),
+                                static_cast<int64_t>(neighbor));
+      candidates.emplace(similarity ? -public_value : public_value,
+                         static_cast<storage_idx_t>(neighbor));
+    }
+
+    std::vector<NodeDistFarther> selected;
+    HNSW::ShrinkNeighborList(*dis, candidates, selected, capacity);
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    for (size_t offset = begin; offset < end; ++offset) {
+      const size_t selected_offset = offset - begin;
+      updated[offset] = selected_offset < selected.size()
+                            ? selected[selected_offset].id
+                            : storage_idx_t{-1};
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
+void IndexHNSW::InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
+                                          const storage_idx_t* nearests) {
+  constexpr const char* operation = "IndexHNSW::InitLevel0FromEntryPoints";
+  ValidateHNSWState(*this, operation);
+  HYPERVEC_THROW_IF_NOT_FMT(npt >= 0, "%s: npt must be non-negative, got %d",
+                            operation, npt);
+  if (npt == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_FMT(points != nullptr, "%s: points must not be null",
+                            operation);
+  HYPERVEC_THROW_IF_NOT_FMT(nearests != nullptr,
+                            "%s: nearests must not be null", operation);
+  HYPERVEC_THROW_IF_NOT_FMT(hnsw.ef_construction > 0,
+                            "%s: ef_construction must be positive", operation);
+  for (int input = 0; input < npt; ++input) {
+    const storage_idx_t point = points[input];
+    const storage_idx_t nearest = nearests[input];
+    HYPERVEC_THROW_IF_NOT_FMT(point >= 0 && static_cast<idx_t>(point) < n_total,
+                              "%s: point %d is outside the index", operation,
+                              point);
+    HYPERVEC_THROW_IF_NOT_FMT(
+        nearest >= 0 && static_cast<idx_t>(nearest) < n_total,
+        "%s: entry point %d is outside the index", operation, nearest);
+    HYPERVEC_THROW_IF_NOT_FMT(
+        point != nearest, "%s: point and entry point must differ", operation);
+  }
+
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    (void)CollectLevel0Neighbors(hnsw, n_total, node, *dis, operation);
+  }
+
+  HNSW prepared = hnsw;
+  std::vector<storage_idx_t> copied_neighbors(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  prepared.neighbors =
+      MaybeOwnedVector<storage_idx_t>(std::move(copied_neighbors));
+  LinkLevel0Points(prepared, *storage, *dis, n_total, d, npt, points, nearests,
+                   keep_max_size_level0, operation);
+
+  for (idx_t node = 0; node < n_total; ++node) {
+    (void)CollectLevel0Neighbors(prepared, n_total, node, *dis, operation);
+  }
+  hnsw.neighbors = std::move(prepared.neighbors);
+}
+
+void IndexHNSW::ReorderLinks() {
+  constexpr const char* operation = "IndexHNSW::ReorderLinks";
+  ValidateHNSWState(*this, operation);
+  if (n_total == 0) {
+    return;
+  }
+
+  std::vector<storage_idx_t> updated(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  for (idx_t node = 0; node < n_total; ++node) {
+    size_t begin = 0;
+    size_t end = 0;
+    hnsw.NeighborRange(node, 0, &begin, &end);
+    std::vector<NodeDistFarther> level_neighbors =
+        CollectLevel0Neighbors(hnsw, n_total, node, *dis, operation);
+    std::sort(level_neighbors.begin(), level_neighbors.end(),
+              [](const NodeDistFarther& left, const NodeDistFarther& right) {
+                return left.d < right.d ||
+                       (left.d == right.d && left.id < right.id);
+              });
+    for (size_t offset = 0; offset < level_neighbors.size(); ++offset) {
+      updated[begin + offset] = level_neighbors[offset].id;
+    }
+  }
+
+  hnsw.neighbors = MaybeOwnedVector<storage_idx_t>(std::move(updated));
+}
+
+void IndexHNSW::LinkSingletons() {
+  constexpr const char* operation = "IndexHNSW::LinkSingletons";
+  ValidateHNSWState(*this, operation);
+  if (n_total <= 1) {
+    return;
+  }
+
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+  std::vector<bool> has_incoming(static_cast<size_t>(n_total), false);
+  for (idx_t node = 0; node < n_total; ++node) {
+    const auto neighbors =
+        CollectLevel0Neighbors(hnsw, n_total, node, *dis, operation);
+    for (const NodeDistFarther& neighbor : neighbors) {
+      has_incoming[static_cast<size_t>(neighbor.id)] = true;
+    }
+  }
+
+  std::vector<storage_idx_t> singletons;
+  for (idx_t node = 0; node < n_total; ++node) {
+    if (!has_incoming[static_cast<size_t>(node)]) {
+      singletons.push_back(static_cast<storage_idx_t>(node));
+    }
+  }
+  if (singletons.empty()) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_FMT(hnsw.ef_construction > 0,
+                            "%s: ef_construction must be positive", operation);
+
+  storage_idx_t anchor = -1;
+  if (has_incoming[static_cast<size_t>(hnsw.entry_point)]) {
+    anchor = hnsw.entry_point;
+  } else {
+    for (idx_t node = 0; node < n_total; ++node) {
+      if (has_incoming[static_cast<size_t>(node)]) {
+        anchor = static_cast<storage_idx_t>(node);
+        break;
+      }
+    }
+  }
+  if (anchor < 0) {
+    anchor = hnsw.entry_point;
+  }
+
+  HNSW prepared = hnsw;
+  std::vector<storage_idx_t> copied_neighbors(
+      hnsw.neighbors.data(), hnsw.neighbors.data() + hnsw.neighbors.size());
+  prepared.neighbors =
+      MaybeOwnedVector<storage_idx_t>(std::move(copied_neighbors));
+  for (storage_idx_t singleton : singletons) {
+    size_t begin = 0;
+    size_t end = 0;
+    prepared.NeighborRange(singleton, 0, &begin, &end);
+    std::fill(prepared.neighbors.data() + begin,
+              prepared.neighbors.data() + end, storage_idx_t{-1});
+  }
+
+  std::vector<storage_idx_t> points;
+  std::vector<storage_idx_t> nearests;
+  points.reserve(singletons.size());
+  nearests.reserve(singletons.size());
+  for (storage_idx_t singleton : singletons) {
+    if (singleton != anchor) {
+      points.push_back(singleton);
+      nearests.push_back(anchor);
+    }
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !points.empty(),
+      "IndexHNSW::LinkSingletons: no distinct anchor is available");
+  LinkLevel0Points(prepared, *storage, *dis, n_total, d,
+                   static_cast<int>(points.size()), points.data(),
+                   nearests.data(), keep_max_size_level0, operation);
+
+  std::fill(has_incoming.begin(), has_incoming.end(), false);
+  for (idx_t node = 0; node < n_total; ++node) {
+    const auto neighbors =
+        CollectLevel0Neighbors(prepared, n_total, node, *dis, operation);
+    for (const NodeDistFarther& neighbor : neighbors) {
+      has_incoming[static_cast<size_t>(neighbor.id)] = true;
+    }
+  }
+  for (idx_t node = 0; node < n_total; ++node) {
+    HYPERVEC_THROW_IF_NOT_FMT(has_incoming[static_cast<size_t>(node)],
+                              "%s: repair left node %" PRId64
+                              " without an incoming link",
+                              operation, static_cast<int64_t>(node));
+  }
+  hnsw.neighbors = std::move(prepared.neighbors);
 }
 
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
@@ -550,7 +927,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   HYPERVEC_THROW_IF_NOT_MSG(
       n == 0 || labels != nullptr,
       "IndexHNSW::Search: labels must not be null when n is positive");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::Search");
   if (n == 0) {
     return;
   }
@@ -575,7 +952,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
   typename RH::SingleResultHandler res(bres);
 
   // Create visited table
-  VisitedTable vt(n_total);
+  VisitedTable vt(n_total, use_visited_hashset);
   const bool similarity = IsSimilarityMetric(metric_type);
 
   // Search each query
@@ -629,7 +1006,7 @@ void IndexHNSW::SearchLevel0(idx_t n, const float* x, idx_t k,
   HYPERVEC_THROW_IF_NOT_MSG(
       n == 0 || labels != nullptr,
       "IndexHNSW::SearchLevel0: labels must not be null when n is positive");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::SearchLevel0");
   if (n == 0) {
     return;
   }
@@ -717,7 +1094,7 @@ void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
         result->lims != nullptr,
         "IndexHNSW::RangeSearch: result limits must not be null");
   }
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::RangeSearch");
   if (n == 0) {
     return;
   }
@@ -729,7 +1106,7 @@ void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
     using RH = RangeSearchBlockResultHandler<HNSW::C>;
     RH block(result, similarity ? -radius : radius);
     typename RH::SingleResultHandler handler(block);
-    VisitedTable visited(n_total);
+    VisitedTable visited(n_total, use_visited_hashset);
     for (idx_t query = 0; query < n; ++query) {
       dis->SetQuery(x + query * d);
       handler.begin(query);
@@ -750,12 +1127,12 @@ void IndexHNSW::Search1(const float* x, ResultHandler& handler,
                         SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
                             "IndexHNSW::Search1: x must not be null");
-  ValidateSearchState(*this);
+  ValidateHNSWState(*this, "IndexHNSW::Search1");
   ValidateRuntimeEfSearch(*this, params, "IndexHNSW::Search1");
 
   std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
   dis->SetQuery(x);
-  VisitedTable visited(n_total);
+  VisitedTable visited(n_total, use_visited_hashset);
   if (IsSimilarityMetric(metric_type)) {
     NegatingResultHandler external_results(handler);
     hnsw.Search(*dis, this, external_results, visited, params);
@@ -796,6 +1173,8 @@ void IndexHNSW::PermuteEntriesImpl(const idx_t* perm,
 }
 
 void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSW::Reconstruct: storage must not be null");
   storage->Reconstruct(key, recons);
 }
 
@@ -825,7 +1204,8 @@ static Index* make_hnsw_flat_storage(int d, MetricType metric) {
 }
 
 IndexHNSWFlat::IndexHNSWFlat(int d, int M, MetricType metric)
-  : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
+    : IndexHNSW(d, M, metric) {
+  storage = make_hnsw_flat_storage(d, metric);
   own_fields = true;
   is_trained = true;
 }

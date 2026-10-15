@@ -985,6 +985,18 @@ static std::unique_ptr<IndexLSH> read_lsh(const IndexHeaderData& header,
 
 namespace persistence_internal {
 
+std::unique_ptr<Index> ReadFlatPayload(IOReader* reader, int io_flags) {
+  (void)io_flags;
+  auto index = std::make_unique<IndexFlat>();
+  read_index_header(*index, reader);
+  index->code_size = mul_no_overflow(
+      sizeof(float), static_cast<size_t>(index->d), "IndexFlat code size");
+  const size_t code_count = mul_no_overflow(
+      static_cast<size_t>(index->n_total), index->code_size, "IndexFlat codes");
+  ReadVectorExact(index->codes, code_count, reader, "IndexFlat codes");
+  return index;
+}
+
 std::unique_ptr<Index> ReadFlatL2Payload(IOReader* reader, int io_flags) {
   (void)io_flags;
   auto index = std::make_unique<IndexFlatL2>();

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <functional>
@@ -40,17 +41,32 @@ namespace hypervec {
  **************************************************************/
 
 int HNSW::NbNeighbors(int layer_no) const {
-  HYPERVEC_THROW_IF_NOT(layer_no + 1 < cum_nneighbor_per_level.size());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      layer_no >= 0 &&
+          static_cast<size_t>(layer_no) + 1 < cum_nneighbor_per_level.size(),
+      "HNSW::NbNeighbors: layer is outside the probability table");
   return cum_nneighbor_per_level[layer_no + 1] -
          cum_nneighbor_per_level[layer_no];
 }
 
 void HNSW::SetNbNeighbors(int level_no, int n) {
-  HYPERVEC_THROW_IF_NOT(levels.size() == 0);
-  int cur_n = NbNeighbors(level_no);
-  for (int i = level_no + 1; i < cum_nneighbor_per_level.size(); i++) {
-    cum_nneighbor_per_level[i] += n - cur_n;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      levels.empty(),
+      "HNSW::SetNbNeighbors: capacities cannot change after adding points");
+  HYPERVEC_THROW_IF_NOT_MSG(n > 0,
+                            "HNSW::SetNbNeighbors: capacity must be positive");
+  const int current = NbNeighbors(level_no);
+  const int64_t delta = static_cast<int64_t>(n) - current;
+  std::vector<int> updated = cum_nneighbor_per_level;
+  for (size_t level = static_cast<size_t>(level_no) + 1; level < updated.size();
+       ++level) {
+    const int64_t value = static_cast<int64_t>(updated[level]) + delta;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        value >= 0 && value <= std::numeric_limits<int>::max(),
+        "HNSW::SetNbNeighbors: cumulative capacity overflows int");
+    updated[level] = static_cast<int>(value);
   }
+  cum_nneighbor_per_level.swap(updated);
 }
 
 int HNSW::CumNbNeighbors(int layer_no) const {
@@ -69,7 +85,9 @@ void HNSW::NeighborRange(idx_t no, int layer_no, size_t* begin,
 }
 
 HNSW::HNSW(int M) : rng(12345) {
-  SetDefaultProbas(M, 1.0 / log(M));
+  HYPERVEC_THROW_IF_NOT_MSG(M > 1 && M <= std::numeric_limits<int>::max() / 2,
+                            "HNSW: M must be in [2, INT_MAX / 2]");
+  SetDefaultProbas(M, static_cast<float>(1.0 / std::log(M)));
   offsets.push_back(0);
 }
 
@@ -87,17 +105,37 @@ int HNSW::RandomLevel() {
 }
 
 void HNSW::SetDefaultProbas(int M, float levelMult) {
-  int nn = 0;
-  cum_nneighbor_per_level.push_back(0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      M > 1 && M <= std::numeric_limits<int>::max() / 2,
+      "HNSW::SetDefaultProbas: M must be in [2, INT_MAX / 2]");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      std::isfinite(levelMult) && levelMult > 0.0F,
+      "HNSW::SetDefaultProbas: level multiplier must be finite and positive");
+
+  std::vector<double> probabilities;
+  std::vector<int> cumulative{0};
+  int64_t neighbor_count = 0;
+  const double multiplier = static_cast<double>(levelMult);
+  const double level_zero_probability = -std::expm1(-1.0 / multiplier);
   for (int level = 0;; level++) {
-    float proba = exp(-level / levelMult) * (1 - exp(-1 / levelMult));
-    if (proba < 1e-9) {
+    const double probability =
+        std::exp(-static_cast<double>(level) / multiplier) *
+        level_zero_probability;
+    if (probability < 1e-9) {
       break;
     }
-    assign_probas.push_back(proba);
-    nn += level == 0 ? M * 2 : M;
-    cum_nneighbor_per_level.push_back(nn);
+    probabilities.push_back(probability);
+    neighbor_count += level == 0 ? static_cast<int64_t>(M) * 2 : M;
+    HYPERVEC_THROW_IF_NOT_MSG(
+        neighbor_count <= std::numeric_limits<int>::max(),
+        "HNSW::SetDefaultProbas: cumulative capacity overflows int");
+    cumulative.push_back(static_cast<int>(neighbor_count));
   }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !probabilities.empty(),
+      "HNSW::SetDefaultProbas: multiplier produces no usable levels");
+  assign_probas.swap(probabilities);
+  cum_nneighbor_per_level.swap(cumulative);
 }
 
 void HNSW::ClearNeighborTables(int level) {

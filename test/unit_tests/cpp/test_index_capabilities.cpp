@@ -53,7 +53,7 @@ TEST(IndexCapabilities, IvfFlatRejectsUnsupportedMetrics) {
 
 TEST(IndexCapabilities, FlatQuantizersReportTrainingAndReconstruction) {
   hypervec::IndexPQ pq(4, 2, 2);
-  hypervec::IndexLVQ lvq(4, 2, 2);
+  hypervec::IndexLVQ lvq(4, 2);
 
   for (const hypervec::Index* index : {static_cast<hypervec::Index*>(&pq),
                                        static_cast<hypervec::Index*>(&lvq)}) {
@@ -70,7 +70,7 @@ TEST(IndexCapabilities, FlatQuantizersReportTrainingAndReconstruction) {
 TEST(IndexCapabilities, IvfVariantsDistinguishRangeSearchSupport) {
   hypervec::IndexIVFFlat flat(4, 2);
   hypervec::IndexIVFPQ pq(4, 2, 2, 2);
-  hypervec::IndexIVFLVQ lvq(4, 2, 2, 2);
+  hypervec::IndexIVFLVQ lvq(4, 2, 2);
 
   const auto flat_capabilities = flat.GetCapabilities();
   EXPECT_TRUE(flat_capabilities.requires_training);
@@ -94,7 +94,7 @@ TEST(IndexCapabilities, IvfVariantsDistinguishRangeSearchSupport) {
 TEST(IndexCapabilities, HnswComposesStorageRequirements) {
   hypervec::IndexHNSWFlat flat(4, 8);
   hypervec::IndexHNSWPQ pq(4, 2, 2, 8);
-  hypervec::IndexHNSWLVQ lvq(4, 2, 2, 8);
+  hypervec::IndexHNSWLVQ lvq(4, 2, 8);
 
   const auto flat_capabilities = flat.GetCapabilities();
   EXPECT_FALSE(flat_capabilities.requires_training);

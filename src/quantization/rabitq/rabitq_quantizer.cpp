@@ -350,12 +350,22 @@ float RaBitQQuantizer::EstimateSquaredDistanceWithLut(
       std::isfinite(vector_norm_squared) && vector_norm_squared >= 0.0F &&
           std::isfinite(scale) && scale >= 0.0F,
       "RaBitQQuantizer::EstimateSquaredDistanceWithLut: invalid code factors");
-  double signed_sum = 0.0;
-  for (size_t byte = 0; byte < bit_bytes_; ++byte) {
+  const auto lookup = [&](size_t byte) {
     const uint8_t bits = code[byte];
-    signed_sum += lut[byte * 2][bits & 15U];
-    signed_sum += lut[byte * 2 + 1][bits >> 4];
+    return lut[byte * 2][bits & 15U] + lut[byte * 2 + 1][bits >> 4];
+  };
+  // Break the serial lookup/add chain while retaining double precision for
+  // signed sums and near-zero estimates. No ISA or code-layout dependency.
+  double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+  size_t byte = 0;
+  for (; byte + 4 <= bit_bytes_; byte += 4) {
+    s0 += lookup(byte);
+    s1 += lookup(byte + 1);
+    s2 += lookup(byte + 2);
+    s3 += lookup(byte + 3);
   }
+  double signed_sum = (s0 + s1) + (s2 + s3);
+  for (; byte < bit_bytes_; ++byte) signed_sum += lookup(byte);
   const double estimated = static_cast<double>(query_norm_squared) +
                            vector_norm_squared -
                            2.0 * static_cast<double>(scale) * signed_sum;

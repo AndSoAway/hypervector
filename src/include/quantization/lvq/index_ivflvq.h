@@ -18,8 +18,7 @@ struct IndexIVFLVQ : IndexIVF {
   bool by_residual = true;
 
   IndexIVFLVQ();
-  IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
-              MetricType metric = kMetricL2);
+  IndexIVFLVQ(idx_t d, idx_t nlist, int nbits, MetricType metric = kMetricL2);
 
   IndexCapabilities GetCapabilities() const override;
 

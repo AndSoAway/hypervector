@@ -28,14 +28,11 @@ int main() {
   const int nb = 100000;
   const int nq = 1000;
   const int nlist = 64;    // IVF clusters (avg ~1562 vectors/cell)
-  const int nlocal = 256;  // like pure LVQ → memorization (bucket_n=390 < ksub=4096)
-  const int nbits = 12;    // ksub = 4096
+  const int nbits = 8;     // bits per vector component
   const int k = 10;
 
-  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq
-            << " nlist=" << nlist << " nlocal=" << nlocal
-            << " nbits=" << nbits << " (ksub=" << (1 << nbits) << ")"
-            << std::endl;
+  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq << " nlist=" << nlist
+            << " nbits=" << nbits << std::endl;
 
   std::cout << "Generating random vectors..." << std::endl;
   std::vector<float> database(nb * d);
@@ -51,8 +48,7 @@ int main() {
   gt_index.Search(nq, query.data(), k, gt_distances.data(), gt_labels.data());
 
   std::cout << "\nBuilding IndexIVFLVQ..." << std::endl;
-  IndexIVFLVQ idx(d, nlist, nlocal, nbits);
-  idx.by_residual = false;  // LVQ trains on raw vectors, distance table computed once per query
+  IndexIVFLVQ idx(d, nlist, nbits);
 
   auto t0 = std::chrono::high_resolution_clock::now();
   idx.Train(nb, database.data());

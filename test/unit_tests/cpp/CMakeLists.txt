@@ -48,9 +48,11 @@ set(HYPERVEC_TEST_SRC
   test_omp_threads.cpp
   test_partitioning.cpp
   test_simd_levels.cpp
+  test_runtime_simd.cpp
   test_simdlib.cpp
   test_kmeans.cpp
   test_pq.cpp
+  test_pq_lookup.cpp
   test_quantizer_protocol.cpp
   test_rabitq_quantizer.cpp
   test_index_ivf_rabitq.cpp
@@ -117,3 +119,12 @@ endif()
 include(GoogleTest)
 gtest_discover_tests(hypervec_test
   PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=1")
+
+if(HYPERVEC_OPT_LEVEL STREQUAL "dd")
+  foreach(level NONE AVX2 INVALID AVX512 AVX512_SPR)
+    add_test(NAME RuntimeSimdEnv.${level}
+      COMMAND hypervec_test --gtest_filter=RuntimeSimd.Environment)
+    set_tests_properties(RuntimeSimdEnv.${level} PROPERTIES
+      ENVIRONMENT "OMP_NUM_THREADS=1;HYPERVEC_SIMD_LEVEL=${level}")
+  endforeach()
+endif()

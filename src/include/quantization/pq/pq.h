@@ -185,6 +185,11 @@ struct ProductQuantizer {
    *  every PQ-accelerated index variant. */
   float ApplyDistanceTable(const float* dis_table, const uint8_t* code) const;
 
+  using DistanceKernel = float (*)(const ProductQuantizer&, const float*,
+                                   const uint8_t*);
+  // Select the bit-width specialization once per distance computer or scan.
+  DistanceKernel GetDistanceKernel() const;
+
   /** Brute-force PQ search under L2: for each of nx queries, scan all
    *  ncodes encoded vectors and keep the top-k smallest distances.
    *

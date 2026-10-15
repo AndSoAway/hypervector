@@ -72,7 +72,8 @@ class PQInvertedListScanner final : public InvertedListScanner {
         dimension_(dimension),
         list_count_(list_count),
         by_residual_(by_residual),
-        use_precomputed_table_(use_precomputed_table) {
+        use_precomputed_table_(use_precomputed_table),
+        distance_kernel_(pq.GetDistanceKernel()) {
     HYPERVEC_THROW_IF_NOT_MSG(pq.is_trained,
                               "PQ scanner requires a trained quantizer");
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -165,7 +166,7 @@ class PQInvertedListScanner final : public InvertedListScanner {
         "PQ scanner SetQuery and SetList must be called before scanning");
     HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
                               "PQ scanner code must not be null");
-    return list_offset_ + pq_.ApplyDistanceTable(distance_table_.data(), code);
+    return list_offset_ + distance_kernel_(pq_, distance_table_.data(), code);
   }
 
  private:
@@ -176,6 +177,7 @@ class PQInvertedListScanner final : public InvertedListScanner {
   idx_t list_count_;
   bool by_residual_;
   bool use_precomputed_table_;
+  ProductQuantizer::DistanceKernel distance_kernel_;
   size_t table_size_ = 0;
   const float* query_ = nullptr;
   std::vector<float> residual_query_;

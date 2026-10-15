@@ -310,27 +310,69 @@ void ProductQuantizer::ComputeDistanceTables(idx_t nx, const float* x,
 // Brute-force PQ search (L2)
 // ===========================================================================
 
-float ProductQuantizer::ApplyDistanceTable(const float* dis_table,
-                                           const uint8_t* code) const {
+namespace {
+
+template <int Bits>
+float ApplySpecializedTable(const ProductQuantizer& pq, const float* table,
+                            const uint8_t* code) {
+  constexpr size_t kStride = size_t{1} << Bits;
+  const auto lookup = [&](size_t m) {
+    size_t value;
+    if constexpr (Bits == 4) {
+      value = (code[m / 2] >> ((m % 2) * 4)) & 15U;
+    } else if constexpr (Bits == 8) {
+      value = code[m];
+    } else {
+      value = static_cast<size_t>(code[m * 2]) |
+              (static_cast<size_t>(code[m * 2 + 1]) << 8);
+    }
+    return table[m * kStride + value];
+  };
+  // Independent accumulators shorten the reduction dependency chain without
+  // changing the code layout or requiring gathers on scattered table entries.
+  float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+  size_t m = 0;
+  const size_t count = static_cast<size_t>(pq.M);
+  for (; m + 4 <= count; m += 4) {
+    s0 += lookup(m);
+    s1 += lookup(m + 1);
+    s2 += lookup(m + 2);
+    s3 += lookup(m + 3);
+  }
+  float sum = (s0 + s1) + (s2 + s3);
+  for (; m < count; ++m) sum += lookup(m);
+  return sum;
+}
+
+float ApplyGenericTable(const ProductQuantizer& pq, const float* dis_table,
+                        const uint8_t* code) {
   float dis = 0.0f;
-  if (nbits == 8) {
-    for (idx_t m = 0; m < M; m++) {
-      dis += dis_table[m * ksub + code[m]];
-    }
-  } else if (nbits == 16) {
-    for (idx_t m = 0; m < M; m++) {
-      const uint64_t k = static_cast<uint64_t>(code[2 * m]) |
-                         (static_cast<uint64_t>(code[2 * m + 1]) << 8);
-      dis += dis_table[m * ksub + static_cast<idx_t>(k)];
-    }
-  } else {
-    PQDecoderGeneric dec(code, nbits);
-    for (idx_t m = 0; m < M; m++) {
-      const idx_t k = static_cast<idx_t>(dec.decode());
-      dis += dis_table[m * ksub + k];
-    }
+  PQDecoderGeneric dec(code, pq.nbits);
+  for (idx_t m = 0; m < pq.M; m++) {
+    const idx_t k = static_cast<idx_t>(dec.decode());
+    dis += dis_table[m * pq.ksub + k];
   }
   return dis;
+}
+
+}  // namespace
+
+auto ProductQuantizer::GetDistanceKernel() const -> DistanceKernel {
+  switch (nbits) {
+    case 4:
+      return ApplySpecializedTable<4>;
+    case 8:
+      return ApplySpecializedTable<8>;
+    case 16:
+      return ApplySpecializedTable<16>;
+    default:
+      return ApplyGenericTable;
+  }
+}
+
+float ProductQuantizer::ApplyDistanceTable(const float* dis_table,
+                                           const uint8_t* code) const {
+  return GetDistanceKernel()(*this, dis_table, code);
 }
 
 void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
@@ -366,6 +408,7 @@ void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
 
   const size_t table_sz = static_cast<size_t>(M) * ksub;
 
+  const auto distance_kernel = GetDistanceKernel();
 #pragma omp parallel
   {
     std::vector<float> dis_table(table_sz);
@@ -381,7 +424,7 @@ void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
       float threshold = heap_dis[0];
       for (idx_t j = 0; j < ncodes; j++) {
         const float dis =
-          ApplyDistanceTable(dis_table.data(), codes + j * code_size);
+            distance_kernel(*this, dis_table.data(), codes + j * code_size);
         if (CMax<float, idx_t>::cmp(threshold, dis)) {
           heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis, j);
           threshold = heap_dis[0];

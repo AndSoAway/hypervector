@@ -32,8 +32,8 @@ void ValidateCodeStorage(idx_t count, size_t code_size, size_t actual_size,
 
 IndexLVQ::IndexLVQ() : Index(0, kMetricL2) { is_trained = false; }
 
-IndexLVQ::IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric)
-    : Index(d, metric), lvq(d, nlocal, nbits) {
+IndexLVQ::IndexLVQ(idx_t d, int nbits, MetricType metric)
+    : Index(d, metric), lvq(d, nbits) {
   HYPERVEC_THROW_IF_NOT_FMT(metric == kMetricL2,
                             "IndexLVQ: supports kMetricL2 only, got metric=%d",
                             static_cast<int>(metric));

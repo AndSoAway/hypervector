@@ -16,8 +16,8 @@
 namespace hypervec {
 
 LocalVectorQuantizerAdapter::LocalVectorQuantizerAdapter(
-    LocalVectorQuantizer& lvq, LVQParameters parameters)
-    : lvq_(lvq), mutable_lvq_(&lvq), parameters_(std::move(parameters)) {}
+    LocalVectorQuantizer& lvq)
+    : lvq_(lvq), mutable_lvq_(&lvq) {}
 
 LocalVectorQuantizerAdapter::LocalVectorQuantizerAdapter(
     const LocalVectorQuantizer& lvq)
@@ -27,7 +27,7 @@ void LocalVectorQuantizerAdapter::TrainImpl(idx_t count, const float* vectors) {
   HYPERVEC_THROW_IF_NOT_MSG(
       mutable_lvq_ != nullptr,
       "LocalVectorQuantizerAdapter: cannot train a read-only quantizer");
-  mutable_lvq_->Train(count, vectors, parameters_);
+  mutable_lvq_->Train(count, vectors);
 }
 
 void LocalVectorQuantizerAdapter::EncodeImpl(idx_t count, const float* vectors,

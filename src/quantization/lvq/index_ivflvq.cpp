@@ -60,13 +60,14 @@ class LVQInvertedListScanner final : public InvertedListScanner {
         coarse_centroids_(coarse_centroids),
         dimension_(dimension),
         list_count_(list_count),
-        by_residual_(by_residual) {
+        by_residual_(by_residual),
+        distance_kernel_(lvq.GetDistanceKernel()) {
     HYPERVEC_THROW_IF_NOT_MSG(lvq.is_trained,
                               "LVQ scanner requires a trained quantizer");
     HYPERVEC_THROW_IF_NOT_MSG(
         dimension > 0 && lvq.d == dimension,
         "LVQ scanner dimension does not match the quantizer");
-    HYPERVEC_THROW_IF_NOT_MSG(list_count > 0 && lvq.nlocal > 0 && lvq.ksub > 0,
+    HYPERVEC_THROW_IF_NOT_MSG(list_count > 0,
                               "LVQ scanner model sizes must be positive");
     const size_t expected_centroid_count = mul_no_overflow(
         static_cast<size_t>(list_count), static_cast<size_t>(dimension),
@@ -75,9 +76,7 @@ class LVQInvertedListScanner final : public InvertedListScanner {
         coarse_centroids.size() == expected_centroid_count,
         "LVQ scanner coarse centroid table has an invalid size");
     residual_query_.resize(static_cast<size_t>(dimension));
-    distance_table_.resize(mul_no_overflow(static_cast<size_t>(lvq.nlocal),
-                                           static_cast<size_t>(lvq.ksub),
-                                           "LVQ scanner distance table size"));
+    distance_table_.resize(static_cast<size_t>(dimension));
   }
 
   void SetQuery(const float* query) override {
@@ -118,7 +117,7 @@ class LVQInvertedListScanner final : public InvertedListScanner {
         "LVQ scanner SetQuery and SetList must be called before scanning");
     HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
                               "LVQ scanner code must not be null");
-    return lvq_.ApplyDistanceTable(distance_table_.data(), code);
+    return distance_kernel_(lvq_, distance_table_.data(), code);
   }
 
  private:
@@ -127,6 +126,7 @@ class LVQInvertedListScanner final : public InvertedListScanner {
   idx_t dimension_;
   idx_t list_count_;
   bool by_residual_;
+  LocalVectorQuantizer::DistanceKernel distance_kernel_;
   const float* query_ = nullptr;
   std::vector<float> residual_query_;
   std::vector<float> distance_table_;
@@ -137,9 +137,8 @@ class LVQInvertedListScanner final : public InvertedListScanner {
 
 IndexIVFLVQ::IndexIVFLVQ() : IndexIVF(0, 0, 0, kMetricL2) {}
 
-IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
-                         MetricType metric)
-    : IndexIVF(d, nlist, 0, metric), lvq(d, nlocal, nbits) {
+IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, int nbits, MetricType metric)
+    : IndexIVF(d, nlist, 0, metric), lvq(d, nbits) {
   HYPERVEC_THROW_IF_NOT_FMT(
       metric == kMetricL2,
       "IndexIVFLVQ: supports kMetricL2 only, got metric=%d",
@@ -162,17 +161,15 @@ void IndexIVFLVQ::Train(idx_t n, const float* x) {
       "IndexIVFLVQ::Train: reset the index before replacing trained state");
 
   std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
-  LocalVectorQuantizer trained_lvq(lvq.d, lvq.nlocal, lvq.nbits);
+  LocalVectorQuantizer trained_lvq(lvq.d, lvq.nbits);
   LocalVectorQuantizerAdapter trained_quantizer(trained_lvq);
   if (by_residual) {
-    const LVQParameters params;
-    const idx_t training_count =
-        LVQTrainingCount(n, trained_lvq.nlocal, trained_lvq.ksub, params);
+    // A bounded sample controls the temporary residual-buffer footprint.
+    const idx_t training_count = std::min<idx_t>(n, 262144);
     std::vector<float> sampled_vectors;
     const float* training_vectors = x;
     if (training_count < n) {
-      const auto rows =
-          SampleKMeansTrainingRows(n, training_count, params.seed);
+      const auto rows = SampleKMeansTrainingRows(n, training_count, 1234);
       sampled_vectors.resize(mul_no_overflow(
           static_cast<size_t>(training_count), static_cast<size_t>(d),
           "IndexIVFLVQ::Train sampled vectors"));

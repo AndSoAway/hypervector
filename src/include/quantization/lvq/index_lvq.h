@@ -21,7 +21,7 @@ struct IndexLVQ : Index {
   MaybeOwnedVector<uint8_t> codes;
 
   IndexLVQ();
-  IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric = kMetricL2);
+  IndexLVQ(idx_t d, int nbits, MetricType metric = kMetricL2);
 
   IndexCapabilities GetCapabilities() const override;
 

@@ -31,6 +31,9 @@ struct LVQDistanceComputer : DistanceComputer {
   void SetQuery(const float* x) override;
   float operator()(idx_t i) override;
   float symmetric_dis(idx_t i, idx_t j) override;
+
+ private:
+  LocalVectorQuantizer::DistanceKernel distance_kernel_;
 };
 
 }  // namespace hypervec

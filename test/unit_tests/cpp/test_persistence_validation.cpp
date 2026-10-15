@@ -740,7 +740,7 @@ TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
 }
 
 TEST(PersistenceValidation, RoundtripsUntrainedHnswLvqState) {
-  hypervec::IndexHNSWLVQ source(4, 2, 2, 8);
+  hypervec::IndexHNSWLVQ source(4, 2, 8);
   ASSERT_FALSE(source.is_trained);
   ASSERT_FALSE(source.storage->is_trained);
 

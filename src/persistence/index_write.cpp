@@ -74,11 +74,14 @@ static void write_pq(const ProductQuantizer& pq, IOWriter* f) {
 }
 
 static void write_lvq(const LocalVectorQuantizer& lvq, IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      lvq.d >= 0 && lvq.mean.size() == static_cast<size_t>(lvq.d),
+      "LVQ serialize: mean size does not match dimension");
+  const uint32_t marker = fourcc("LvQ2");
+  WRITE1(marker);
   WRITE1(lvq.d);
-  WRITE1(lvq.nlocal);
   WRITE1(lvq.nbits);
-  WRITEVECTOR(lvq.local_centroids);
-  WRITEVECTOR(lvq.residual_codebooks);
+  WRITEVECTOR(lvq.mean);
 }
 
 static void write_linear_transform(const LinearTransform& transform,

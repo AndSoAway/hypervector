@@ -13,12 +13,21 @@ set(HYPERVEC_SRC
   index/ivf/inverted_list_scanner.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
+  index/graph/graph_searcher.cpp
+  index/graph/graph_storage.cpp
+  index/graph/graph_validation.cpp
+  index/graph/neighbor_pruner.cpp
+  index/graph/nn_descent_builder.cpp
+  index/graph/nsg_builder.cpp
+  index/graph/nsw_builder.cpp
+  index/graph/visited_table.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
   index/hnsw/hnsw.cpp
-  index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
+  index/nsg/index_nsg.cpp
+  index/nsw/index_nsw.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
   utils/common/interrupt_callback.cpp

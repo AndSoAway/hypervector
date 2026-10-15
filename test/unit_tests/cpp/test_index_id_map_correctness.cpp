@@ -7,11 +7,15 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
 #include <index/lsh/index_lsh.h>
+#include <index/nsg/index_nsg.h>
+#include <index/nsw/index_nsw.h>
+#include <index/vamana/index_vamana.h>
 #include <persistence/index_clone.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
@@ -21,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <typeinfo>
 #include <vector>
 
 namespace {
@@ -109,6 +114,34 @@ class RecordingIndex final : public hypervec::Index {
         (params == nullptr || params->sel == nullptr ||
          params->sel->IsMember(0))) {
       distances[0] = 0.0f;
+      labels[0] = 0;
+    }
+  }
+
+  void Reset() final { n_total = 0; }
+};
+
+class ParameterTypeRecordingIndex final : public hypervec::Index {
+ public:
+  ParameterTypeRecordingIndex() : Index(2, hypervec::kMetricL2) {}
+
+  mutable const std::type_info* received_type = nullptr;
+  mutable bool selector_accepted_internal_id = false;
+
+  void Add(hypervec::idx_t n, const float*) final { n_total += n; }
+
+  void Search(hypervec::idx_t n, const float*, hypervec::idx_t k,
+              float* distances, hypervec::idx_t* labels,
+              const hypervec::SearchParameters* params) const final {
+    received_type = params == nullptr ? nullptr : &typeid(*params);
+    selector_accepted_internal_id =
+        params != nullptr && params->sel != nullptr && params->sel->IsMember(0);
+    for (hypervec::idx_t i = 0; i < n * k; ++i) {
+      distances[i] = std::numeric_limits<float>::infinity();
+      labels[i] = -1;
+    }
+    if (n > 0 && k > 0 && n_total > 0 && selector_accepted_internal_id) {
+      distances[0] = 0.0F;
       labels[0] = 0;
     }
   }
@@ -263,6 +296,39 @@ TEST(IndexIDMapCorrectness, PreservesLshParametersWhileTranslatingSelector) {
   EXPECT_EQ(labels, (std::array<hypervec::idx_t, 3>{30, 20, -1}));
   EXPECT_EQ(distances[0], 3.0F);
   EXPECT_EQ(distances[1], 2.0F);
+}
+
+TEST(IndexIDMapCorrectness, TranslatesSelectorsForAllGraphAndIvfParameters) {
+  const auto exercise = [](hypervec::SearchParameters* parameters,
+                           const std::type_info& expected_type) {
+    ParameterTypeRecordingIndex recording;
+    hypervec::IndexIDMap index(&recording);
+    const std::vector<float> vector = {0.0F, 0.0F};
+    const hypervec::idx_t external_id = 12345;
+    index.AddWithIds(1, vector.data(), &external_id);
+
+    hypervec::IDSelectorRange selector(external_id, external_id + 1);
+    parameters->sel = &selector;
+    float distance = -1.0F;
+    hypervec::idx_t label = -1;
+    index.Search(1, vector.data(), 1, &distance, &label, parameters);
+
+    ASSERT_NE(recording.received_type, nullptr);
+    EXPECT_EQ(*recording.received_type, expected_type);
+    EXPECT_TRUE(recording.selector_accepted_internal_id);
+    EXPECT_EQ(label, external_id);
+  };
+
+  hypervec::SearchParametersNSW nsw;
+  exercise(&nsw, typeid(hypervec::SearchParametersNSW));
+  hypervec::SearchParametersNSG nsg;
+  exercise(&nsg, typeid(hypervec::SearchParametersNSG));
+  hypervec::SearchParametersVamana vamana;
+  exercise(&vamana, typeid(hypervec::SearchParametersVamana));
+  hypervec::SearchParametersDiskANN diskann;
+  exercise(&diskann, typeid(hypervec::SearchParametersDiskANN));
+  hypervec::IVFSearchParameters ivf;
+  exercise(&ivf, typeid(hypervec::IVFSearchParameters));
 }
 
 TEST(IndexIDMapCorrectness, FailedAddDoesNotPublishMappings) {

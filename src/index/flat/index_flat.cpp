@@ -8,24 +8,29 @@
 
 // -*- c++ -*-
 
-#include <utils/log/assert.h>
-#include <utils/simd/simd_dispatch.h>
 #include <index/flat/index_flat.h>
 #include <omp.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
 #include <utils/distances/distances.h>
 #include <utils/distances/extra_distances.h>
+#include <utils/log/assert.h>
+#include <utils/simd/simd_dispatch.h>
 #include <utils/structures/heap.h>
 #include <utils/structures/prefetch.h>
 #include <utils/structures/sorting.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
+#include <memory>
+#include <vector>
 
 namespace hypervec {
 
 IndexFlat::IndexFlat(idx_t d, MetricType metric)
-  : IndexFlatCodes(sizeof(float) * d, d, metric) {}
+    : IndexFlatCodes(sizeof(float) * d, d, metric) {}
 
 IndexCapabilities IndexFlat::GetCapabilities() const {
   IndexCapabilities capabilities;
@@ -36,10 +41,35 @@ IndexCapabilities IndexFlat::GetCapabilities() const {
   return capabilities;
 }
 
+bool IndexFlat::IsDataAligned() const noexcept {
+  return reinterpret_cast<uintptr_t>(codes.data()) % alignof(float) == 0;
+}
+
+float* IndexFlat::GetXb() {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      IsDataAligned(),
+      "IndexFlat: encoded storage is not aligned for direct float access");
+  return reinterpret_cast<float*>(codes.data());
+}
+
+const float* IndexFlat::GetXb() const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      IsDataAligned(),
+      "IndexFlat: encoded storage is not aligned for direct float access");
+  return reinterpret_cast<const float*>(codes.data());
+}
+
 void IndexFlat::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
+  if (!IsDataAligned()) {
+    IndexFlatCodes::Search(n, x, k, distances, labels, params);
+    return;
+  }
+  ValidateSearchInputs(n, x, k, distances, labels);
+  if (n == 0) {
+    return;
+  }
   IDSelector* sel = params ? params->sel : nullptr;
-  HYPERVEC_THROW_IF_NOT(k > 0);
 
   // we see the distances and labels as heaps
   if (metric_type == kMetricInnerProduct) {
@@ -55,8 +85,16 @@ void IndexFlat::Search(idx_t n, const float* x, idx_t k, float* distances,
 }
 
 void IndexFlat::RangeSearch(idx_t n, const float* x, float radius,
-                             RangeSearchResult* result,
-                             const SearchParameters* params) const {
+                            RangeSearchResult* result,
+                            const SearchParameters* params) const {
+  if (!IsDataAligned()) {
+    IndexFlatCodes::RangeSearch(n, x, radius, result, params);
+    return;
+  }
+  ValidateRangeSearchInputs(n, x, result);
+  if (n == 0) {
+    return;
+  }
   IDSelector* sel = params ? params->sel : nullptr;
 
   switch (metric_type) {
@@ -73,17 +111,96 @@ void IndexFlat::RangeSearch(idx_t n, const float* x, float radius,
 }
 
 void IndexFlat::ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
-                                        float* distances,
-                                        const idx_t* labels) const {
+                                      float* distances,
+                                      const idx_t* labels) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      metric_type == kMetricInnerProduct || metric_type == kMetricL2,
+      "metric type not supported");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n >= 0, "IndexFlat::ComputeDistanceSubset: n must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k >= 0, "IndexFlat::ComputeDistanceSubset: k must be non-negative");
+  ValidateStorageState("IndexFlat::ComputeDistanceSubset");
+  const size_t result_size =
+      mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                      "IndexFlat::ComputeDistanceSubset output size");
+  if (result_size == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr, "IndexFlat::ComputeDistanceSubset: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      distances != nullptr,
+      "IndexFlat::ComputeDistanceSubset: distances must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      labels != nullptr,
+      "IndexFlat::ComputeDistanceSubset: labels must not be null");
+
+  bool has_padding = false;
+  for (size_t offset = 0; offset < result_size; ++offset) {
+    if (labels[offset] < 0) {
+      has_padding = true;
+      continue;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        labels[offset] < n_total,
+        "IndexFlat::ComputeDistanceSubset: label is out of bounds");
+  }
+
+  const float padding_distance = metric_type == kMetricInnerProduct
+                                     ? -std::numeric_limits<float>::infinity()
+                                     : std::numeric_limits<float>::infinity();
+  if (!IsDataAligned()) {
+    std::unique_ptr<FlatCodesDistanceComputer> computer(
+        IndexFlatCodes::GetFlatCodesDistanceComputer());
+    for (idx_t query = 0; query < n; ++query) {
+      computer->SetQuery(x + query * d);
+      const size_t query_offset =
+          static_cast<size_t>(query) * static_cast<size_t>(k);
+      for (idx_t neighbor = 0; neighbor < k; ++neighbor) {
+        const size_t offset = query_offset + static_cast<size_t>(neighbor);
+        if (labels[offset] < 0) {
+          distances[offset] = padding_distance;
+        } else {
+          distances[offset] = (*computer)(labels[offset]);
+        }
+      }
+    }
+    return;
+  }
+
+  const idx_t* effective_labels = labels;
+  std::vector<idx_t> sanitized_labels;
+  if (has_padding) {
+    if (n_total == 0) {
+      std::fill_n(distances, result_size, padding_distance);
+      return;
+    }
+    sanitized_labels.assign(labels, labels + result_size);
+    for (idx_t& label : sanitized_labels) {
+      if (label < 0) {
+        label = 0;
+      }
+    }
+    effective_labels = sanitized_labels.data();
+  }
   switch (metric_type) {
     case kMetricInnerProduct:
-      fvec_inner_products_by_idx(distances, x, GetXb(), labels, d, n, k);
+      fvec_inner_products_by_idx(distances, x, GetXb(), effective_labels, d, n,
+                                 k);
       break;
     case kMetricL2:
-      fvec_L2sqr_by_idx(distances, x, GetXb(), labels, d, n, k);
+      fvec_L2sqr_by_idx(distances, x, GetXb(), effective_labels, d, n, k);
       break;
     default:
       HYPERVEC_THROW_MSG("metric type not supported");
+  }
+  if (has_padding) {
+    for (size_t offset = 0; offset < result_size; ++offset) {
+      if (labels[offset] < 0) {
+        distances[offset] = padding_distance;
+      }
+    }
   }
 }
 
@@ -114,16 +231,14 @@ struct FlatL2Dis : FlatCodesDistanceComputer {
   }
 
   explicit FlatL2Dis(const IndexFlat& storage, const float* q = nullptr)
-    : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size, q)
-    , d(storage.d)
-    , nb(storage.n_total)
-    , b(storage.GetXb())
-    , ndis(0)
-    , npartial_dot_products(0) {}
+      : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size, q),
+        d(storage.d),
+        nb(storage.n_total),
+        b(storage.GetXb()),
+        ndis(0),
+        npartial_dot_products(0) {}
 
-  void SetQuery(const float* x) override {
-    q = x;
-  }
+  void SetQuery(const float* x) override { q = x; }
 
   // compute four distances
   void distances_batch_4(const idx_t idx0, const idx_t idx1, const idx_t idx2,
@@ -133,13 +248,13 @@ struct FlatL2Dis : FlatCodesDistanceComputer {
 
     // compute first, Assign next
     const float* __restrict y0 =
-      reinterpret_cast<const float*>(codes + idx0 * code_size);
+        reinterpret_cast<const float*>(codes + idx0 * code_size);
     const float* __restrict y1 =
-      reinterpret_cast<const float*>(codes + idx1 * code_size);
+        reinterpret_cast<const float*>(codes + idx1 * code_size);
     const float* __restrict y2 =
-      reinterpret_cast<const float*>(codes + idx2 * code_size);
+        reinterpret_cast<const float*>(codes + idx2 * code_size);
     const float* __restrict y3 =
-      reinterpret_cast<const float*>(codes + idx3 * code_size);
+        reinterpret_cast<const float*>(codes + idx3 * code_size);
 
     float dp0 = 0;
     float dp1 = 0;
@@ -152,21 +267,22 @@ struct FlatL2Dis : FlatCodesDistanceComputer {
     dis3 = dp3;
   }
 
-  void partial_dot_product_batch_4(
-    const idx_t idx0, const idx_t idx1, const idx_t idx2, const idx_t idx3,
-    float& dp0, float& dp1, float& dp2, float& dp3, const uint32_t offset,
-    const uint32_t num_components) final override {
+  void partial_dot_product_batch_4(const idx_t idx0, const idx_t idx1,
+                                   const idx_t idx2, const idx_t idx3,
+                                   float& dp0, float& dp1, float& dp2,
+                                   float& dp3, const uint32_t offset,
+                                   const uint32_t num_components) final {
     npartial_dot_products += 4;
 
     // compute first, Assign next
     const float* __restrict y0 =
-      reinterpret_cast<const float*>(codes + idx0 * code_size);
+        reinterpret_cast<const float*>(codes + idx0 * code_size);
     const float* __restrict y1 =
-      reinterpret_cast<const float*>(codes + idx1 * code_size);
+        reinterpret_cast<const float*>(codes + idx1 * code_size);
     const float* __restrict y2 =
-      reinterpret_cast<const float*>(codes + idx2 * code_size);
+        reinterpret_cast<const float*>(codes + idx2 * code_size);
     const float* __restrict y3 =
-      reinterpret_cast<const float*>(codes + idx3 * code_size);
+        reinterpret_cast<const float*>(codes + idx3 * code_size);
 
     float dp0_ = 0;
     float dp1_ = 0;
@@ -200,16 +316,14 @@ struct FlatIPDis : FlatCodesDistanceComputer {
   }
 
   explicit FlatIPDis(const IndexFlat& storage, const float* q = nullptr)
-    : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size)
-    , d(storage.d)
-    , nb(storage.n_total)
-    , q(q)
-    , b(storage.GetXb())
-    , ndis(0) {}
+      : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size),
+        d(storage.d),
+        nb(storage.n_total),
+        q(q),
+        b(storage.GetXb()),
+        ndis(0) {}
 
-  void SetQuery(const float* x) override {
-    q = x;
-  }
+  void SetQuery(const float* x) override { q = x; }
 
   // compute four distances
   void distances_batch_4(const idx_t idx0, const idx_t idx1, const idx_t idx2,
@@ -219,13 +333,13 @@ struct FlatIPDis : FlatCodesDistanceComputer {
 
     // compute first, Assign next
     const float* __restrict y0 =
-      reinterpret_cast<const float*>(codes + idx0 * code_size);
+        reinterpret_cast<const float*>(codes + idx0 * code_size);
     const float* __restrict y1 =
-      reinterpret_cast<const float*>(codes + idx1 * code_size);
+        reinterpret_cast<const float*>(codes + idx1 * code_size);
     const float* __restrict y2 =
-      reinterpret_cast<const float*>(codes + idx2 * code_size);
+        reinterpret_cast<const float*>(codes + idx2 * code_size);
     const float* __restrict y3 =
-      reinterpret_cast<const float*>(codes + idx3 * code_size);
+        reinterpret_cast<const float*>(codes + idx3 * code_size);
 
     float dp0 = 0;
     float dp1 = 0;
@@ -242,6 +356,9 @@ struct FlatIPDis : FlatCodesDistanceComputer {
 }  // namespace
 
 FlatCodesDistanceComputer* IndexFlat::GetFlatCodesDistanceComputer() const {
+  if (!IsDataAligned()) {
+    return IndexFlatCodes::GetFlatCodesDistanceComputer();
+  }
   FlatCodesDistanceComputer* dc = nullptr;
   if (metric_type == kMetricL2) {
     with_simd_level([&]<SIMDLevel SL>() { dc = new FlatL2Dis<SL>(*this); });
@@ -255,8 +372,13 @@ FlatCodesDistanceComputer* IndexFlat::GetFlatCodesDistanceComputer() const {
 }
 
 void IndexFlat::Reconstruct(idx_t key, float* recons) const {
-  HYPERVEC_THROW_IF_NOT(key < n_total);
-  memcpy(recons, &(codes[key * code_size]), code_size);
+  ValidateStorageState("IndexFlat::Reconstruct");
+  HYPERVEC_THROW_IF_NOT_MSG(key >= 0 && key < n_total,
+                            "IndexFlat::Reconstruct: key is out of bounds");
+  HYPERVEC_THROW_IF_NOT_MSG(recons != nullptr,
+                            "IndexFlat::Reconstruct: output must not be null");
+  memcpy(recons, codes.data() + static_cast<size_t>(key) * code_size,
+         code_size);
 }
 
 void IndexFlat::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
@@ -294,7 +416,7 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
   float operator()(const idx_t i) final override {
     const float* __restrict y =
-      reinterpret_cast<const float*>(codes + i * code_size);
+        reinterpret_cast<const float*>(codes + i * code_size);
 
     prefetch_L2(l2norms + i);
     const float dp0 = fvec_inner_product<SL>(q, y, d);
@@ -303,9 +425,9 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
   float symmetric_dis(idx_t i, idx_t j) final override {
     const float* __restrict yi =
-      reinterpret_cast<const float*>(codes + i * code_size);
+        reinterpret_cast<const float*>(codes + i * code_size);
     const float* __restrict yj =
-      reinterpret_cast<const float*>(codes + j * code_size);
+        reinterpret_cast<const float*>(codes + j * code_size);
 
     prefetch_L2(l2norms + i);
     prefetch_L2(l2norms + j);
@@ -315,14 +437,14 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
   explicit FlatL2WithNormsDis(const IndexFlatL2& storage,
                               const float* q = nullptr)
-    : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size)
-    , d(storage.d)
-    , nb(storage.n_total)
-    , q(q)
-    , b(storage.GetXb())
-    , ndis(0)
-    , l2norms(storage.cached_l2norms.data())
-    , query_l2norm(0) {}
+      : FlatCodesDistanceComputer(storage.codes.data(), storage.code_size),
+        d(storage.d),
+        nb(storage.n_total),
+        q(q),
+        b(storage.GetXb()),
+        ndis(0),
+        l2norms(storage.cached_l2norms.data()),
+        query_l2norm(0) {}
 
   void SetQuery(const float* x) override {
     q = x;
@@ -337,13 +459,13 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
     // compute first, Assign next
     const float* __restrict y0 =
-      reinterpret_cast<const float*>(codes + idx0 * code_size);
+        reinterpret_cast<const float*>(codes + idx0 * code_size);
     const float* __restrict y1 =
-      reinterpret_cast<const float*>(codes + idx1 * code_size);
+        reinterpret_cast<const float*>(codes + idx1 * code_size);
     const float* __restrict y2 =
-      reinterpret_cast<const float*>(codes + idx2 * code_size);
+        reinterpret_cast<const float*>(codes + idx2 * code_size);
     const float* __restrict y3 =
-      reinterpret_cast<const float*>(codes + idx3 * code_size);
+        reinterpret_cast<const float*>(codes + idx3 * code_size);
 
     prefetch_L2(l2norms + idx0);
     prefetch_L2(l2norms + idx1);
@@ -364,10 +486,61 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
 
 }  // namespace
 
+void IndexFlatL2::Add(idx_t n, const float* x) {
+  IndexFlatCodes::Add(n, x);
+  if (n > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::AddSaCodes(idx_t n, const uint8_t* codes, const idx_t* xids) {
+  IndexFlatCodes::AddSaCodes(n, codes, xids);
+  if (n > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::Reset() {
+  IndexFlatCodes::Reset();
+  ClearL2Norms();
+}
+
+size_t IndexFlatL2::RemoveIds(const IDSelector& sel) {
+  const size_t removed = IndexFlatCodes::RemoveIds(sel);
+  if (removed > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+  return removed;
+}
+
+void IndexFlatL2::MergeFrom(Index& other, idx_t add_id) {
+  const idx_t old_total = n_total;
+  IndexFlatCodes::MergeFrom(other, add_id);
+  if (n_total != old_total && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
+void IndexFlatL2::PermuteEntries(const idx_t* perm) {
+  IndexFlatCodes::PermuteEntries(perm);
+  if (n_total > 0 && !cached_l2norms.empty()) {
+    ClearL2Norms();
+  }
+}
+
 void IndexFlatL2::SyncL2Norms() {
   cached_l2norms.resize(n_total);
-  fvec_norms_L2sqr(cached_l2norms.data(),
-                   reinterpret_cast<const float*>(codes.data()), d, n_total);
+  if (IsDataAligned()) {
+    fvec_norms_L2sqr(cached_l2norms.data(), GetXb(), d, n_total);
+    return;
+  }
+  std::vector<float> decoded(static_cast<size_t>(d));
+  for (idx_t vector = 0; vector < n_total; ++vector) {
+    SaDecode(1, codes.data() + static_cast<size_t>(vector) * code_size,
+             decoded.data());
+    cached_l2norms[static_cast<size_t>(vector)] =
+        fvec_norm_L2sqr(decoded.data(), d);
+  }
 }
 
 void IndexFlatL2::ClearL2Norms() {
@@ -376,11 +549,11 @@ void IndexFlatL2::ClearL2Norms() {
 }
 
 FlatCodesDistanceComputer* IndexFlatL2::GetFlatCodesDistanceComputer() const {
-  if (metric_type == kMetricL2) {
+  if (metric_type == kMetricL2 && IsDataAligned()) {
     if (!cached_l2norms.empty()) {
       FlatCodesDistanceComputer* dc = nullptr;
       with_simd_level(
-        [&]<SIMDLevel SL>() { dc = new FlatL2WithNormsDis<SL>(*this); });
+          [&]<SIMDLevel SL>() { dc = new FlatL2WithNormsDis<SL>(*this); });
       return dc;
     }
   }
@@ -393,7 +566,7 @@ FlatCodesDistanceComputer* IndexFlatL2::GetFlatCodesDistanceComputer() const {
  ***************************************************/
 
 IndexFlat1D::IndexFlat1D(bool continuous_update)
-  : IndexFlatL2(1), continuous_update(continuous_update) {}
+    : IndexFlatL2(1), continuous_update(continuous_update) {}
 
 /// if not continuous_update, call this between the last Add and
 /// the first Search
@@ -422,7 +595,10 @@ void IndexFlat1D::Search(idx_t n, const float* x, idx_t k, float* distances,
                          idx_t* labels, const SearchParameters* params) const {
   HYPERVEC_THROW_IF_NOT_MSG(!params,
                             "Search params not supported for this index");
-  HYPERVEC_THROW_IF_NOT(k > 0);
+  ValidateSearchInputs(n, x, k, distances, labels);
+  if (n == 0) {
+    return;
+  }
   HYPERVEC_THROW_IF_NOT_MSG(perm.size() == n_total,
                             "Call UpdatePermutation before Search");
   const float* xb = GetXb();

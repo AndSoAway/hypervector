@@ -14,10 +14,11 @@
 #include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
-#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -31,15 +32,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return vectors;
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buffer[L_tmpnam];
-    std::tmpnam(buffer);
-    path = buffer;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 

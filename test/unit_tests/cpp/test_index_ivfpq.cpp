@@ -18,12 +18,13 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -54,15 +55,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 

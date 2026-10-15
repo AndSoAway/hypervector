@@ -146,7 +146,7 @@ if(NOT HYPERVEC_OPT_LEVEL STREQUAL "sve")
 endif()
 
 set_property(SOURCE hypervec_example_external_module.swig
-  PROPERTY SWIG_MODULE_NAME hypervec_example_external_module)
+  PROPERTY SWIG_MODULE_NAME Hypervec_example_external_module)
 swig_add_library(hypervec_example_external_module
   TYPE SHARED
   LANGUAGE python

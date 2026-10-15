@@ -8,17 +8,19 @@
 
 #pragma once
 
+#include <index/index.h>
+#include <omp.h>
+#include <utils/common/platform_macros.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
-#include <index/index.h>
-#include <utils/structures/maybe_owned_vector.h>
-#include <utils/common/platform_macros.h>
-#include <omp.h>
 #include <utils/structures/heap.h>
+#include <utils/structures/maybe_owned_vector.h>
 #include <utils/structures/random.h>
 
+#include <functional>
 #include <optional>
 #include <queue>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -187,16 +189,19 @@ struct HNSW {
   /// Add n random levels to table (for debugging...)
   void FillWithRandomLinks(size_t n);
 
-  void AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
-                               storage_idx_t nearest, float d_nearest,
-                               int level, omp_lock_t* locks, VisitedTable& vt,
-                               bool keep_max_size_level0 = false);
+  void AddLinksStartingFrom(
+      DistanceComputer& ptdis, storage_idx_t pt_id, storage_idx_t nearest,
+      float d_nearest, int level, omp_lock_t* locks, VisitedTable& vt,
+      bool keep_max_size_level0 = false,
+      const std::function<void(storage_idx_t)>& before_node_mutation = {});
 
   /** Add point pt_id on all levels <= pt_level and build the link
    * structure for them. */
-  void AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
-                      std::vector<omp_lock_t>& locks, VisitedTable& vt,
-                      bool keep_max_size_level0 = false);
+  void AddWithLocks(
+      DistanceComputer& ptdis, int pt_level, int pt_id,
+      std::vector<omp_lock_t>& locks, VisitedTable& vt,
+      bool keep_max_size_level0 = false,
+      const std::function<void(storage_idx_t)>& before_node_mutation = {});
 
   /// Search interface for 1 point, single thread
   ///

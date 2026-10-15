@@ -13,7 +13,8 @@
 // Put C++ includes here
 %{
 
-// Example: #include <some header.h>
+#include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 
 %}
 
@@ -39,8 +40,8 @@ typedef uint64_t size_t;
 
 // This means: assume what's declared in these .h files is provided
 // by the hypervec module.
-%import(module="hypervec") "core/MetricType.h"
-%import(module="hypervec") "core/IDSelector.h"
+%import(module="hypervec") "utils/distances/metric_type.h"
+%import(module="hypervec") "utils/selector/id_selector.h"
 
 // functions to be parsed here
 

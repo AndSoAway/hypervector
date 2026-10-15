@@ -6,7 +6,16 @@
  * source tree.
  */
 
-#include <stdio.h>
+#include <persistence/mapped_io.h>
+#include <utils/log/assert.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <memory>
 
 #if defined(__linux__) || defined(__FreeBSD__)
 
@@ -21,11 +30,6 @@
 
 #endif
 
-#include <utils/log/assert.h>
-#include <persistence/mapped_io.h>
-
-#include <cstring>
-
 namespace hypervec {
 
 #if defined(__linux__) || defined(__FreeBSD__)
@@ -37,8 +41,9 @@ struct MmappedFileMappingOwner::PImpl {
   explicit PImpl(const std::string& filename) {
     struct FileDeleter {
       void operator()(FILE* f) const {
-        if (f)
+        if (f != nullptr) {
           fclose(f);
+        }
       }
     };
 
@@ -53,11 +58,16 @@ struct MmappedFileMappingOwner::PImpl {
     HYPERVEC_THROW_IF_NOT_FMT(status >= 0, "fstat() failed: %s",
                               strerror(errno));
 
-    const size_t filesize = s.st_size;
+    HYPERVEC_THROW_IF_NOT_MSG(s.st_size > 0, "cannot memory-map an empty file");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        static_cast<uintmax_t>(s.st_size) <=
+            static_cast<uintmax_t>((std::numeric_limits<size_t>::max)()),
+        "memory-mapped file is too large for this address space");
+    const size_t filesize = static_cast<size_t>(s.st_size);
 
     void* address =
-      mmap(nullptr, filesize, PROT_READ, MAP_SHARED, fileno(f.get()), 0);
-    HYPERVEC_THROW_IF_NOT_FMT(address != nullptr, "could not mmap(): %s",
+        mmap(nullptr, filesize, PROT_READ, MAP_SHARED, fileno(f.get()), 0);
+    HYPERVEC_THROW_IF_NOT_FMT(address != MAP_FAILED, "could not mmap(): %s",
                               strerror(errno));
 
     // btw, fd can be closed here
@@ -76,11 +86,16 @@ struct MmappedFileMappingOwner::PImpl {
     HYPERVEC_THROW_IF_NOT_FMT(status >= 0, "fstat() failed: %s",
                               strerror(errno));
 
-    const size_t filesize = s.st_size;
+    HYPERVEC_THROW_IF_NOT_MSG(s.st_size > 0, "cannot memory-map an empty file");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        static_cast<uintmax_t>(s.st_size) <=
+            static_cast<uintmax_t>((std::numeric_limits<size_t>::max)()),
+        "memory-mapped file is too large for this address space");
+    const size_t filesize = static_cast<size_t>(s.st_size);
 
     void* address =
-      mmap(nullptr, filesize, PROT_READ, MAP_SHARED, fileno(f), 0);
-    HYPERVEC_THROW_IF_NOT_FMT(address != nullptr, "could not mmap(): %s",
+        mmap(nullptr, filesize, PROT_READ, MAP_SHARED, fileno(f), 0);
+    HYPERVEC_THROW_IF_NOT_FMT(address != MAP_FAILED, "could not mmap(): %s",
                               strerror(errno));
 
     // btw, fd can be closed here
@@ -93,8 +108,9 @@ struct MmappedFileMappingOwner::PImpl {
   }
 
   ~PImpl() {
-    // todo: check for an error
-    munmap(ptr, ptr_size);
+    if (ptr != nullptr && ptr_size > 0) {
+      munmap(ptr, ptr_size);
+    }
   }
 };
 
@@ -107,8 +123,9 @@ struct MmappedFileMappingOwner::PImpl {
 
   PImpl(const std::string& filename) {
     HANDLE file_handle =
-      CreateFile(filename.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                 OPEN_EXISTING, 0, nullptr);
+        CreateFile(filename.c_str(), GENERIC_READ,
+                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                   nullptr, OPEN_EXISTING, 0, nullptr);
     if (file_handle == INVALID_HANDLE_VALUE) {
       const auto error = GetLastError();
       HYPERVEC_THROW_FMT("could not open the file, %s (error %d)",
@@ -125,10 +142,16 @@ struct MmappedFileMappingOwner::PImpl {
       HYPERVEC_THROW_FMT("could not get the file size, %s (error %d)",
                          filename.c_str(), error);
     }
+    if (len_li.QuadPart <= 0 ||
+        static_cast<uint64_t>(len_li.QuadPart) >
+            static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+      CloseHandle(file_handle);
+      HYPERVEC_THROW_MSG("memory-mapped file size is invalid");
+    }
 
     // create a mapping
     mapping_handle =
-      CreateFileMapping(file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        CreateFileMapping(file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (mapping_handle == 0) {
       const auto error = GetLastError();
 
@@ -139,7 +162,8 @@ struct MmappedFileMappingOwner::PImpl {
     }
     CloseHandle(file_handle);
 
-    char* data = (char*)MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0);
+    char* data = static_cast<char*>(
+        MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0));
     if (data == nullptr) {
       const auto error = GetLastError();
 
@@ -151,7 +175,7 @@ struct MmappedFileMappingOwner::PImpl {
     }
 
     ptr = data;
-    ptr_size = len_li.QuadPart;
+    ptr_size = static_cast<size_t>(len_li.QuadPart);
   }
 
   PImpl(FILE* f) {
@@ -162,7 +186,7 @@ struct MmappedFileMappingOwner::PImpl {
       HYPERVEC_THROW_MSG("could not get a HANDLE");
     }
 
-    HANDLE file_handle = (HANDLE)_get_osfhandle(fd);
+    HANDLE file_handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
     if (file_handle == INVALID_HANDLE_VALUE) {
       HYPERVEC_THROW_MSG("could not get an OS HANDLE");
     }
@@ -173,10 +197,15 @@ struct MmappedFileMappingOwner::PImpl {
       const auto error = GetLastError();
       HYPERVEC_THROW_FMT("could not get the file size (error %d)", error);
     }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        len_li.QuadPart > 0 &&
+            static_cast<uint64_t>(len_li.QuadPart) <=
+                static_cast<uint64_t>((std::numeric_limits<size_t>::max)()),
+        "memory-mapped file size is invalid");
 
     // create a mapping
     mapping_handle =
-      CreateFileMapping(file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        CreateFileMapping(file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (mapping_handle == 0) {
       const auto error = GetLastError();
       HYPERVEC_THROW_FMT("could not create a file mapping, (error %d)", error);
@@ -185,7 +214,8 @@ struct MmappedFileMappingOwner::PImpl {
     // the handle is provided externally, so this is not our business
     //   to close file_handle.
 
-    char* data = (char*)MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0);
+    char* data = static_cast<char*>(
+        MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0));
     if (data == nullptr) {
       const auto error = GetLastError();
 
@@ -196,7 +226,7 @@ struct MmappedFileMappingOwner::PImpl {
     }
 
     ptr = data;
-    ptr_size = len_li.QuadPart;
+    ptr_size = static_cast<size_t>(len_li.QuadPart);
   }
 
   ~PImpl() {
@@ -216,13 +246,11 @@ struct MmappedFileMappingOwner::PImpl {
   void* ptr = nullptr;
   size_t ptr_size = 0;
 
-  PImpl(const std::string& filename) {
+  explicit PImpl(const std::string& filename) {
     HYPERVEC_THROW_MSG("Not implemented");
   }
 
-  PImpl(FILE* f) {
-    HYPERVEC_THROW_MSG("Not implemented");
-  }
+  explicit PImpl(FILE* f) { HYPERVEC_THROW_MSG("Not implemented"); }
 };
 
 #endif
@@ -232,35 +260,36 @@ MmappedFileMappingOwner::MmappedFileMappingOwner(const std::string& filename) {
 }
 
 MmappedFileMappingOwner::MmappedFileMappingOwner(FILE* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(f != nullptr,
+                            "memory-mapped file handle must not be null");
   p_impl = std::make_unique<MmappedFileMappingOwner::PImpl>(f);
 }
 
 MmappedFileMappingOwner::~MmappedFileMappingOwner() = default;
 
 //
-void* MmappedFileMappingOwner::data() const {
-  return p_impl->ptr;
-}
+void* MmappedFileMappingOwner::data() const { return p_impl->ptr; }
 
-size_t MmappedFileMappingOwner::size() const {
-  return p_impl->ptr_size;
-}
+size_t MmappedFileMappingOwner::size() const { return p_impl->ptr_size; }
 
 MappedFileIOReader::MappedFileIOReader(
-  const std::shared_ptr<MmappedFileMappingOwner>& owner)
-  : mmap_owner(owner) {}
+    const std::shared_ptr<MmappedFileMappingOwner>& owner)
+    : mmap_owner(owner) {
+  HYPERVEC_THROW_IF_NOT_MSG(mmap_owner != nullptr,
+                            "memory-mapped reader requires an owner");
+  name = "memory-mapped file";
+}
 
 // this operation performs a copy
 size_t MappedFileIOReader::operator()(void* ptr, size_t size, size_t nitems) {
-  if (size * nitems == 0) {
+  if (ptr == nullptr || size == 0 || nitems == 0) {
     return 0;
   }
 
-  char* ptr_c = nullptr;
-
-  const size_t actual_nitems = this->mmap((void**)&ptr_c, size, nitems);
+  void* mapped_address = nullptr;
+  const size_t actual_nitems = mmap(&mapped_address, size, nitems);
   if (actual_nitems > 0) {
-    memcpy(ptr, ptr_c, size * actual_nitems);
+    memcpy(ptr, mapped_address, size * actual_nitems);
   }
 
   return actual_nitems;
@@ -268,22 +297,18 @@ size_t MappedFileIOReader::operator()(void* ptr, size_t size, size_t nitems) {
 
 // this operation returns a mmapped address, owned by mmap_owner
 size_t MappedFileIOReader::mmap(void** ptr, size_t size, size_t nitems) {
-  if (size == 0) {
-    return nitems;
+  if (ptr == nullptr || size == 0 || nitems == 0 || pos >= mmap_owner->size()) {
+    return 0;
   }
 
-  size_t actual_size = size * nitems;
-  if (pos + size * nitems > mmap_owner->size()) {
-    actual_size = mmap_owner->size() - pos;
-  }
-
-  size_t actual_nitems = (actual_size + size - 1) / size;
+  const size_t available_items = (mmap_owner->size() - pos) / size;
+  const size_t actual_nitems = (std::min)(nitems, available_items);
   if (actual_nitems == 0) {
     return 0;
   }
 
   // get an address
-  *ptr = (void*)(reinterpret_cast<const char*>(mmap_owner->data()) + pos);
+  *ptr = static_cast<char*>(mmap_owner->data()) + pos;
 
   // alter pos
   pos += size * actual_nitems;
@@ -292,8 +317,7 @@ size_t MappedFileIOReader::mmap(void** ptr, size_t size, size_t nitems) {
 }
 
 int MappedFileIOReader::filedescriptor() {
-  // todo
-  return -1;
+  HYPERVEC_THROW_MSG("memory-mapped reader does not retain a file descriptor");
 }
 
 }  // namespace hypervec

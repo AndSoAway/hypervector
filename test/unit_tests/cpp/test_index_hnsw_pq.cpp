@@ -7,7 +7,6 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_pq.h>
@@ -19,12 +18,13 @@
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -55,15 +55,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 

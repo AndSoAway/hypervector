@@ -5,6 +5,9 @@
 
 set(HYPERVEC_TEST_SRC
   test_heap.cpp
+  test_diskann_searcher.cpp
+  test_diskann_storage.cpp
+  test_index_diskann.cpp
   test_graph_pruning_validation.cpp
   test_graph_searcher.cpp
   test_graph_storage.cpp
@@ -12,6 +15,9 @@ set(HYPERVEC_TEST_SRC
   test_nsg_builder.cpp
   test_index_nsg.cpp
   test_nsw_builder.cpp
+  test_paged_graph_storage.cpp
+  test_vamana_builder.cpp
+  test_index_vamana.cpp
   test_index_nsw.cpp
   test_hnsw.cpp
   test_inverted_list_scanner.cpp
@@ -26,6 +32,8 @@ set(HYPERVEC_TEST_SRC
   test_callback.cpp
   test_utils.cpp
   test_mmap.cpp
+  test_page_cache.cpp
+  test_random_access_io.cpp
   test_factory_tools.cpp
   test_distances_simd.cpp
   test_omp_threads.cpp

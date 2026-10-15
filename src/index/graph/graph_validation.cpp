@@ -36,7 +36,7 @@ GraphValidationReport ValidateGraph(const GraphStorage& graph,
 
   for (size_t node = 0; node < report.node_count; ++node) {
     const GraphId graph_node = static_cast<GraphId>(node);
-    const GraphNeighborView neighbors = graph.Neighbors(graph_node);
+    const GraphNeighborList neighbors = graph.Neighbors(graph_node);
     report.edge_count += neighbors.size();
     if (neighbors.size() > graph.MaxDegree()) {
       ++report.degree_violations;

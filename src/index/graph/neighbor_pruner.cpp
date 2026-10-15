@@ -106,4 +106,65 @@ std::vector<NeighborCandidate> HnswHeuristicPruner::Prune(
   return selected;
 }
 
+VamanaRobustPruner::VamanaRobustPruner(float alpha) : alpha_(alpha) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      std::isfinite(alpha_) && alpha_ >= 1.0F,
+      "VamanaRobustPruner: alpha must be finite and at least one");
+}
+
+std::vector<NeighborCandidate> VamanaRobustPruner::Prune(
+    std::span<const NeighborCandidate> candidates, size_t max_neighbors,
+    DistanceComputer& distance, GraphPruneStats* stats) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      max_neighbors > 0, "VamanaRobustPruner: max_neighbors must be positive");
+
+  std::vector<NeighborCandidate> ordered(candidates.begin(), candidates.end());
+  std::unordered_set<GraphId> ids;
+  ids.reserve(ordered.size());
+  for (const NeighborCandidate& candidate : ordered) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        candidate.id >= 0,
+        "VamanaRobustPruner: candidate ID must be non-negative");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        !std::isnan(candidate.distance),
+        "VamanaRobustPruner: candidate distance must not be NaN");
+    HYPERVEC_THROW_IF_NOT_MSG(ids.insert(candidate.id).second,
+                              "VamanaRobustPruner: duplicate candidate ID");
+  }
+  std::sort(ordered.begin(), ordered.end(), CandidateOrder);
+
+  GraphPruneStats local_stats;
+  std::vector<NeighborCandidate> selected;
+  selected.reserve(std::min(max_neighbors, ordered.size()));
+  for (const NeighborCandidate& candidate : ordered) {
+    ++local_stats.candidates_examined;
+    bool robust = true;
+    for (const NeighborCandidate& existing : selected) {
+      ++local_stats.distance_computations;
+      const float pair_distance =
+          distance.symmetric_dis(existing.id, candidate.id);
+      HYPERVEC_THROW_IF_NOT_MSG(
+          !std::isnan(pair_distance),
+          "VamanaRobustPruner: distance computation returned NaN");
+      if (alpha_ * pair_distance < candidate.distance) {
+        robust = false;
+        break;
+      }
+    }
+    if (robust) {
+      selected.push_back(candidate);
+      ++local_stats.accepted;
+      if (selected.size() == max_neighbors) {
+        break;
+      }
+    } else {
+      ++local_stats.rejected;
+    }
+  }
+  if (stats != nullptr) {
+    stats->Combine(local_stats);
+  }
+  return selected;
+}
+
 }  // namespace hypervec

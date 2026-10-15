@@ -111,7 +111,7 @@ NSWInsertionResult NSWIncrementalBuilder::AddNode(DistanceComputer& distance,
   std::vector<PendingNeighborUpdate> reciprocal_updates;
   reciprocal_updates.reserve(selected.size());
   for (const NeighborCandidate& neighbor : selected) {
-    const GraphNeighborView current = graph.Neighbors(neighbor.id);
+    const GraphNeighborList current = graph.Neighbors(neighbor.id);
     std::vector<GraphId> updated(current.begin(), current.end());
     if (updated.size() < graph.MaxDegree()) {
       updated.push_back(new_node);

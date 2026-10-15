@@ -8,6 +8,7 @@
  * HNSW-only index write implementation
  */
 
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/graph/graph_validation.h>
 #include <index/hnsw/index_hnsw.h>
@@ -34,12 +35,14 @@
 #include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <vector>
 
 namespace hypervec {
 
@@ -158,6 +161,24 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITEVECTOR(hnsw.offsets);
 }
 
+static void write_random_access_payload(const RandomAccessReader& reader,
+                                        IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      reader.Size() <= std::numeric_limits<size_t>::max(),
+      "random-access payload exceeds the serialization size limit");
+  const size_t payload_size = static_cast<size_t>(reader.Size());
+  WRITE1(payload_size);
+  constexpr size_t kChunkSize = 1U << 20;
+  std::vector<uint8_t> buffer(std::min(payload_size, kChunkSize));
+  size_t offset = 0;
+  while (offset < payload_size) {
+    const size_t chunk = std::min(payload_size - offset, buffer.size());
+    reader.ReadAt(static_cast<uint64_t>(offset), buffer.data(), chunk);
+    WRITEANDCHECK(buffer.data(), chunk);
+    offset += chunk;
+  }
+}
+
 void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
   (void)io_flags;
 
@@ -194,6 +215,75 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*pretransform, f);
     write_transform(*pretransform->transform, f);
     WriteIndex(pretransform->index.get(), f, 0);
+    return;
+  }
+
+  const auto* diskann = dynamic_cast<const IndexDiskANNFlat*>(index);
+  if (diskann) {
+    const bool empty = diskann->n_total == 0;
+    const DiskAnnNodeLayout* layout = diskann->Layout();
+    const GraphStorage* graph = diskann->Graph();
+    const RandomAccessReader* reader = diskann->NodeReader();
+    HYPERVEC_THROW_IF_NOT_MSG(
+        diskann->n_total >= 0 && diskann->is_trained &&
+            diskann->metric_type == kMetricL2 &&
+            diskann->QuantizerModel().TypeName() == "flat" &&
+            diskann->QuantizerModel().Dimension() == diskann->d &&
+            diskann->QuantizerModel().Metric() == diskann->metric_type &&
+            diskann->CodeStore().CodeSize() ==
+                diskann->QuantizerModel().CodeSize() &&
+            diskann->CodeStore().Size() == diskann->n_total,
+        "IndexDiskANNFlat serialize: index metadata is inconsistent");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        empty ? layout == nullptr && graph == nullptr && reader == nullptr &&
+                    diskann->EntryPoint() == kInvalidGraphId
+              : layout != nullptr && graph != nullptr && reader != nullptr &&
+                    layout->NodeCount() ==
+                        static_cast<size_t>(diskann->n_total) &&
+                    layout->Dimension() == static_cast<size_t>(diskann->d) &&
+                    layout->MaxDegree() == diskann->Options().max_degree &&
+                    layout->PageSize() == diskann->Options().page_size &&
+                    graph->NodeCount() == layout->NodeCount() &&
+                    reader->Size() == layout->StorageSize(),
+        "IndexDiskANNFlat serialize: paged storage is inconsistent");
+    if (!empty) {
+      const GraphValidationReport report =
+          ValidateGraph(*graph, diskann->EntryPoint());
+      HYPERVEC_THROW_IF_NOT_MSG(
+          report.IsStructurallyValid() &&
+              report.reachable_nodes == static_cast<size_t>(diskann->n_total),
+          "IndexDiskANNFlat serialize: graph is invalid or unreachable");
+    }
+
+    uint32_t h = fourcc("IDAf");
+    WRITE1(h);
+    write_index_header(*diskann, f);
+    const DiskAnnIndexOptions& options = diskann->Options();
+    WRITE1(options.max_degree);
+    WRITE1(options.build_search_width);
+    WRITE1(options.candidate_pool_size);
+    WRITE1(options.alpha);
+    WRITE1(options.build_passes);
+    WRITE1(options.random_seed);
+    WRITE1(options.search_width);
+    const uint8_t check_relative_distance = options.check_relative_distance;
+    WRITE1(check_relative_distance);
+    WRITE1(options.page_size);
+    WRITE1(options.cache_capacity_pages);
+    const GraphId entry_point = diskann->EntryPoint();
+    WRITE1(entry_point);
+
+    const size_t code_bytes = mul_no_overflow(
+        static_cast<size_t>(diskann->n_total), diskann->CodeStore().CodeSize(),
+        "IndexDiskANNFlat codes");
+    WRITE1(code_bytes);
+    WRITEANDCHECK(diskann->CodeStore().Data(), code_bytes);
+    if (empty) {
+      const size_t node_bytes = 0;
+      WRITE1(node_bytes);
+    } else {
+      write_random_access_payload(*reader, f);
+    }
     return;
   }
 

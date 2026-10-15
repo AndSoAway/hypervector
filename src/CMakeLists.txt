@@ -13,6 +13,9 @@ set(HYPERVEC_SRC
   index/ivf/inverted_list_scanner.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
+  index/diskann/diskann_searcher.cpp
+  index/diskann/diskann_storage.cpp
+  index/diskann/index_diskann.cpp
   index/graph/graph_searcher.cpp
   index/graph/graph_storage.cpp
   index/graph/graph_validation.cpp
@@ -20,6 +23,8 @@ set(HYPERVEC_SRC
   index/graph/nn_descent_builder.cpp
   index/graph/nsg_builder.cpp
   index/graph/nsw_builder.cpp
+  index/graph/paged_graph_storage.cpp
+  index/graph/vamana_builder.cpp
   index/graph/visited_table.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp
@@ -29,6 +34,7 @@ set(HYPERVEC_SRC
   index/lsh/index_lsh.cpp
   index/nsg/index_nsg.cpp
   index/nsw/index_nsw.cpp
+  index/vamana/index_vamana.cpp
   index/pretransform/index_pre_transform.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
@@ -40,6 +46,8 @@ set(HYPERVEC_SRC
   persistence/index_write.cpp
   persistence/io.cpp
   persistence/mapped_io.cpp
+  persistence/page_cache.cpp
+  persistence/random_access_io.cpp
   utils/structures/heap.cpp
   utils/structures/random.cpp
   utils/structures/sorting.cpp

@@ -57,6 +57,29 @@ class ThrowingRemoveIndex final : public hypervec::Index {
   void Reset() final { n_total = 0; }
 };
 
+class PartiallyBuiltIndex final : public hypervec::Index {
+ public:
+  PartiallyBuiltIndex() : Index(2, hypervec::kMetricL2) {}
+
+  int reset_count = 0;
+
+  void Build(hypervec::idx_t, const float*) final {
+    n_total = 1;
+    throw std::runtime_error("injected build failure");
+  }
+
+  void Add(hypervec::idx_t, const float*) final {}
+
+  void Search(hypervec::idx_t, const float*, hypervec::idx_t, float*,
+              hypervec::idx_t*, const hypervec::SearchParameters*) const final {
+  }
+
+  void Reset() final {
+    ++reset_count;
+    n_total = 0;
+  }
+};
+
 class RecordingIndex final : public hypervec::Index {
  public:
   RecordingIndex() : Index(2, hypervec::kMetricL2) {}
@@ -119,6 +142,36 @@ TEST(IndexIDMapCorrectness, ForwardsBothTrainingOverloads) {
   mapped_recording.Train(8, training.data(), 2, query_training.data());
   EXPECT_TRUE(recording.received_query_training);
   EXPECT_TRUE(mapped_recording.is_trained);
+}
+
+TEST(IndexIDMapCorrectness, ForwardsQueryAwareBuildAndPublishesIdentityIds) {
+  RecordingIndex recording;
+  recording.is_trained = false;
+  hypervec::IndexIDMap mapped(&recording);
+  const std::vector<float> database = {0.0F, 0.0F, 1.0F, 1.0F};
+  const std::vector<float> query_training = {0.5F, 0.5F};
+
+  mapped.Build(2, database.data(), 1, query_training.data());
+
+  EXPECT_TRUE(recording.received_query_training);
+  EXPECT_EQ(mapped.n_total, 2);
+  EXPECT_EQ(mapped.to_internal(0), 0);
+  EXPECT_EQ(mapped.to_internal(1), 1);
+  mapped.check_consistency();
+}
+
+TEST(IndexIDMapCorrectness, FailedBuildRollsBackStorageAndMappings) {
+  PartiallyBuiltIndex storage;
+  hypervec::IndexIDMap mapped(&storage);
+  const std::vector<float> database = {0.0F, 0.0F, 1.0F, 1.0F};
+
+  EXPECT_THROW(mapped.Build(2, database.data()), std::runtime_error);
+
+  EXPECT_EQ(storage.reset_count, 1);
+  EXPECT_EQ(mapped.n_total, 0);
+  EXPECT_TRUE(mapped.id_map.empty());
+  EXPECT_TRUE(mapped.rev_map.empty());
+  mapped.check_consistency();
 }
 
 TEST(IndexIDMapCorrectness, TranslatesExplicitIdsForSearchRangeAndReconstruct) {

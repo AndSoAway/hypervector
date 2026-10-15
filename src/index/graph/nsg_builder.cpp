@@ -181,7 +181,7 @@ MutableBoundedGraph NSGBuilder::Build(const GraphStorage& candidate_graph,
                            options_.check_relative_distance, nullptr},
         &searched, &local_stats.search);
 
-    const GraphNeighborView original_neighbors =
+    const GraphNeighborList original_neighbors =
         candidate_graph.Neighbors(static_cast<GraphId>(node));
     NeighborList candidates;
     candidates.reserve(add_no_overflow(search_results.size(),

@@ -262,60 +262,12 @@ class HypervecServerEngine:
 
     def _make_index(self, dim: int, index_config: dict[str, Any]) -> Any:
         metric = self._metric(str(index_config.get("metric_type", "L2")))
-        index_type = str(index_config.get("index_type") or "HNSWFlat").upper()
+        index_type = str(index_config.get("index_type") or "HNSWFlat")
         params = dict(index_config.get("params") or {})
-        deprecated = sorted(set(params) & {"M", "m", "M_hnsw", "M_pq"})
-        if deprecated:
-            raise ValueError(
-                "unsupported index parameter(s) "
-                f"{', '.join(deprecated)}; use explicit m_hnsw or m_pq."
-            )
-
-        def positive_int(name: str, default: int) -> int:
-            value = int(params.get(name, default))
-            if value <= 0:
-                raise ValueError(f"index parameter '{name}' must be positive.")
-            return value
-
-        def validate_pq_dim(m_pq: int) -> None:
-            if int(dim) % int(m_pq) != 0:
-                raise ValueError(
-                    f"vector dim {dim} must be divisible by m_pq {m_pq}."
-                )
-
-        if index_type in {"FLAT", "INDEXFLAT"}:
-            if metric == int(self.hypervec.kMetricInnerProduct):
-                return self.hypervec.IndexFlatIP(dim)
-            return self.hypervec.IndexFlatL2(dim)
-        if index_type in {"IVF", "IVFFLAT", "INDEXIVFFLAT"}:
-            nlist = positive_int("nlist", 1024)
-            return self.hypervec.IndexIVFFlat(dim, nlist, metric)
-        if index_type in {"IVFLVQ", "INDEXIVFLVQ"}:
-            nlist = positive_int("nlist", 1024)
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            return self.hypervec.IndexIVFLVQ(dim, nlist, nlocal, nbits, metric)
-        if index_type in {"IVFPQ", "INDEXIVFPQ"}:
-            nlist = positive_int("nlist", 1024)
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexIVFPQ(dim, nlist, m_pq, nbits, metric)
-        if index_type in {"HNSW", "HNSWFLAT", "INDEXHNSWFLAT", "AUTOINDEX"}:
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWFlat(dim, m_hnsw, metric)
-        if index_type in {"HNSWLVQ", "INDEXHNSWLVQ"}:
-            nlocal = positive_int("nlocal", 16)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            return self.hypervec.IndexHNSWLVQ(dim, nlocal, nbits, m_hnsw, metric)
-        if index_type in {"HNSWPQ", "INDEXHNSWPQ"}:
-            m_pq = positive_int("m_pq", 8)
-            nbits = positive_int("nbits", 8)
-            m_hnsw = positive_int("m_hnsw", 32)
-            validate_pq_dim(m_pq)
-            return self.hypervec.IndexHNSWPQ(dim, m_pq, nbits, m_hnsw, metric)
-        raise ValueError(f"unsupported index_type: {index_config.get('index_type')}")
+        try:
+            return self.hypervec.create_index(index_type, int(dim), metric, params)
+        except (RuntimeError, TypeError, OverflowError) as exc:
+            raise ValueError(str(exc)) from exc
 
     def _add_vectors(self, index: Any, vectors: np.ndarray) -> None:
         index.add(vectors)
@@ -776,8 +728,11 @@ class HypervecServerEngine:
     ) -> dict[str, Any]:
         """Export scalar rows + index as a self-contained bundle ZIP.
 
-        If output_path is None, the bundle is written alongside the index file
-        as {collection_dir}/{collection_name}.hypervec-bundle.
+        If output_path is None, the bundle is written to a temporary directory
+        inside the collection directory for HTTP/gRPC download handlers to
+        consume and remove.  A caller that needs the archive to survive
+        purge_collection_data() must provide a destination outside the
+        collection directory.
         Updates last_exported_at and bundle_format in metadata.
         Raises FileNotFoundError if the collection has no flushed index.
         Raises ConflictError if data_state == "purged" (nothing to export),

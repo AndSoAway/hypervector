@@ -7,17 +7,20 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/ivf/index_ivf.h>
 #include <persistence/index_io.h>
 #include <quantization/pq/index_ivfpq.h>
+#include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -127,7 +130,7 @@ TEST(IndexIVFPQ, RecallImprovesWithNprobe) {
     idx.Search(nq, query.data(), k, dists.data(), labels.data(), &params);
     const float r = Recall(labels, gt_l, nq, k);
     EXPECT_GE(r, prev_recall - 0.02f)
-      << "recall regressed at nprobe=" << nprobe;
+        << "recall regressed at nprobe=" << nprobe;
     prev_recall = r;
   }
   // At nprobe=nlist (i.e., scan everything), PQ recall should be at least
@@ -178,9 +181,41 @@ TEST(IndexIVFPQ, PrecomputedTableMatchesBasicPath) {
   // small tolerance because the two paths add the same terms in different
   // order.
   for (size_t i = 0; i < d_b.size(); i++) {
-    EXPECT_NEAR(d_b[i], d_p[i],
-                1e-3f * std::max(std::abs(d_b[i]), 1.0f))
-      << "distance mismatch at i=" << i;
+    EXPECT_NEAR(d_b[i], d_p[i], 1e-3f * std::max(std::abs(d_b[i]), 1.0f))
+        << "distance mismatch at i=" << i;
+  }
+}
+
+TEST(IndexIVFPQ, ScannerRangeSearchSupportsEveryEncodingMode) {
+  constexpr hypervec::idx_t d = 4;
+  constexpr hypervec::idx_t count = 64;
+  constexpr hypervec::idx_t target = 17;
+  const auto vectors = RandomVectors(count, d, 201, 5.0F);
+
+  for (int mode = 0; mode < 3; ++mode) {
+    hypervec::IndexIVFPQ index(d, 4, 2, 2);
+    index.by_residual = mode != 0;
+    index.use_precomputed_table = mode == 2 ? 1 : 0;
+    index.Train(count, vectors.data());
+    index.Add(count, vectors.data());
+
+    hypervec::IDSelectorRange selector(target, target + 1);
+    hypervec::IVFSearchParameters params;
+    params.nprobe = index.nlist;
+    params.sel = &selector;
+
+    float knn_distance = 0.0F;
+    hypervec::idx_t knn_label = -1;
+    const float* query = vectors.data() + target * d;
+    index.Search(1, query, 1, &knn_distance, &knn_label, &params);
+    ASSERT_EQ(knn_label, target) << "mode=" << mode;
+
+    hypervec::RangeSearchResult result(1);
+    index.RangeSearch(1, query, (std::numeric_limits<float>::infinity)(),
+                      &result, &params);
+    ASSERT_EQ(result.lims[1], 1U) << "mode=" << mode;
+    EXPECT_EQ(result.labels[0], target) << "mode=" << mode;
+    EXPECT_FLOAT_EQ(result.distances[0], knn_distance) << "mode=" << mode;
   }
 }
 
@@ -229,7 +264,7 @@ TEST(IndexIVFPQ, ByResidualImprovesOverRawEncoding) {
   // Loose: residual should not be much worse than raw. On clustered data it
   // would be strictly better; on uniform random data the gap is small.
   EXPECT_GE(r_residual, r_raw - 0.05f)
-    << "residual=" << r_residual << " raw=" << r_raw;
+      << "residual=" << r_residual << " raw=" << r_raw;
 }
 
 TEST(IndexIVFPQ, PersistenceRoundtrip) {
@@ -249,8 +284,7 @@ TEST(IndexIVFPQ, PersistenceRoundtrip) {
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
 
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexIVFPQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);
@@ -308,14 +342,12 @@ TEST(IndexIVFPQ, ReconstructAddsCentroidBackForResidual) {
     // error like 5x off.
     for (hypervec::idx_t j = 0; j < d; j++) {
       const float diff = recons[j] - base[key * d + j];
-      EXPECT_LT(std::abs(diff), 5.0f)
-        << "key=" << key << " j=" << j;
+      EXPECT_LT(std::abs(diff), 5.0f) << "key=" << key << " j=" << j;
     }
   }
 }
 
 TEST(IndexIVFPQ, RejectsNonL2Metric) {
-  EXPECT_THROW(
-    hypervec::IndexIVFPQ(8, 4, 4, 8, hypervec::kMetricInnerProduct),
-    hypervec::HypervecException);
+  EXPECT_THROW(hypervec::IndexIVFPQ(8, 4, 4, 8, hypervec::kMetricInnerProduct),
+               hypervec::HypervecException);
 }

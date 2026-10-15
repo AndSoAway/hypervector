@@ -15,6 +15,8 @@ __all__ = [
     "IndexHNSWLVQ",
     "IndexIVFLVQ",
     "IndexLVQ",
+    "CreateIndexFromConfig",
+    "create_index",
     "ReadIndex",
     "WriteIndex",
     "read_index",

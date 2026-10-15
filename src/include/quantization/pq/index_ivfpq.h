@@ -47,7 +47,8 @@ struct IndexIVFPQ : IndexIVF {
   int use_precomputed_table = 0;
 
   /// Cache of size nlist * M * ksub floats. Populated by PrecomputeTable().
-  /// Layout: precomputed_table[(i * M + m) * ksub + k] = ||p_{m,k}||² + 2*<c_i, p_{m,k}>
+  /// Layout: precomputed_table[(i * M + m) * ksub + k] = ||p_{m,k}||² + 2*<c_i,
+  /// p_{m,k}>
   std::vector<float> precomputed_table;
 
   /// Default constructor — for deserialization only.
@@ -78,18 +79,6 @@ struct IndexIVFPQ : IndexIVF {
    *  encoding without re-running FindNearestCentroids. */
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
 
-  /** Per-query, per-probe ADC scan; max-heap top-k. Selects between the
-   *  precomputed-table fast path and the per-probe table path based on
-   *  use_precomputed_table. */
-  void SearchPreassigned(idx_t n, const float* x, idx_t k,
-                         const idx_t* list_ids, const float* centroid_dis,
-                         float* distances, idx_t* labels, idx_t nprobe_actual,
-                         const IDSelector* sel) const override;
-
-  void RangeSearch(idx_t n, const float* x, float radius,
-                   RangeSearchResult* result,
-                   const SearchParameters* params = nullptr) const override;
-
   /** Reconstruct an indexed vector by id: decode the PQ code and add the
    *  coarse centroid back if by_residual. O(n_total) — scans all lists. */
   void Reconstruct(idx_t key, float* recons) const override;
@@ -98,6 +87,9 @@ struct IndexIVFPQ : IndexIVF {
    *  Called automatically by Train() when use_precomputed_table != 0; can
    *  also be called manually after toggling the flag on a trained index. */
   void PrecomputeTable();
+
+ protected:
+  InvertedListScannerPtr CreateInvertedListScanner() const override;
 };
 
 }  // namespace hypervec

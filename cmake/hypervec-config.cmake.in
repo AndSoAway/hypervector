@@ -1,7 +1,33 @@
 # Copyright (c) 2024 HyperVec Authors. All rights reserved.
-# All rights reserved.
 #
 # This source code is licensed under the Mulan Permissive Software License v2 (the "License") found in the
 # LICENSE file in the root directory of this source tree.
 
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(OpenMP COMPONENTS CXX)
+find_dependency(BLAS)
+find_dependency(LAPACK)
+
+if(NOT TARGET BLAS::BLAS)
+  add_library(BLAS::BLAS INTERFACE IMPORTED)
+  set_property(TARGET BLAS::BLAS PROPERTY
+    INTERFACE_LINK_LIBRARIES "${BLAS_LIBRARIES}")
+endif()
+
+if(NOT TARGET LAPACK::LAPACK)
+  add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+  set_property(TARGET LAPACK::LAPACK PROPERTY
+    INTERFACE_LINK_LIBRARIES "${LAPACK_LIBRARIES}")
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/hypervec-targets.cmake")
+
+if(NOT TARGET hypervec)
+  add_library(hypervec INTERFACE IMPORTED)
+  set_property(TARGET hypervec PROPERTY
+    INTERFACE_LINK_LIBRARIES hypervec::hypervec)
+endif()
+
+check_required_components(hypervec)

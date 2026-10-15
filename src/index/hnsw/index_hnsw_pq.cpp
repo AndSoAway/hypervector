@@ -6,17 +6,16 @@
  * source tree.
  */
 
-#include <index/hnsw/index_hnsw_pq.h>
-
 #include <index/flat/index_flat.h>
+#include <index/hnsw/index_hnsw_pq.h>
 #include <index/hnsw/visited_table.h>
 #include <quantization/pq/index_pq.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
 
-#include <omp.h>
+#include <memory>
 
-#include <vector>
+#include "index/hnsw/hnsw_build_utils.h"
 
 namespace hypervec {
 
@@ -69,6 +68,7 @@ void IndexHNSWPQ::Train(idx_t n, const float* x) {
 }
 
 void IndexHNSWPQ::Add(idx_t n, const float* x) {
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSWPQ::Add: n must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(
     raw_storage != nullptr,
     "IndexHNSWPQ::Add: index is frozen (raw scaffold has been released or "
@@ -79,42 +79,39 @@ void IndexHNSWPQ::Add(idx_t n, const float* x) {
     return;
   }
 
+  const idx_t n0 = n_total;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      raw_storage->n_total == n0 && storage->n_total == n0,
+      "IndexHNSWPQ::Add: storage counts are inconsistent");
+
   // Add to both stores; assert their counts agree.
   raw_storage->Add(n, x);
   storage->Add(n, x);
-  HYPERVEC_THROW_IF_NOT(raw_storage->n_total == storage->n_total);
-
-  const idx_t n0 = n_total;
+  HYPERVEC_THROW_IF_NOT_MSG(
+      raw_storage->n_total == n0 + n && storage->n_total == n0 + n,
+      "IndexHNSWPQ::Add: storage did not add the requested vector count");
   n_total = storage->n_total;
 
   if (hnsw.ef_construction == 0) {
     hnsw.ef_construction = 40;
   }
 
-  hnsw.PrepareLevelTab(n_total, false);
+  hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
 
   // Graph-construction distances come from the raw scaffold, NOT from
   // PQ-decoded storage. This is the whole point of dual storage.
-  DistanceComputer* dis = StorageDistanceComputer(raw_storage);
+  std::unique_ptr<DistanceComputer> dis(StorageDistanceComputer(raw_storage));
 
-  std::vector<omp_lock_t> locks(static_cast<size_t>(n_total) + 1);
-  for (idx_t i = 0; i <= n_total; ++i) {
-    omp_init_lock(&locks[i]);
-  }
+  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
 
   VisitedTable vt(static_cast<size_t>(n_total));
 
   for (idx_t i = n0; i < n_total; ++i) {
     const int pt_level = hnsw.levels[i] - 1;  // levels store level+1
     dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), locks, vt, false);
+    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
+                      false);
   }
-
-  for (idx_t i = 0; i <= n_total; ++i) {
-    omp_destroy_lock(&locks[i]);
-  }
-
-  delete dis;
 }
 
 void IndexHNSWPQ::Reset() {

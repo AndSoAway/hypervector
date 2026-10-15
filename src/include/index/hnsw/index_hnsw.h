@@ -56,6 +56,8 @@ struct IndexHNSW : Index {
 
   ~IndexHNSW() override;
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Add(idx_t n, const float* x) override;
 
   /// Trains the storage if needed

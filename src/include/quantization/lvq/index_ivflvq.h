@@ -21,6 +21,8 @@ struct IndexIVFLVQ : IndexIVF {
   IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
               MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
@@ -28,6 +30,10 @@ struct IndexIVFLVQ : IndexIVF {
                          const idx_t* list_ids, const float* centroid_dis,
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
+
+  void RangeSearch(idx_t n, const float* x, float radius,
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
   void Reconstruct(idx_t key, float* recons) const override;
 };
 

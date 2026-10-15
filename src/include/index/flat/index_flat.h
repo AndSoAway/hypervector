@@ -22,6 +22,8 @@ struct IndexFlat : IndexFlatCodes {
   explicit IndexFlat(idx_t d,  ///< dimensionality of the input vectors
                      MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
 

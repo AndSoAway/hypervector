@@ -7,8 +7,8 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
+#include <omp.h>
 #include <quantization/pq/pq.h>
 #include <utils/distances/distances.h>
 #include <utils/log/exception.h>
@@ -368,6 +368,27 @@ TEST(ProductQuantizer, SearchL2RecallVsBruteForce) {
   const float recall = Recall(pq_labels, gt_labels, nq, k);
   EXPECT_GT(recall, 0.5f) << "PQ search recall@" << k
                           << " too low: " << recall;
+}
+
+TEST(ProductQuantizer, ParallelTrainingMatchesSerialTraining) {
+  const hypervec::idx_t d = 8, M = 4;
+  const int nbits = 4;
+  const auto training = MakeClusteredData(d, 16, 16, 2027);
+
+  hypervec::PQParameters params;
+  params.niter = 5;
+
+  const int previous_threads = omp_get_max_threads();
+  hypervec::ProductQuantizer serial(d, M, nbits);
+  omp_set_num_threads(1);
+  serial.Train(256, training.data(), params);
+
+  hypervec::ProductQuantizer parallel(d, M, nbits);
+  omp_set_num_threads(4);
+  parallel.Train(256, training.data(), params);
+  omp_set_num_threads(previous_threads);
+
+  EXPECT_EQ(parallel.centroids, serial.centroids);
 }
 
 // ===========================================================================

@@ -21,6 +21,8 @@ struct IndexIVFFlat : IndexIVF {
   explicit IndexIVFFlat(idx_t d = 0, idx_t nlist = 0,
                         MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Encode: store raw floats as bytes (memcpy). */
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
 

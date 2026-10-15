@@ -13,18 +13,27 @@ set(HYPERVEC_PERF_TEST_SRC
 )
 
 if(HYPERVEC_PERF_TEST_SRC)
-  set(BENCHMARK_ENABLE_TESTING OFF)
-  set(BENCHMARK_INSTALL_DOCS OFF)
+  find_package(benchmark CONFIG QUIET)
+  if(NOT TARGET benchmark::benchmark AND HYPERVEC_FETCH_DEPS)
+    message(STATUS "Google Benchmark was not found locally; fetching v1.8.3")
+    include(FetchContent)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      googlebenchmark
+      GIT_REPOSITORY https://github.com/google/benchmark.git
+      GIT_TAG 344117638c8ff7e239044fd0fa7085839fc03021) # v1.8.3
+    FetchContent_MakeAvailable(googlebenchmark)
+  endif()
 
-  include(FetchContent)
-  FetchContent_Declare(googlebenchmark
-          GIT_REPOSITORY https://github.com/google/benchmark.git
-          GIT_TAG main)
-  FetchContent_MakeAvailable(googlebenchmark)
+  if(NOT TARGET benchmark::benchmark)
+    message(FATAL_ERROR
+      "Google Benchmark was not found. Install its CMake package or "
+      "explicitly allow the pinned download with -DHYPERVEC_FETCH_DEPS=ON.")
+  endif()
 
   find_package(Threads REQUIRED)
-  find_package(OpenMP REQUIRED)
-  find_package(gflags REQUIRED)
 
   include(${CMAKE_SOURCE_DIR}/cmake/link_to_hypervec_lib.cmake)
 
@@ -33,9 +42,7 @@ if(HYPERVEC_PERF_TEST_SRC)
     add_executable(${bench_exec} ${bench})
     link_to_hypervec_lib(${bench_exec})
     target_link_libraries(${bench_exec} PRIVATE
-      OpenMP::OpenMP_CXX
-      benchmark::benchmark
-      gflags)
+      benchmark::benchmark)
     target_include_directories(${bench_exec} PRIVATE ${CMAKE_SOURCE_DIR})
   endforeach()
 endif()

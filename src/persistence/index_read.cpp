@@ -15,8 +15,10 @@
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -28,6 +30,9 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
+#include <transform/opq_matrix.h>
+#include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 #include <utils/structures/maybe_owned_vector.h>
 
@@ -49,6 +54,22 @@ namespace hypervec {
 namespace {
 size_t deserialization_loop_limit_ = 0;
 size_t deserialization_vector_byte_limit_ = uint64_t{1} << 40;  // 1 TB
+thread_local size_t pretransform_read_depth_ = 0;
+
+class PreTransformReadGuard {
+ public:
+  PreTransformReadGuard() {
+    HYPERVEC_THROW_IF_NOT_FMT(
+        deserialization_loop_limit_ == 0 ||
+            pretransform_read_depth_ < deserialization_loop_limit_,
+        "IndexPreTransform deserialize: transform chain exceeds loop limit "
+        "(%zu)",
+        deserialization_loop_limit_);
+    ++pretransform_read_depth_;
+  }
+
+  ~PreTransformReadGuard() { --pretransform_read_depth_; }
+};
 
 template <typename T>
 void ValidateElementCount(size_t count, const char* context) {
@@ -182,6 +203,33 @@ void ReadInvertedLists(IndexIVF& index, size_t code_size, IOReader* f) {
   }
   index.invlists = loaded.release();
   index.own_invlists = true;
+}
+
+void ValidateRaBitQCodes(const IndexIVFRaBitQ& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.rabitq != nullptr && index.invlists != nullptr &&
+          index.invlists->code_size == index.rabitq->CodeSize(),
+      "IndexIVFRaBitQ deserialize: code storage is inconsistent");
+  const size_t factor_offset = index.rabitq->BitBytes();
+  for (size_t list_no = 0; list_no < static_cast<size_t>(index.nlist);
+       ++list_no) {
+    const size_t list_size = index.invlists->list_size(list_no);
+    if (list_size == 0) {
+      continue;
+    }
+    InvertedLists::ScopedCodes codes(index.invlists, list_no);
+    for (size_t offset = 0; offset < list_size; ++offset) {
+      const uint8_t* code = codes.get() + offset * index.rabitq->CodeSize();
+      float norm_squared;
+      float scale;
+      std::memcpy(&norm_squared, code + factor_offset, sizeof(float));
+      std::memcpy(&scale, code + factor_offset + sizeof(float), sizeof(float));
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(norm_squared) && norm_squared >= 0.0F &&
+              std::isfinite(scale) && scale >= 0.0F,
+          "IndexIVFRaBitQ deserialize: code factors are invalid");
+    }
+  }
 }
 
 void ValidateHnswGraph(const Index& index, const HNSW& hnsw,
@@ -439,12 +487,83 @@ static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
   RebuildHnswLevelProbabilities(hnsw);
 }
 
-static bool read_graph_bool(IOReader* f, const char* context) {
+static bool read_bool(IOReader* f, const char* context) {
   uint8_t value;
   READ1(value);
   HYPERVEC_THROW_IF_NOT_FMT(value <= 1, "%s must be encoded as 0 or 1",
                             context);
   return value != 0;
+}
+
+struct LinearTransformState {
+  idx_t d_in = 0;
+  idx_t d_out = 0;
+  bool is_orthonormal = false;
+  std::vector<float> matrix;
+  std::vector<float> bias;
+};
+
+static LinearTransformState read_linear_transform(IOReader* f) {
+  LinearTransformState state;
+  READ1(state.d_in);
+  READ1(state.d_out);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      state.d_in > 0 && state.d_in <= (1 << 20) && state.d_out > 0 &&
+          state.d_out <= (1 << 20),
+      "LinearTransform deserialize: dimensions are out of range");
+  state.is_orthonormal = read_bool(f, "LinearTransform is_orthonormal");
+  const bool has_bias = read_bool(f, "LinearTransform has_bias");
+  const size_t matrix_size = mul_no_overflow(static_cast<size_t>(state.d_in),
+                                             static_cast<size_t>(state.d_out),
+                                             "LinearTransform matrix");
+  ReadVectorExact(state.matrix, matrix_size, f, "LinearTransform matrix");
+  if (has_bias) {
+    ReadVectorExact(state.bias, static_cast<size_t>(state.d_out), f,
+                    "LinearTransform bias");
+  }
+  return state;
+}
+
+static std::unique_ptr<VectorTransform> read_transform(IOReader* f) {
+  uint32_t h;
+  READ1(h);
+  if (h == fourcc("LiTr")) {
+    LinearTransformState state = read_linear_transform(f);
+    auto transform = std::make_unique<LinearTransform>(state.d_in, state.d_out);
+    transform->SetTransform(std::move(state.matrix), std::move(state.bias),
+                            state.is_orthonormal);
+    return transform;
+  }
+
+  if (h == fourcc("OPQt")) {
+    idx_t subquantizer_count;
+    int nbits;
+    OPQParameters parameters;
+    READ1(subquantizer_count);
+    READ1(nbits);
+    READ1(parameters.iterations);
+    READ1(parameters.pq_parameters.niter);
+    READ1(parameters.pq_parameters.seed);
+    READ1(parameters.pq_parameters.nredo);
+    parameters.pq_parameters.verbose = read_bool(f, "OPQMatrix verbose");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        parameters.iterations > 0 && parameters.pq_parameters.niter > 0 &&
+            parameters.pq_parameters.nredo > 0,
+        "OPQMatrix deserialize: training parameters must be positive");
+
+    LinearTransformState state = read_linear_transform(f);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        state.d_in == state.d_out && state.is_orthonormal && state.bias.empty(),
+        "OPQMatrix deserialize: transform must be an unbiased orthogonal "
+        "rotation");
+    auto transform =
+        std::make_unique<OPQMatrix>(state.d_in, subquantizer_count, nbits);
+    transform->parameters = parameters;
+    transform->SetTransform(std::move(state.matrix), {}, true);
+    return transform;
+  }
+
+  HYPERVEC_THROW_MSG("unknown vector transform type");
 }
 
 static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
@@ -469,9 +588,8 @@ static std::unique_ptr<IndexNSWFlat> read_nsw_flat(
   READ1(options.ef_construction);
   READ1(options.ef_search);
   options.check_relative_distance =
-      read_graph_bool(f, "IndexNSWFlat check_relative_distance");
-  options.fill_to_max_degree =
-      read_graph_bool(f, "IndexNSWFlat fill_to_max_degree");
+      read_bool(f, "IndexNSWFlat check_relative_distance");
+  options.fill_to_max_degree = read_bool(f, "IndexNSWFlat fill_to_max_degree");
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -551,7 +669,7 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   READ1(options.candidate_pool_size);
   READ1(options.ef_search);
   options.check_relative_distance =
-      read_graph_bool(f, "IndexNSGFlat check_relative_distance");
+      read_bool(f, "IndexNSGFlat check_relative_distance");
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -604,11 +722,68 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   return index;
 }
 
+static std::unique_ptr<IndexLSH> read_lsh(const IndexHeaderData& header,
+                                          IOReader* f) {
+  const uint64_t total_u64 = static_cast<uint64_t>(header.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      total_u64 <= std::numeric_limits<size_t>::max(),
+      "IndexLSH deserialize: n_total does not fit in size_t");
+  const size_t total = static_cast<size_t>(total_u64);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 || total <= deserialization_loop_limit_,
+      "IndexLSH deserialize: n_total exceeds loop limit (%zu > %zu)", total,
+      deserialization_loop_limit_);
+
+  LSHIndexOptions options;
+  READ1(options.table_count);
+  READ1(options.bits_per_table);
+  READ1(options.probe_count);
+  READ1(options.candidate_limit);
+  READ1(options.random_seed);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options.table_count > 0 && options.bits_per_table > 0 &&
+          options.bits_per_table <= 63 && options.probe_count > 0 &&
+          options.probe_count <= options.bits_per_table + 1,
+      "IndexLSH deserialize: invalid hash table options");
+  HYPERVEC_THROW_IF_NOT_FMT(
+      deserialization_loop_limit_ == 0 ||
+          options.table_count <= deserialization_loop_limit_,
+      "IndexLSH deserialize: table_count exceeds loop limit (%zu > %zu)",
+      options.table_count, deserialization_loop_limit_);
+  const size_t hyperplane_count = mul_no_overflow(
+      mul_no_overflow(options.table_count, options.bits_per_table,
+                      "IndexLSH hyperplane count"),
+      static_cast<size_t>(header.d), "IndexLSH hyperplane elements");
+  ValidateElementCount<float>(hyperplane_count, "IndexLSH hyperplanes");
+  auto index =
+      std::make_unique<IndexLSH>(header.d, header.metric_type, options);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      header.is_trained == index->is_trained,
+      "IndexLSH deserialize: training state does not match flat storage");
+
+  std::vector<float> hyperplanes;
+  ReadVectorExact(hyperplanes, hyperplane_count, f, "IndexLSH hyperplanes");
+  const size_t code_count =
+      mul_no_overflow(total, index->CodeStore().CodeSize(), "IndexLSH codes");
+  std::vector<uint8_t> codes;
+  ReadVectorExact(codes, code_count, f, "IndexLSH codes");
+
+  InMemoryCodeStore code_store(index->CodeStore().CodeSize());
+  code_store.Append(header.n_total, codes.data());
+  index->RestoreState(std::move(code_store), std::move(hyperplanes));
+  return index;
+}
+
 Index* ReadIndex(IOReader* f, int io_flags) {
   (void)io_flags;
 
   uint32_t h;
   READ1(h);
+
+  if (h == fourcc("ILSh")) {
+    const IndexHeaderData header = read_index_header_data(f);
+    return read_lsh(header, f).release();
+  }
 
   if (h == fourcc("INSf")) {
     const IndexHeaderData header = read_index_header_data(f);
@@ -618,6 +793,23 @@ Index* ReadIndex(IOReader* f, int io_flags) {
   if (h == fourcc("INGf")) {
     const IndexHeaderData header = read_index_header_data(f);
     return read_nsg_flat(header, f).release();
+  }
+
+  if (h == fourcc("IPTr")) {
+    const PreTransformReadGuard depth_guard;
+    const IndexHeaderData header = read_index_header_data(f);
+    std::unique_ptr<VectorTransform> transform = read_transform(f);
+    std::unique_ptr<Index> inner(ReadIndex(f, 0));
+    auto index = std::make_unique<IndexPreTransform>(std::move(transform),
+                                                     std::move(inner));
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index->d == header.d && index->n_total == header.n_total &&
+            index->is_trained == header.is_trained &&
+            index->metric_type == header.metric_type &&
+            index->metric_arg == header.metric_arg,
+        "IndexPreTransform deserialize: component metadata does not match "
+        "the wrapper");
+    return index.release();
   }
 
   if (h == fourcc("IxMp")) {
@@ -814,6 +1006,34 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     idx->lvq.is_trained = idx->is_trained;
 
     ReadInvertedLists(*idx, idx->lvq.code_size, f);
+    return idx.release();
+  }
+
+  if (h == fourcc("IVRQ")) {
+    auto idx = std::make_unique<IndexIVFRaBitQ>();
+    read_index_header(*idx, f);
+    READ1(idx->nlist);
+    READ1(idx->nprobe);
+    const size_t centroid_count = ValidateIvfMetadata(*idx);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        idx->is_trained && idx->metric_type == kMetricL2,
+        "IndexIVFRaBitQ deserialize: index must be trained with kMetricL2");
+    ReadVectorExact(idx->centroids, centroid_count, f,
+                    "IndexIVFRaBitQ centroids");
+    for (float centroid : idx->centroids) {
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(centroid),
+          "IndexIVFRaBitQ deserialize: centroids must be finite");
+    }
+    idx->by_residual = read_bool(f, "IndexIVFRaBitQ by_residual");
+    uint64_t random_seed;
+    int rotation_rounds;
+    READ1(random_seed);
+    READ1(rotation_rounds);
+    idx->rabitq =
+        std::make_unique<RaBitQQuantizer>(idx->d, random_seed, rotation_rounds);
+    ReadInvertedLists(*idx, idx->rabitq->CodeSize(), f);
+    ValidateRaBitQCodes(*idx);
     return idx.release();
   }
 

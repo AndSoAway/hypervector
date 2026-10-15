@@ -11,11 +11,13 @@
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <persistence/index_clone.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/exception.h>
 #include <utils/selector/id_selector.h>
 
+#include <array>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -183,6 +185,31 @@ TEST(IndexIDMapCorrectness, PreservesHnswParametersWhileTranslatingSelector) {
 
   EXPECT_EQ(recording.received_ef_search, 77);
   EXPECT_EQ(label, external_id);
+}
+
+TEST(IndexIDMapCorrectness, PreservesLshParametersWhileTranslatingSelector) {
+  hypervec::LSHIndexOptions options;
+  options.table_count = 2;
+  options.bits_per_table = 1;
+  options.probe_count = 2;
+  hypervec::IndexLSH lsh(2, hypervec::kMetricInnerProduct, options);
+  hypervec::IndexIDMap index(&lsh);
+  const std::vector<float> vectors = {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F};
+  const std::vector<hypervec::idx_t> ids = {10, 20, 30};
+  index.AddWithIds(3, vectors.data(), ids.data());
+
+  hypervec::IDSelectorRange selector(20, 31);
+  hypervec::SearchParametersLSH params;
+  params.probe_count = 2;
+  params.candidate_limit = 0;
+  params.sel = &selector;
+  std::array<float, 3> distances;
+  std::array<hypervec::idx_t, 3> labels;
+  index.Search(1, vectors.data(), 3, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, 3>{30, 20, -1}));
+  EXPECT_EQ(distances[0], 3.0F);
+  EXPECT_EQ(distances[1], 2.0F);
 }
 
 TEST(IndexIDMapCorrectness, FailedAddDoesNotPublishMappings) {

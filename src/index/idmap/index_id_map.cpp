@@ -8,6 +8,7 @@
 
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
+#include <index/lsh/index_lsh.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/assert.h>
 
@@ -48,6 +49,12 @@ std::unique_ptr<SearchParameters> TranslateSearchParameters(
   if (typeid(params) == typeid(SearchParametersHNSW)) {
     auto translated = std::make_unique<SearchParametersHNSW>(
         static_cast<const SearchParametersHNSW&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
+  if (typeid(params) == typeid(SearchParametersLSH)) {
+    auto translated = std::make_unique<SearchParametersLSH>(
+        static_cast<const SearchParametersLSH&>(params));
     translated->sel = translated_selector;
     return translated;
   }

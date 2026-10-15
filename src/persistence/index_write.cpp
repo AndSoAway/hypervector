@@ -15,8 +15,10 @@
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -27,11 +29,16 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
+#include <transform/opq_matrix.h>
+#include <transform/vector_transform.h>
 #include <utils/log/assert.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 
 namespace hypervec {
@@ -43,7 +50,7 @@ static void write_index_header(const Index& idx, IOWriter* f) {
   WRITE1(dummy);
   WRITE1(dummy);
   WRITE1(idx.is_trained);
-  int metric = (int)idx.metric_type;
+  int metric = static_cast<int>(idx.metric_type);
   WRITE1(metric);
   if (idx.metric_type > 1) {
     WRITE1(idx.metric_arg);
@@ -65,6 +72,77 @@ static void write_lvq(const LocalVectorQuantizer& lvq, IOWriter* f) {
   WRITEVECTOR(lvq.residual_codebooks);
 }
 
+static void write_linear_transform(const LinearTransform& transform,
+                                   IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.is_trained,
+      "LinearTransform serialize: transform must be trained");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.d_in > 0 && transform.d_out > 0,
+      "LinearTransform serialize: dimensions must be positive");
+  const size_t matrix_size = mul_no_overflow(
+      static_cast<size_t>(transform.d_in), static_cast<size_t>(transform.d_out),
+      "LinearTransform matrix");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.matrix.size() == matrix_size,
+      "LinearTransform serialize: matrix size does not match dimensions");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.bias.empty() ||
+          transform.bias.size() == static_cast<size_t>(transform.d_out),
+      "LinearTransform serialize: bias size does not match output dimension");
+  LinearTransform validated(transform.d_in, transform.d_out);
+  validated.SetTransform(transform.matrix, transform.bias,
+                         transform.is_orthonormal);
+
+  WRITE1(transform.d_in);
+  WRITE1(transform.d_out);
+  const uint8_t is_orthonormal = transform.is_orthonormal;
+  const uint8_t has_bias = !transform.bias.empty();
+  WRITE1(is_orthonormal);
+  WRITE1(has_bias);
+  WRITEVECTOR(transform.matrix);
+  if (has_bias) {
+    WRITEVECTOR(transform.bias);
+  }
+}
+
+static void write_transform(const VectorTransform& transform, IOWriter* f) {
+  const auto* opq = dynamic_cast<const OPQMatrix*>(&transform);
+  if (opq) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->parameters.iterations > 0 &&
+            opq->parameters.pq_parameters.niter > 0 &&
+            opq->parameters.pq_parameters.nredo > 0,
+        "OPQMatrix serialize: training parameters must be positive");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->d_in == opq->d_out && opq->is_orthonormal && opq->bias.empty(),
+        "OPQMatrix serialize: transform must be an unbiased orthogonal "
+        "rotation");
+    uint32_t h = fourcc("OPQt");
+    WRITE1(h);
+    WRITE1(opq->subquantizer_count);
+    WRITE1(opq->nbits);
+    WRITE1(opq->parameters.iterations);
+    WRITE1(opq->parameters.pq_parameters.niter);
+    WRITE1(opq->parameters.pq_parameters.seed);
+    WRITE1(opq->parameters.pq_parameters.nredo);
+    const uint8_t verbose = opq->parameters.pq_parameters.verbose;
+    WRITE1(verbose);
+    write_linear_transform(*opq, f);
+    return;
+  }
+
+  const auto* linear = dynamic_cast<const LinearTransform*>(&transform);
+  if (linear) {
+    uint32_t h = fourcc("LiTr");
+    WRITE1(h);
+    write_linear_transform(*linear, f);
+    return;
+  }
+
+  HYPERVEC_THROW_MSG("unsupported vector transform type for writing");
+}
+
 static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   int M = hnsw.NbNeighbors(0);
   WRITE1(M);
@@ -72,7 +150,7 @@ static void write_HNSW(const HNSW& hnsw, IOWriter* f) {
   WRITE1(hnsw.max_level);
   WRITE1(hnsw.entry_point);
   int nb_levels =
-    hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
+      hnsw.levels.size() > 0 ? hnsw.levels[hnsw.levels.size() - 1] : 0;
   WRITE1(nb_levels);
   WRITEVECTOR(hnsw.cum_nneighbor_per_level);
   WRITEVECTOR(hnsw.levels);
@@ -91,6 +169,67 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
     write_index_header(*id_map, f);
     WRITEVECTOR(id_map->rev_map);
     WriteIndex(id_map->index, f, 0);
+    return;
+  }
+
+  const auto* pretransform = dynamic_cast<const IndexPreTransform*>(index);
+  if (pretransform) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->transform != nullptr && pretransform->index != nullptr,
+        "IndexPreTransform serialize: components must not be null");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->is_trained && pretransform->transform->is_trained &&
+            pretransform->index->is_trained,
+        "IndexPreTransform serialize: all components must be trained");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        pretransform->d == pretransform->transform->d_in &&
+            pretransform->transform->d_out == pretransform->index->d &&
+            pretransform->n_total == pretransform->index->n_total &&
+            pretransform->metric_type == pretransform->index->metric_type &&
+            pretransform->metric_arg == pretransform->index->metric_arg,
+        "IndexPreTransform serialize: wrapper metadata is inconsistent");
+
+    uint32_t h = fourcc("IPTr");
+    WRITE1(h);
+    write_index_header(*pretransform, f);
+    write_transform(*pretransform->transform, f);
+    WriteIndex(pretransform->index.get(), f, 0);
+    return;
+  }
+
+  const auto* lsh = dynamic_cast<const IndexLSH*>(index);
+  if (lsh) {
+    const size_t expected_code_size = mul_no_overflow(
+        static_cast<size_t>(lsh->d), sizeof(float), "IndexLSH code size");
+    const size_t expected_hyperplanes = mul_no_overflow(
+        mul_no_overflow(lsh->Options().table_count,
+                        lsh->Options().bits_per_table,
+                        "IndexLSH hyperplane count"),
+        static_cast<size_t>(lsh->d), "IndexLSH hyperplane elements");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        lsh->is_trained && lsh->metric_type == kMetricInnerProduct &&
+            lsh->CodeStore().CodeSize() == expected_code_size &&
+            lsh->CodeStore().Size() == lsh->n_total,
+        "IndexLSH serialize: index metadata does not match stored vectors");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        lsh->Hyperplanes().size() == expected_hyperplanes,
+        "IndexLSH serialize: hyperplane count does not match the options");
+
+    uint32_t h = fourcc("ILSh");
+    WRITE1(h);
+    write_index_header(*lsh, f);
+    const LSHIndexOptions& options = lsh->Options();
+    WRITE1(options.table_count);
+    WRITE1(options.bits_per_table);
+    WRITE1(options.probe_count);
+    WRITE1(options.candidate_limit);
+    WRITE1(options.random_seed);
+    WRITEVECTOR(lsh->Hyperplanes());
+    const size_t code_bytes =
+        mul_no_overflow(static_cast<size_t>(lsh->n_total),
+                        lsh->CodeStore().CodeSize(), "IndexLSH codes");
+    WRITE1(code_bytes);
+    WRITEANDCHECK(lsh->CodeStore().Data(), code_bytes);
     return;
   }
 
@@ -342,6 +481,94 @@ void WriteIndex(const Index* index, IOWriter* f, int io_flags) {
       InvertedLists::ScopedCodes codes(ivflvq->invlists, list_no);
       WRITEANDCHECK(ids.get(), sz);
       WRITEANDCHECK(codes.get(), sz * ivflvq->lvq.code_size);
+    }
+    return;
+  }
+
+  const auto* ivfrabitq = dynamic_cast<const IndexIVFRaBitQ*>(index);
+  if (ivfrabitq) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->is_trained && ivfrabitq->metric_type == kMetricL2 &&
+            ivfrabitq->rabitq != nullptr && ivfrabitq->invlists != nullptr &&
+            ivfrabitq->rabitq->Dimension() == ivfrabitq->d &&
+            ivfrabitq->invlists->code_size == ivfrabitq->rabitq->CodeSize(),
+        "IndexIVFRaBitQ serialize: index metadata is inconsistent");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->nlist > 0 && ivfrabitq->nprobe > 0,
+        "IndexIVFRaBitQ serialize: nlist and nprobe must be positive");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->n_total >= 0 && static_cast<uint64_t>(ivfrabitq->n_total) <=
+                                       std::numeric_limits<size_t>::max(),
+        "IndexIVFRaBitQ serialize: n_total does not fit in size_t");
+    const size_t expected_total = static_cast<size_t>(ivfrabitq->n_total);
+    const size_t centroid_count = mul_no_overflow(
+        static_cast<size_t>(ivfrabitq->nlist),
+        static_cast<size_t>(ivfrabitq->d), "IndexIVFRaBitQ centroids");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        ivfrabitq->centroids.size() == centroid_count,
+        "IndexIVFRaBitQ serialize: centroid count is inconsistent");
+    for (float centroid : ivfrabitq->centroids) {
+      HYPERVEC_THROW_IF_NOT_MSG(
+          std::isfinite(centroid),
+          "IndexIVFRaBitQ serialize: centroids must be finite");
+    }
+
+    size_t stored_total = 0;
+    for (size_t list_no = 0; list_no < static_cast<size_t>(ivfrabitq->nlist);
+         ++list_no) {
+      const size_t list_size = ivfrabitq->invlists->list_size(list_no);
+      stored_total = add_no_overflow(stored_total, list_size,
+                                     "IndexIVFRaBitQ entry count");
+      if (list_size == 0) {
+        continue;
+      }
+      InvertedLists::ScopedCodes codes(ivfrabitq->invlists, list_no);
+      const size_t factor_offset = ivfrabitq->rabitq->BitBytes();
+      for (size_t offset = 0; offset < list_size; ++offset) {
+        const uint8_t* code =
+            codes.get() + offset * ivfrabitq->rabitq->CodeSize();
+        float norm_squared;
+        float scale;
+        std::memcpy(&norm_squared, code + factor_offset, sizeof(float));
+        std::memcpy(&scale, code + factor_offset + sizeof(float),
+                    sizeof(float));
+        HYPERVEC_THROW_IF_NOT_MSG(
+            std::isfinite(norm_squared) && norm_squared >= 0.0F &&
+                std::isfinite(scale) && scale >= 0.0F,
+            "IndexIVFRaBitQ serialize: code factors are invalid");
+      }
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        stored_total == expected_total,
+        "IndexIVFRaBitQ serialize: list entries do not match n_total");
+
+    uint32_t h = fourcc("IVRQ");
+    WRITE1(h);
+    write_index_header(*ivfrabitq, f);
+    WRITE1(ivfrabitq->nlist);
+    WRITE1(ivfrabitq->nprobe);
+    WRITEVECTOR(ivfrabitq->centroids);
+    const uint8_t by_residual = ivfrabitq->by_residual;
+    WRITE1(by_residual);
+    const uint64_t random_seed = ivfrabitq->rabitq->Seed();
+    const int rotation_rounds = ivfrabitq->rabitq->RotationRounds();
+    WRITE1(random_seed);
+    WRITE1(rotation_rounds);
+
+    for (size_t list_no = 0; list_no < static_cast<size_t>(ivfrabitq->nlist);
+         ++list_no) {
+      const size_t list_size = ivfrabitq->invlists->list_size(list_no);
+      WRITE1(list_size);
+      if (list_size == 0) {
+        continue;
+      }
+      InvertedLists::ScopedIds ids(ivfrabitq->invlists, list_no);
+      InvertedLists::ScopedCodes codes(ivfrabitq->invlists, list_no);
+      WRITEANDCHECK(ids.get(), list_size);
+      const size_t code_bytes =
+          mul_no_overflow(list_size, ivfrabitq->rabitq->CodeSize(),
+                          "IndexIVFRaBitQ list codes");
+      WRITEANDCHECK(codes.get(), code_bytes);
     }
     return;
   }

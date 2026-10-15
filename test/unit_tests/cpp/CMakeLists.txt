@@ -18,6 +18,8 @@ set(HYPERVEC_TEST_SRC
   test_index_build.cpp
   test_index_capabilities.cpp
   test_index_factory.cpp
+  test_index_lsh.cpp
+  test_index_pre_transform.cpp
   test_index_hnsw_correctness.cpp
   test_index_id_map_correctness.cpp
   test_persistence_validation.cpp
@@ -33,6 +35,10 @@ set(HYPERVEC_TEST_SRC
   test_kmeans.cpp
   test_pq.cpp
   test_quantizer_protocol.cpp
+  test_rabitq_quantizer.cpp
+  test_index_ivf_rabitq.cpp
+  test_opq_matrix.cpp
+  test_vector_transform.cpp
   test_index_pq.cpp
   test_index_ivf_flat.cpp
   test_index_ivf_correctness.cpp

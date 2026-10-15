@@ -21,7 +21,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -56,6 +59,30 @@ void WriteIndexHeader(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
   }
 }
 
+void WriteLinearTransform(hypervec::VectorIOWriter* writer,
+                          hypervec::idx_t d_in, hypervec::idx_t d_out,
+                          uint8_t is_orthonormal, uint8_t has_bias,
+                          const std::vector<float>& matrix,
+                          const std::vector<float>& bias = {}) {
+  const uint32_t transform_tag = hypervec::fourcc("LiTr");
+  WriteOne(writer, transform_tag);
+  WriteOne(writer, d_in);
+  WriteOne(writer, d_out);
+  WriteOne(writer, is_orthonormal);
+  WriteOne(writer, has_bias);
+  WriteVector(writer, matrix);
+  if (has_bias == 1) {
+    WriteVector(writer, bias);
+  }
+}
+
+void WritePreTransformHeader(hypervec::VectorIOWriter* writer,
+                             hypervec::idx_t d, hypervec::idx_t n_total) {
+  const uint32_t index_tag = hypervec::fourcc("IPTr");
+  WriteOne(writer, index_tag);
+  WriteIndexHeader(writer, d, n_total, true);
+}
+
 void WritePq(hypervec::VectorIOWriter* writer, hypervec::idx_t d,
              hypervec::idx_t m, int nbits,
              const std::vector<float>& centroids) {
@@ -87,6 +114,23 @@ void WriteIvfFlatList(hypervec::VectorIOWriter* writer,
                                    sizeof(float));
   ASSERT_EQ((*writer)(codes.data(), sizeof(uint8_t), codes.size()),
             codes.size());
+}
+
+void WriteIvfRaBitQPrefix(hypervec::VectorIOWriter* writer,
+                          hypervec::idx_t n_total, uint8_t by_residual,
+                          int rotation_rounds) {
+  const uint32_t tag = hypervec::fourcc("IVRQ");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 4, n_total, true);
+  const hypervec::idx_t nlist = 1;
+  const hypervec::idx_t nprobe = 1;
+  WriteOne(writer, nlist);
+  WriteOne(writer, nprobe);
+  WriteVector(writer, std::vector<float>(4, 0.0F));
+  WriteOne(writer, by_residual);
+  const uint64_t random_seed = 42;
+  WriteOne(writer, random_seed);
+  WriteOne(writer, rotation_rounds);
 }
 
 void WriteNswFlatPayload(hypervec::VectorIOWriter* writer,
@@ -144,6 +188,26 @@ void WriteNsgFlatPayload(hypervec::VectorIOWriter* writer,
   WriteVector(writer, codes);
   WriteVector(writer, offsets);
   WriteVector(writer, edges);
+}
+
+void WriteLshPayload(hypervec::VectorIOWriter* writer, hypervec::idx_t n_total,
+                     const std::vector<float>& hyperplanes,
+                     const std::vector<uint8_t>& codes) {
+  const uint32_t tag = hypervec::fourcc("ILSh");
+  WriteOne(writer, tag);
+  WriteIndexHeader(writer, 1, n_total, true, hypervec::kMetricInnerProduct);
+  const size_t table_count = 1;
+  const size_t bits_per_table = 1;
+  const size_t probe_count = 1;
+  const size_t candidate_limit = 0;
+  const uint64_t random_seed = 42;
+  WriteOne(writer, table_count);
+  WriteOne(writer, bits_per_table);
+  WriteOne(writer, probe_count);
+  WriteOne(writer, candidate_limit);
+  WriteOne(writer, random_seed);
+  WriteVector(writer, hyperplanes);
+  WriteVector(writer, codes);
 }
 
 class DeserializationLimitsGuard {
@@ -207,6 +271,36 @@ TEST(PersistenceValidation, RejectsInvalidNsgConstructionOptions) {
 TEST(PersistenceValidation, RejectsInvalidNsgBooleanEncoding) {
   hypervec::VectorIOWriter writer;
   WriteNsgFlatPayload(&writer, 0, {}, {0}, {}, 0.01, 2);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsLshHyperplaneCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 0, {}, {});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteLshHyperplanes) {
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 0, {std::numeric_limits<float>::quiet_NaN()}, {});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteLshStoredVectors) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<uint8_t> codes(sizeof(float));
+  std::memcpy(codes.data(), &nan, sizeof(float));
+  hypervec::VectorIOWriter writer;
+  WriteLshPayload(&writer, 1, {1.0F}, codes);
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;
@@ -377,6 +471,36 @@ TEST(PersistenceValidation, RejectsInvalidIvfPqModeBeforeCodecPayload) {
   const int use_precomputed_table = 0;
   WriteOne(&writer, invalid_by_residual);
   WriteOne(&writer, use_precomputed_table);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidIvfRaBitQModeAndRotation) {
+  for (const auto [by_residual, rotation_rounds] :
+       {std::pair<uint8_t, int>{2, 3}, std::pair<uint8_t, int>{1, 17}}) {
+    hypervec::VectorIOWriter writer;
+    WriteIvfRaBitQPrefix(&writer, 0, by_residual, rotation_rounds);
+
+    hypervec::VectorIOReader reader;
+    reader.data = writer.data;
+    EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+  }
+}
+
+TEST(PersistenceValidation, RejectsNonFiniteIvfRaBitQCodeFactors) {
+  hypervec::VectorIOWriter writer;
+  WriteIvfRaBitQPrefix(&writer, 1, 1, 3);
+  const size_t list_size = 1;
+  WriteOne(&writer, list_size);
+  const hypervec::idx_t id = 0;
+  WriteOne(&writer, id);
+  constexpr size_t bit_bytes = 1;
+  std::vector<uint8_t> code(bit_bytes + 2 * sizeof(float), 0);
+  const float invalid_norm = (std::numeric_limits<float>::quiet_NaN)();
+  std::memcpy(code.data() + bit_bytes, &invalid_norm, sizeof(float));
+  ASSERT_EQ(writer(code.data(), sizeof(uint8_t), code.size()), code.size());
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;
@@ -569,6 +693,83 @@ TEST(PersistenceValidation, RejectsIdMapExternalIdCountMismatch) {
   WriteOne(&writer, id_map_tag);
   WriteIndexHeader(&writer, 2, 2, true);
   WriteVector(&writer, std::vector<hypervec::idx_t>{7});
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsPreTransformMatrixCountMismatch) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  WriteLinearTransform(&writer, 2, 2, 0, 0, std::vector<float>(3, 0.0F));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidPreTransformBooleanEncoding) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  WriteLinearTransform(&writer, 2, 2, 2, 0, std::vector<float>(4, 0.0F));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsInvalidPreTransformOpqParameters) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 2, 0);
+  const uint32_t transform_tag = hypervec::fourcc("OPQt");
+  WriteOne(&writer, transform_tag);
+  const hypervec::idx_t subquantizer_count = 1;
+  const int nbits = 2;
+  const int invalid_iterations = 0;
+  const int niter = 3;
+  const int seed = 1234;
+  const int nredo = 1;
+  const uint8_t verbose = 0;
+  WriteOne(&writer, subquantizer_count);
+  WriteOne(&writer, nbits);
+  WriteOne(&writer, invalid_iterations);
+  WriteOne(&writer, niter);
+  WriteOne(&writer, seed);
+  WriteOne(&writer, nredo);
+  WriteOne(&writer, verbose);
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, RejectsPreTransformWrapperMetadataMismatch) {
+  hypervec::VectorIOWriter writer;
+  WritePreTransformHeader(&writer, 3, 1);
+  WriteLinearTransform(&writer, 2, 2, 1, 0, {1.0F, 0.0F, 0.0F, 1.0F});
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(2 * sizeof(float)));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  EXPECT_THROW(hypervec::ReadIndexUp(&reader), hypervec::HypervecException);
+}
+
+TEST(PersistenceValidation, EnforcesPreTransformChainLimit) {
+  DeserializationLimitsGuard guard;
+  hypervec::set_deserialization_loop_limit(1);
+  hypervec::VectorIOWriter writer;
+  for (int depth = 0; depth < 2; ++depth) {
+    WritePreTransformHeader(&writer, 2, 1);
+    WriteLinearTransform(&writer, 2, 2, 1, 0, {1.0F, 0.0F, 0.0F, 1.0F});
+  }
+  const uint32_t flat_tag = hypervec::fourcc("IFlm");
+  WriteOne(&writer, flat_tag);
+  WriteIndexHeader(&writer, 2, 1, true);
+  WriteVector(&writer, std::vector<uint8_t>(2 * sizeof(float)));
 
   hypervec::VectorIOReader reader;
   reader.data = writer.data;

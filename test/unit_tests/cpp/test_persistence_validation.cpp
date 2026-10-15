@@ -704,6 +704,22 @@ TEST(PersistenceValidation, RejectsHnswOutOfRangeNeighbor) {
   EXPECT_TRUE(writer.data.empty());
 }
 
+TEST(PersistenceValidation, RejectsInvalidHnswSearchConfigurationBeforeWrite) {
+  hypervec::IndexHNSWFlat source(2, 8);
+  hypervec::VectorIOWriter writer;
+
+  source.hnsw.ef_search = 0;
+  EXPECT_THROW(hypervec::WriteIndex(&source, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
+
+  source.hnsw.ef_search = 16;
+  source.hnsw.is_panorama = true;
+  EXPECT_THROW(hypervec::WriteIndex(&source, &writer),
+               hypervec::HypervecException);
+  EXPECT_TRUE(writer.data.empty());
+}
+
 TEST(PersistenceValidation, RoundtripsUntrainedHnswPqState) {
   hypervec::IndexHNSWPQ source(4, 2, 1, 8);
   ASSERT_FALSE(source.is_trained);

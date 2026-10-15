@@ -41,6 +41,8 @@ struct SearchEvaluationOptions {
   idx_t k = 10;
   size_t warmup_runs = 0;
   size_t measured_runs = 1;
+  /** Queries per timed Index::Search call; zero uses the complete workload. */
+  idx_t query_batch_size = 0;
 };
 
 /** Aggregate batch-search quality and timing metrics. */
@@ -52,12 +54,19 @@ struct SearchEvaluationResult {
   double elapsed_seconds = 0.0;
   double mean_latency_ms = 0.0;
   double queries_per_second = 0.0;
+  idx_t query_batch_size = 0;
+  size_t latency_sample_count = 0;
+  double batch_latency_p50_ms = 0.0;
+  double batch_latency_p95_ms = 0.0;
+  double batch_latency_p99_ms = 0.0;
 };
 
 /** Evaluate Index::Search against caller-provided ground truth.
  *
  * Warmup runs are not timed. Recall is computed from the final measured run;
- * latency and QPS cover every measured run. Search exceptions propagate.
+ * latency and QPS cover every measured run. Batch latency uses nearest-rank
+ * percentiles over individual Index::Search calls. Search exceptions
+ * propagate.
  */
 SearchEvaluationResult EvaluateSearch(
     const Index& index, const SearchEvaluationInput& input,

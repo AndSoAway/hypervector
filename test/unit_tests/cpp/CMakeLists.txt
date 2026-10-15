@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 set(HYPERVEC_TEST_SRC
+  test_exact_ground_truth.cpp
   test_heap.cpp
   test_diskann_searcher.cpp
   test_diskann_storage.cpp

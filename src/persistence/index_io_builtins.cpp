@@ -85,16 +85,17 @@ class BuiltinIndexIOCodecs {
                       std::type_index(typeid(IndexDiskANNFlat)),
                       WriteDiskANNFlatPayload, ReadDiskANNFlatPayload,
                       ValidateDiskANNFlatForWrite);
-    registry.Register({"hnsw_flat", fourcc("IHNf"), {}},
+    registry.Register({"hnsw_flat", fourcc("IH2f"), {fourcc("IHNf")}},
                       std::type_index(typeid(IndexHNSWFlat)),
                       WriteHNSWFlatPayload, ReadHNSWFlatPayload,
                       ValidateHNSWFlatForWrite);
-    registry.Register({"hnsw_pq", fourcc("IHNp"), {}},
+    registry.Register({"hnsw_pq", fourcc("IH2p"), {fourcc("IHNp")}},
                       std::type_index(typeid(IndexHNSWPQ)), WriteHNSWPQPayload,
                       ReadHNSWPQPayload, ValidateHNSWPQForWrite);
-    registry.Register(
-        {"hnsw_lvq", fourcc("IHNl"), {}}, std::type_index(typeid(IndexHNSWLVQ)),
-        WriteHNSWLVQPayload, ReadHNSWLVQPayload, ValidateHNSWLVQForWrite);
+    registry.Register({"hnsw_lvq", fourcc("IH2l"), {fourcc("IHNl")}},
+                      std::type_index(typeid(IndexHNSWLVQ)),
+                      WriteHNSWLVQPayload, ReadHNSWLVQPayload,
+                      ValidateHNSWLVQForWrite);
     registry.Register({"vamana_flat", fourcc("IVAf"), {}},
                       std::type_index(typeid(IndexVamanaFlat)),
                       WriteVamanaFlatPayload, ReadVamanaFlatPayload,

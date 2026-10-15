@@ -27,17 +27,18 @@ class ScriptedIndex final : public hypervec::Index {
 
   void Add(hypervec::idx_t n, const float*) final { n_total += n; }
 
-  void Search(hypervec::idx_t n, const float*, hypervec::idx_t k,
+  void Search(hypervec::idx_t n, const float* queries, hypervec::idx_t k,
               float* distances, hypervec::idx_t* labels,
               const hypervec::SearchParameters* parameters) const final {
     ++search_count;
     received_parameters = parameters;
-    ASSERT_EQ(n, 2);
     ASSERT_EQ(k, 2);
-    const std::array<hypervec::idx_t, 4> scripted_labels = {2, 1, 4, 4};
-    for (size_t i = 0; i < scripted_labels.size(); ++i) {
-      distances[i] = static_cast<float>(i);
-      labels[i] = scripted_labels[i];
+    for (hypervec::idx_t query = 0; query < n; ++query) {
+      const bool first_query = queries[query * d] == 0.0F;
+      distances[query * k] = 0.0F;
+      distances[query * k + 1] = 1.0F;
+      labels[query * k] = first_query ? 2 : 4;
+      labels[query * k + 1] = first_query ? 1 : 4;
     }
   }
 
@@ -81,6 +82,32 @@ TEST(SearchEvaluator, MeasuresRepeatedSearchAndForwardsParameters) {
   EXPECT_GE(result.mean_latency_ms, 0.0);
   EXPECT_TRUE(result.queries_per_second > 0.0 ||
               std::isinf(result.queries_per_second));
+  EXPECT_EQ(result.query_batch_size, 2);
+  EXPECT_EQ(result.latency_sample_count, 3U);
+  EXPECT_LE(result.batch_latency_p50_ms, result.batch_latency_p95_ms);
+  EXPECT_LE(result.batch_latency_p95_ms, result.batch_latency_p99_ms);
+}
+
+TEST(SearchEvaluator, BatchesQueriesAndReportsOneSamplePerSearchCall) {
+  ScriptedIndex index;
+  const std::array<float, 4> queries = {0.0F, 0.0F, 1.0F, 1.0F};
+  const std::array<hypervec::idx_t, 4> ground_truth = {1, 2, 3, 4};
+  const hypervec::SearchEvaluationInput input{
+      queries.data(), 2, {ground_truth.data(), 2, 2}};
+  hypervec::SearchEvaluationOptions options;
+  options.k = 2;
+  options.warmup_runs = 2;
+  options.measured_runs = 3;
+  options.query_batch_size = 1;
+
+  const auto result = hypervec::EvaluateSearch(index, input, options);
+
+  EXPECT_EQ(index.search_count, 10U);
+  EXPECT_EQ(result.query_batch_size, 1);
+  EXPECT_EQ(result.latency_sample_count, 6U);
+  EXPECT_DOUBLE_EQ(result.recall_at_k, 0.75);
+  EXPECT_LE(result.batch_latency_p50_ms, result.batch_latency_p95_ms);
+  EXPECT_LE(result.batch_latency_p95_ms, result.batch_latency_p99_ms);
 }
 
 TEST(SearchEvaluator, ReportsExactFlatRecall) {
@@ -124,6 +151,12 @@ TEST(SearchEvaluator, RejectsMalformedInputsBeforeSearching) {
 
   input.ground_truth.labels = valid_ground_truth.data();
   input.ground_truth.neighbors_per_query = 1;
+  EXPECT_THROW(hypervec::EvaluateSearch(index, input, options),
+               hypervec::HypervecException);
+  EXPECT_EQ(index.search_count, 0U);
+
+  input.ground_truth.neighbors_per_query = 2;
+  options.query_batch_size = -1;
   EXPECT_THROW(hypervec::EvaluateSearch(index, input, options),
                hypervec::HypervecException);
   EXPECT_EQ(index.search_count, 0U);

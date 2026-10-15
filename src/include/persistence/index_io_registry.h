@@ -37,6 +37,9 @@ struct IndexIODescriptor {
 using IndexPayloadWriter = std::function<void(const Index&, IOWriter*, int)>;
 using IndexPayloadResult = std::unique_ptr<Index>;
 using IndexPayloadReader = std::function<IndexPayloadResult(IOReader*, int)>;
+/** Reader variant for formats whose legacy aliases have different payloads. */
+using TaggedPayloadCallback = IndexPayloadResult(uint32_t, IOReader*, int);
+using TaggedIndexPayloadReader = std::function<TaggedPayloadCallback>;
 using IndexWriteValidator = std::function<void(const Index&, int)>;
 
 /** Thread-safe pairing of an exact C++ index type with its binary codec.
@@ -55,6 +58,11 @@ class IndexIORegistry {
 
   void Register(IndexIODescriptor descriptor, std::type_index index_type,
                 IndexPayloadWriter writer, IndexPayloadReader reader,
+                IndexWriteValidator write_validator = {});
+
+  /** Register a reader that receives the actual canonical or legacy tag. */
+  void Register(IndexIODescriptor descriptor, std::type_index index_type,
+                IndexPayloadWriter writer, TaggedIndexPayloadReader reader,
                 IndexWriteValidator write_validator = {});
 
   bool Contains(std::type_index index_type) const;

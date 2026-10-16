@@ -9,6 +9,7 @@ import numpy as np
 class FakeIndexFlatL2:
     def __init__(self, d: int, *, trained: bool = True) -> None:
         self.d = d
+        self.n_total = 0
         self.is_trained = trained
         self.vectors = np.empty((0, d), dtype=np.float32)
 
@@ -17,6 +18,7 @@ class FakeIndexFlatL2:
 
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
+        self.n_total = len(self.vectors)
 
     def search(self, x, k: int):
         x = np.asarray(x, dtype=np.float32)

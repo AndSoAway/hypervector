@@ -6,6 +6,7 @@
 # HNSW-only test configuration
 
 set(HYPERVEC_TEST_SRC
+  test_text_to_sparse.cpp
   test_heap.cpp
   test_sparse_row.cpp
   test_term_dictionary.cpp

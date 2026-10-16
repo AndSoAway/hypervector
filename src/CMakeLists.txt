@@ -40,6 +40,7 @@ set(HYPERVEC_SRC
   utils/structures/sparse_row.cpp
   utils/structures/term_dictionary.cpp
   utils/algo/kmeans/kmeans.cpp
+  utils/algo/bm25/text_to_sparse.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
   quantization/pq/index_pq.cpp
@@ -89,6 +90,7 @@ set(HYPERVEC_HEADERS
   include/utils/structures/sparse_row.h
   include/utils/structures/term_dictionary.h
   include/utils/algo/kmeans/kmeans.h
+  include/utils/algo/bm25/text_to_sparse.h
   include/utils/algo/sparse_vector/sparse_inverted_index.h
   include/quantization/pq/pq.h
   include/quantization/pq/pq_distance_computer.h

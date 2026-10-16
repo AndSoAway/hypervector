@@ -31,6 +31,9 @@
 #include <vector>
 
 #include "eval/artifact_fingerprint.h"
+#include "eval/provenance.h"
+#include "eval/index_format_identity.h"
+#include "eval/artifact_paths.h"
 #include "eval/json_util.h"
 #include "eval/process_memory.h"
 
@@ -41,6 +44,8 @@ struct CommandLine {
   std::string query_path;
   std::string ground_truth_path;
   std::string rerank_base_path;
+  std::string build_provenance_path;
+  std::string ground_truth_provenance_path;
   hypervec::idx_t rerank_candidates = 0;
   std::string json_output_path;
   hypervec::SemanticMetric semantic_metric = hypervec::SemanticMetric::kL2;
@@ -73,6 +78,11 @@ void PrintUsage(std::ostream& output) {
       << "  --rerank-candidates N    Approximate candidates before exact "
          "top-k\n"
       << "  --json-output REPORT.json  Optional reproducible result report\n"
+      << "  --build-provenance BUILD.prov   Cross-check the index against the\n"
+      << "                           build record produced by hypervec_build\n"
+      << "  --ground-truth-provenance GT.prov\n"
+      << "                           Cross-check that the ground truth was\n"
+      << "                           computed from the same base\n"
       << "  --help                   Show this message\n";
 }
 
@@ -191,6 +201,12 @@ CommandLine ParseCommandLine(int argc, char** argv) {
     } else if (argument == "--concurrency") {
       command.concurrency = ParseRunCount(
           RequireValue(argc, argv, &position, argument), argument, false);
+    } else if (argument == "--build-provenance") {
+      command.build_provenance_path =
+          RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--ground-truth-provenance") {
+      command.ground_truth_provenance_path =
+          RequireValue(argc, argv, &position, argument);
     } else if (argument == "--search-param") {
       const std::string_view assignment =
           RequireValue(argc, argv, &position, argument);
@@ -219,18 +235,11 @@ void ValidateCommand(const CommandLine& command) {
     throw std::runtime_error(
         "rerank requires both --rerank-base and --rerank-candidates >= k");
   }
-  if (!command.json_output_path.empty()) {
-    const std::filesystem::path output =
-        NormalizedPath(command.json_output_path);
-    if (output == NormalizedPath(command.index_path) ||
-        output == NormalizedPath(command.query_path) ||
-        output == NormalizedPath(command.ground_truth_path) ||
-        (!command.rerank_base_path.empty() &&
-         output == NormalizedPath(command.rerank_base_path))) {
-      throw std::runtime_error(
-          "JSON output must differ from evaluation inputs");
-    }
-  }
+  hypervec::eval_cli::ValidateArtifactPaths(
+      {command.index_path, command.query_path, command.ground_truth_path,
+       command.rerank_base_path, command.build_provenance_path,
+       command.ground_truth_provenance_path},
+      {command.json_output_path});
 }
 
 std::string_view MetricName(hypervec::MetricType metric) {
@@ -270,6 +279,7 @@ void WriteJsonNumber(std::ostream& output, double value) {
 }
 
 void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
+                     const hypervec::eval_cli::IndexFormatIdentity& identity,
                      const hypervec::SearchParameterDescriptor& descriptor,
                      const hypervec::IntegerVectorDataset& ground_truth,
                      const hypervec::SearchEvaluationResult& result,
@@ -297,14 +307,19 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
   }
   output << std::setprecision(17);
   output << "{\n"
-         << "  \"format\": \"hypervec-eval-report-v1\",\n"
+         << "  \"format\": \"hypervec-eval-report-v2\",\n"
          << "  \"library_version\": \"" << VERSION_STRING << "\",\n"
          << "  \"index\": {\n"
          << "    \"path\": \""
          << hypervec::eval_cli::JsonEscape(
                 NormalizedPath(command.index_path).generic_string())
          << "\",\n"
-         << "    \"family\": \""
+         // format_name names the algorithm; parameter_family the parameter set.
+         << "    \"format_name\": \""
+         << hypervec::eval_cli::JsonEscape(identity.format_name) << "\",\n"
+         << "    \"format_tag\": \""
+         << hypervec::eval_cli::JsonEscape(identity.tag_printable) << "\",\n"
+         << "    \"parameter_family\": \""
          << hypervec::eval_cli::JsonEscape(descriptor.name) << "\",\n"
          << "    \"dimension\": " << index.d << ",\n"
          << "    \"vector_count\": " << index.n_total << ",\n"
@@ -409,10 +424,106 @@ void WriteJsonReport(const CommandLine& command, const hypervec::Index& index,
   }
 }
 
+hypervec::eval_cli::ProvenanceRecord RequireProvenance(
+    const std::string& path) {
+  const std::optional<hypervec::eval_cli::ProvenanceRecord> record =
+      hypervec::eval_cli::ReadProvenance(path);
+  if (!record.has_value()) {
+    throw std::runtime_error("cannot read provenance file: " + path);
+  }
+  return *record;
+}
+
+void RequireField(const hypervec::eval_cli::ProvenanceRecord& record,
+                  const std::string& key, const std::string& path) {
+  if (record.count(key) == 0) {
+    throw std::runtime_error("provenance file " + path + " has no " + key +
+                             "; regenerate it with a current tool build");
+  }
+}
+
+/** Cross-check the evaluation inputs against the records that produced them.
+ *
+ * A ground truth carries only neighbour IDs and an index carries only vectors,
+ * so neither says what it was built from. Without these checks a mismatched
+ * ground truth evaluates silently and shows up only as an unexplained recall
+ * drop.
+ */
+void VerifyProvenance(const CommandLine& command,
+                      const std::string& index_sha256,
+                      const std::string& ground_truth_sha256,
+                      const std::string& query_sha256, int ground_truth_width) {
+  std::optional<std::string> build_base;
+  if (!command.build_provenance_path.empty()) {
+    const hypervec::eval_cli::ProvenanceRecord record =
+        RequireProvenance(command.build_provenance_path);
+    RequireField(record, "index_sha256", command.build_provenance_path);
+    if (record.at("index_sha256") != index_sha256) {
+      throw std::runtime_error(
+          "the index being evaluated is not the index hypervec_build recorded");
+    }
+    RequireField(record, "base_sha256", command.build_provenance_path);
+    build_base = record.at("base_sha256");
+    if (!command.rerank_base_path.empty() &&
+        hypervec::eval_cli::FingerprintFile(command.rerank_base_path).sha256 !=
+            *build_base) {
+      throw std::runtime_error("rerank base does not match the indexed base");
+    }
+  }
+  if (command.ground_truth_provenance_path.empty()) {
+    return;
+  }
+  const hypervec::eval_cli::ProvenanceRecord record =
+      RequireProvenance(command.ground_truth_provenance_path);
+  RequireField(record, "ground_truth_sha256",
+               command.ground_truth_provenance_path);
+  RequireField(record, "base_sha256", command.ground_truth_provenance_path);
+  if (record.at("ground_truth_sha256") != ground_truth_sha256) {
+    throw std::runtime_error(
+        "the ground truth being evaluated is not the file "
+        "hypervec_ground_truth "
+        "recorded");
+  }
+  for (const char* key :
+       {"format", "queries_sha256", "semantic_metric", "ground_truth_width"}) {
+    RequireField(record, key, command.ground_truth_provenance_path);
+  }
+  if (record.at("format") != "hypervec-ground-truth-provenance-v2") {
+    throw std::runtime_error(
+        "unsupported ground-truth provenance format; "
+        "regenerate it with a current tool build");
+  }
+  if (record.at("queries_sha256") != query_sha256) {
+    throw std::runtime_error(
+        "queries do not match the ground-truth provenance");
+  }
+  if (record.at("semantic_metric") !=
+      hypervec::SemanticMetricName(command.semantic_metric)) {
+    throw std::runtime_error(
+        "metric does not match the ground-truth provenance");
+  }
+  if (record.at("ground_truth_width") != std::to_string(ground_truth_width)) {
+    throw std::runtime_error(
+        "width does not match the ground-truth provenance");
+  }
+  if (!command.rerank_base_path.empty() &&
+      hypervec::eval_cli::FingerprintFile(command.rerank_base_path).sha256 !=
+          record.at("base_sha256")) {
+    throw std::runtime_error(
+        "rerank base does not match the ground-truth base");
+  }
+  if (build_base.has_value() && *build_base != record.at("base_sha256")) {
+    throw std::runtime_error(
+        "the index and the ground truth were built from different base files");
+  }
+}
+
 int Run(const CommandLine& command) {
   ValidateCommand(command);
   std::unique_ptr<hypervec::Index> index =
       hypervec::ReadIndexUp(command.index_path.c_str());
+  const hypervec::eval_cli::IndexFormatIdentity identity =
+      hypervec::eval_cli::DescribeIndexFormat(command.index_path);
   const hypervec::FloatVectorDataset queries =
       hypervec::ReadFvecsFile(command.query_path);
   const hypervec::IntegerVectorDataset ground_truth =
@@ -427,12 +538,28 @@ int Run(const CommandLine& command) {
     throw std::runtime_error("query and ground-truth vector counts must match");
   }
 
+  if (!command.build_provenance_path.empty() ||
+      !command.ground_truth_provenance_path.empty()) {
+    VerifyProvenance(
+        command, hypervec::eval_cli::FingerprintFile(command.index_path).sha256,
+        hypervec::eval_cli::FingerprintFile(command.ground_truth_path).sha256,
+        hypervec::eval_cli::FingerprintFile(command.query_path).sha256,
+        ground_truth.dimension);
+  }
+
   std::unique_ptr<hypervec::SearchParameters> parameters =
       hypervec::CreateSearchParameters(*index, command.search_config);
   hypervec::FloatVectorDataset rerank_base;
   std::unique_ptr<hypervec::IndexRerank> reranked;
   const hypervec::Index* search_index = index.get();
   if (!command.rerank_base_path.empty()) {
+    // Exact rerank scores row `label` of the base file, which only means
+    // anything when labels are dense internal positions.
+    if (identity.format_name == "id_map") {
+      throw std::runtime_error(
+          "--rerank-base maps result labels onto base rows, which external "
+          "IndexIDMap labels are not; evaluate the inner index instead");
+    }
     rerank_base = hypervec::ReadFvecsFile(command.rerank_base_path);
     if (rerank_base.dimension != index->d ||
         rerank_base.vector_count != index->n_total) {
@@ -460,10 +587,13 @@ int Run(const CommandLine& command) {
       hypervec::DescribeSearchParameters(*index);
   const std::optional<uint64_t> peak_rss_bytes =
       hypervec::eval_cli::PeakResidentSetBytes();
-  WriteJsonReport(command, *index, descriptor, ground_truth, result,
+  WriteJsonReport(command, *index, identity, descriptor, ground_truth, result,
                   peak_rss_bytes);
 
   std::cout << std::setprecision(10);
+  std::cout << "index_format="
+            << (identity.recognized ? identity.format_name : "unknown") << '\n';
+  std::cout << "index_format_tag=" << identity.tag_printable << '\n';
   std::cout << "index_family=" << descriptor.name << '\n';
   std::cout << "metric="
             << hypervec::SemanticMetricName(command.semantic_metric) << '\n';

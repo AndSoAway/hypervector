@@ -31,11 +31,11 @@
 #include <vector>
 
 #include "eval/artifact_fingerprint.h"
-#include "eval/provenance.h"
-#include "eval/index_format_identity.h"
 #include "eval/artifact_paths.h"
+#include "eval/index_format_identity.h"
 #include "eval/json_util.h"
 #include "eval/process_memory.h"
+#include "eval/provenance.h"
 
 namespace {
 

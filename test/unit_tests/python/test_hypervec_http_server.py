@@ -4,6 +4,23 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_hypervec_modules():
+    """Undo the fake ``hypervec`` package injected by ``load_http_module`` so it
+    does not leak into other test files (e.g. test_simd_dispatch's
+    ``import hypervec`` must still raise ImportError under a clean env)."""
+    saved = {k: v for k, v in sys.modules.items() if k == "hypervec" or k.startswith("hypervec.")}
+    try:
+        yield
+    finally:
+        for key in [k for k in sys.modules if k == "hypervec" or k.startswith("hypervec.")]:
+            if key not in saved:
+                del sys.modules[key]
+        sys.modules.update(saved)
+
 
 class FakeEngine:
     def health(self):

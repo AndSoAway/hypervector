@@ -61,6 +61,11 @@ struct IndexIDMap : Index {
 
   /// Pointer to the underlying index
   Index* index;
+
+  /// IndexIDMap is not serializable (matches pre-refactor WriteIndex, which
+  /// had no IndexIDMap branch and fell through to "unsupported index type").
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

@@ -10,6 +10,7 @@
 
 #include <index/flat/index_flat.h>
 #include <index/hnsw/visited_table.h>
+#include <persistence/index_write_utils.h>
 #include <quantization/pq/index_pq.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/assert.h>
@@ -160,6 +161,16 @@ void IndexHNSWPQ::RangeSearch(idx_t /*n*/, const float* /*x*/,
                               RangeSearchResult* /*result*/,
                               const SearchParameters* /*params*/) const {
   HYPERVEC_THROW_MSG("IndexHNSWPQ::RangeSearch not supported");
+}
+
+uint32_t IndexHNSWPQ::fourcc() const {
+  return hypervec::fourcc("IHNp");
+}
+
+void IndexHNSWPQ::write_body(IOWriter* f) const {
+  write_HNSW(hnsw, f);
+  HYPERVEC_THROW_IF_NOT(storage != nullptr);
+  WriteIndex(storage, f);
 }
 
 }  // namespace hypervec

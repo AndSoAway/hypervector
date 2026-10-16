@@ -9,6 +9,7 @@
 #include <quantization/pq/index_ivfpq.h>
 
 #include <invlists/inverted_lists.h>
+#include <persistence/index_write_utils.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
@@ -350,6 +351,34 @@ void IndexIVFPQ::PrecomputeTable() {
     for (size_t t = 0; t < table_per_cell; t++) {
       tab[t] = r_norms[t] + 2.0f * tab[t];
     }
+  }
+}
+
+uint32_t IndexIVFPQ::fourcc() const {
+  return hypervec::fourcc("IVPQ");
+}
+
+void IndexIVFPQ::write_body(IOWriter* f) const {
+  WRITE1(nlist);
+  WRITE1(nprobe);
+  WRITEVECTOR(centroids);
+  int8_t by_residual_i8 = by_residual ? 1 : 0;
+  int upt = use_precomputed_table;
+  WRITE1(by_residual_i8);
+  WRITE1(upt);
+  write_pq(pq, f);
+  WRITEVECTOR(precomputed_table);
+
+  for (size_t list_no = 0; list_no < nlist; list_no++) {
+    const size_t sz = invlists->list_size(list_no);
+    WRITE1(sz);
+    if (sz == 0) {
+      continue;
+    }
+    InvertedLists::ScopedIds ids(invlists, list_no);
+    InvertedLists::ScopedCodes codes(invlists, list_no);
+    WRITEANDCHECK(ids.get(), sz);
+    WRITEANDCHECK(codes.get(), sz * pq.code_size);
   }
 }
 

@@ -29,6 +29,9 @@ struct IndexIVFLVQ : IndexIVF {
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
   void Reconstruct(idx_t key, float* recons) const override;
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

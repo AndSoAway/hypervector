@@ -8,6 +8,7 @@
 
 #include <quantization/pq/index_pq.h>
 
+#include <persistence/index_write_utils.h>
 #include <quantization/pq/pq_distance_computer.h>
 #include <utils/log/assert.h>
 
@@ -88,6 +89,15 @@ void IndexPQ::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
 void IndexPQ::SaDecode(idx_t n, const uint8_t* bytes, float* x) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   pq.DecodeBatch(n, bytes, x);
+}
+
+uint32_t IndexPQ::fourcc() const {
+  return hypervec::fourcc("IPQ8");
+}
+
+void IndexPQ::write_body(IOWriter* f) const {
+  write_pq(pq, f);
+  WRITEVECTOR(codes);
 }
 
 }  // namespace hypervec

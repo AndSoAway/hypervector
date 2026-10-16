@@ -14,6 +14,7 @@
 #include <utils/log/assert.h>
 #include <utils/distances/metric_type.h>
 
+#include <cstdint>
 #include <cstdio>
 
 #define HYPERVEC_VERSION_MAJOR 1
@@ -55,6 +56,7 @@ namespace hypervec {
 struct IDSelector;
 struct RangeSearchResult;
 struct DistanceComputer;
+struct IOWriter;
 template <typename T, typename TI>
 struct ResultHandlerUnordered;
 using ResultHandler = ResultHandlerUnordered<float, idx_t>;
@@ -124,6 +126,12 @@ struct Index {
     , metric_arg(0) {}
 
   virtual ~Index();
+
+  /// Returns the 4-byte magic tag identifying this index type on disk.
+  virtual uint32_t fourcc() const = 0;
+
+  /// Writes index-specific data to f (caller writes fourcc + header first).
+  virtual void write_body(IOWriter* f) const = 0;
 
   /** Perform training on a representative set of vectors
    *

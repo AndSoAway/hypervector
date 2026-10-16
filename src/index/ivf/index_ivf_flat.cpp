@@ -9,6 +9,7 @@
 #include <index/ivf/index_ivf_flat.h>
 
 #include <invlists/inverted_lists.h>
+#include <persistence/index_write_utils.h>
 #include <utils/distances/distances.h>
 #include <utils/distances/metric_type.h>
 #include <utils/log/assert.h>
@@ -124,6 +125,29 @@ void IndexIVFFlat::Reconstruct(idx_t key, float* recons) const {
   }
   HYPERVEC_THROW_FMT("IndexIVFFlat::Reconstruct: key %" PRId64 " not found",
                      key);
+}
+
+uint32_t IndexIVFFlat::fourcc() const {
+  return hypervec::fourcc("IVFf");
+}
+
+void IndexIVFFlat::write_body(IOWriter* f) const {
+  WRITE1(nlist);
+  WRITE1(nprobe);
+  WRITEVECTOR(centroids);
+
+  const size_t code_size = static_cast<size_t>(d) * sizeof(float);
+  for (size_t list_no = 0; list_no < nlist; list_no++) {
+    const size_t sz = invlists->list_size(list_no);
+    WRITE1(sz);
+    if (sz == 0) {
+      continue;
+    }
+    InvertedLists::ScopedIds ids(invlists, list_no);
+    InvertedLists::ScopedCodes codes(invlists, list_no);
+    WRITEANDCHECK(ids.get(), sz);
+    WRITEANDCHECK(codes.get(), sz * code_size);
+  }
 }
 
 }  // namespace hypervec

@@ -297,6 +297,8 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
     training_fingerprint =
         hypervec::eval_cli::FingerprintFile(command.training_query_path);
   }
+  const hypervec::eval_cli::ExecutionEnvironment environment =
+      hypervec::eval_cli::CurrentExecutionEnvironment();
   std::ofstream output(command.json_output_path,
                        std::ios::out | std::ios::trunc);
   if (!output.is_open()) {
@@ -380,6 +382,14 @@ void WriteJsonManifest(const CommandLine& command, const hypervec::Index& index,
          << hypervec::eval_cli::PeakResidentSetSource() << "\",\n"
          << "    \"measurement_point\": \"after_index_write\"\n"
          << "  },\n"
+         // Build duration is thread-count sensitive and several index types
+         // expose no build_threads option, so the effective limits are
+         // recorded with the timing they produced.
+         << "  \"environment\": {\n"
+         << "    \"omp_max_threads\": " << environment.omp_max_threads << ",\n"
+         << "    \"hardware_concurrency\": " << environment.hardware_concurrency
+         << "\n"
+         << "  },\n"
          << "  \"timing\": {\n"
          << "    \"build_seconds\": " << build_seconds << ",\n"
          << "    \"write_seconds\": " << write_seconds << "\n"
@@ -462,6 +472,11 @@ int Run(const CommandLine& command) {
   std::cout << "training_query_count=" << training_queries.vector_count << '\n';
   std::cout << "build_seconds=" << build_seconds << '\n';
   std::cout << "write_seconds=" << write_seconds << '\n';
+  const hypervec::eval_cli::ExecutionEnvironment environment =
+      hypervec::eval_cli::CurrentExecutionEnvironment();
+  std::cout << "omp_max_threads=" << environment.omp_max_threads << '\n';
+  std::cout << "hardware_concurrency=" << environment.hardware_concurrency
+            << '\n';
   std::cout << "use_id_map=" << (command.use_id_map ? "true" : "false") << '\n';
   std::cout << "peak_rss_bytes=";
   if (peak_rss_bytes.has_value()) {

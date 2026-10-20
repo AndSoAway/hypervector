@@ -1,0 +1,64 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: ["main", "feat/**", "fix/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # ─── C++ gtest (21 cases) ────────────────────────────────────────────────────
+  cpp-tests:
+    name: C++ gtest (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libopenblas-dev liblapack-dev \
+            libomp-dev
+
+      - name: Configure (BUILD_TESTING=ON, generic opt)
+        run: |
+          cmake -S . -B build-test \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON \
+            -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+            -DHYPERVEC_ENABLE_PYTHON=OFF \
+            -DHYPERVEC_OPT_LEVEL=generic
+
+      - name: Build test executable
+        run: cmake --build build-test --target hypervec_test -- -j$(nproc)
+
+      - name: Run ctest
+        working-directory: build-test
+        run: ctest --output-on-failure --timeout 120
+
+  # ─── Python pytest (pure-Python, no SWIG needed) ─────────────────────────────
+  python-tests:
+    name: Python pytest (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest numpy fastapi httpx
+
+      - name: Run pytest (pure-Python tests)
+        run: |
+          pytest test/unit_tests/python/ -v \
+            --ignore=test/unit_tests/python/external_module_test.py \
+            --ignore=test/unit_tests/python/test_io.py \
+            --ignore=test/unit_tests/python/test_omp_threads_py.py \
+            --ignore=test/unit_tests/python/test_hypervec_grpc_server.py

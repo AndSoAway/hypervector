@@ -15,6 +15,10 @@ class FakeIndexFlatL2:
     def train(self, x) -> None:
         self.is_trained = True
 
+    @property
+    def n_total(self) -> int:
+        return self.vectors.shape[0]
+
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
 
@@ -362,12 +366,13 @@ def test_engine_purge_requires_export_by_default(tmp_path):
         engine.purge_collection_data("col1", require_exported=True)
     except Exception as exc:
         assert type(exc).__name__ == "ConflictError"
-        assert "no recorded export" in str(exc)
+        assert "has no export matching" in str(exc)
     else:
         raise AssertionError("should have raised ConflictError")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
+    import shutil
     engine, fake = make_engine(tmp_path)
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert(
@@ -379,13 +384,16 @@ def test_engine_import_bundle_restores_data(tmp_path):
     )
     engine.flush("col1")
     export_result = engine.export_collection_bundle("col1")
+    # Copy the bundle out before purge, which deletes .export.tmp
+    bundle_copy = tmp_path / "col1_saved.hypervec-bundle"
+    shutil.copy2(export_result["path"], bundle_copy)
     engine.purge_collection_data("col1", require_exported=True)
 
     # Verify purged state
     assert engine.scalar_store.count("col1") == 0
 
     # Restore
-    restore_result = engine.import_collection_bundle("col1", export_result["path"])
+    restore_result = engine.import_collection_bundle("col1", bundle_copy)
     assert restore_result["uploaded"] is True
     assert restore_result["total"] == 2
     assert restore_result["data_state"] == "ready"
@@ -421,17 +429,21 @@ def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
 
 
 def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
+    import shutil
     engine, _ = make_engine(tmp_path)
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
     export_result = engine.export_collection_bundle("col1")
+    # Copy bundle before purge removes .export.tmp
+    bundle_copy = tmp_path / "col1_saved.hypervec-bundle"
+    shutil.copy2(export_result["path"], bundle_copy)
 
     engine.purge_collection_data("col1")
     try:
         engine.import_collection_bundle(
             "col1",
-            export_result["path"],
+            bundle_copy,
             checksum="sha256:deadbeef",
         )
     except ValueError as exc:

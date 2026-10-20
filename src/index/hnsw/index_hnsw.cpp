@@ -12,6 +12,7 @@
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
+#include <persistence/index_write_utils.h>
 #include <omp.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
@@ -201,6 +202,28 @@ IndexHNSWFlat::IndexHNSWFlat(int d, int M, MetricType metric)
   : IndexHNSW(make_hnsw_flat_storage(d, metric), M) {
   own_fields = true;
   is_trained = true;
+}
+
+uint32_t IndexHNSW::fourcc() const {
+  HYPERVEC_THROW_MSG(
+    "IndexHNSW::fourcc() must be overridden by concrete subclass");
+  return 0;
+}
+
+void IndexHNSW::write_body(IOWriter* /*f*/) const {
+  HYPERVEC_THROW_MSG(
+    "IndexHNSW::write_body() must be overridden by concrete subclass");
+}
+
+uint32_t IndexHNSWFlat::fourcc() const {
+  return hypervec::fourcc("IHNf");
+}
+
+void IndexHNSWFlat::write_body(IOWriter* f) const {
+  write_HNSW(hnsw, f);
+  if (storage) {
+    WriteIndex(storage, f);
+  }
 }
 
 }  // namespace hypervec

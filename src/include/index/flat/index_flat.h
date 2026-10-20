@@ -58,11 +58,20 @@ struct IndexFlat : IndexFlatCodes {
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
 
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
+
+  /// Base IndexFlat is only serializable through its IndexFlatL2/IndexFlatIP
+  /// subclasses; a bare IndexFlat (e.g. L1/Linf metric) throws on fourcc(),
+  /// matching the pre-refactor "unsupported index type" behaviour.
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 struct IndexFlatIP : IndexFlat {
   explicit IndexFlatIP(idx_t d) : IndexFlat(d, kMetricInnerProduct) {}
   IndexFlatIP() {}
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 struct IndexFlatL2 : IndexFlat {
@@ -85,6 +94,9 @@ struct IndexFlatL2 : IndexFlat {
   void SyncL2Norms();
   // clear L2 norms
   void ClearL2Norms();
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 /// optimized version for 1D "vectors".

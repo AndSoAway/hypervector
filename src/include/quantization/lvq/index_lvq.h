@@ -34,6 +34,9 @@ struct IndexLVQ : Index {
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

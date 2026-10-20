@@ -88,6 +88,9 @@ struct IndexHNSWPQ : IndexHNSW {
   void RangeSearch(idx_t n, const float* x, float radius,
                     RangeSearchResult* result,
                     const SearchParameters* params = nullptr) const override;
+
+  uint32_t fourcc() const override;
+  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

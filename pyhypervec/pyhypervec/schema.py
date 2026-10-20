@@ -7,6 +7,7 @@ from typing import Any
 class DataType:
     VARCHAR = "VARCHAR"
     FLOAT_VECTOR = "FLOAT_VECTOR"
+    SPARSE_FLOAT_VECTOR = "SPARSE_FLOAT_VECTOR"
     BOOL = "BOOL"
     INT64 = "INT64"
     DOUBLE = "DOUBLE"

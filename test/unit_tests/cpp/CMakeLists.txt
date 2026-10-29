@@ -31,6 +31,10 @@ set(HYPERVEC_TEST_SRC
   test_lvq.cpp
 )
 
+if(HYPERVEC_ENABLE_BM25_ANALYZER)
+  list(APPEND HYPERVEC_TEST_SRC test_analyzer.cpp)
+endif()
+
 add_executable(hypervec_test ${HYPERVEC_TEST_SRC})
 
 include(${CMAKE_SOURCE_DIR}/cmake/link_to_hypervec_lib.cmake)

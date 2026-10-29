@@ -31,6 +31,13 @@ option(HYPERVEC_ENABLE_PYTHON "Build Python extension." OFF)
 option(HYPERVEC_ENABLE_C_API "Build C API." OFF)
 option(HYPERVEC_ENABLE_EXTRAS "Build extras like benchmarks and demos" OFF)
 option(HYPERVEC_USE_LTO "Enable Link-Time optimization" OFF)
+option(HYPERVEC_ENABLE_BM25_ANALYZER "Enable cppjieba-based Chinese analyzer" ON)
+
+if(HYPERVEC_ENABLE_BM25_ANALYZER)
+  set(HYPERVEC_BM25_DICT_INSTALL_DIR
+    "${CMAKE_INSTALL_FULL_DATAROOTDIR}/hypervec/dict")
+  add_subdirectory(third_party/cppjieba)
+endif()
 
 add_subdirectory(src)
 

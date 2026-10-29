@@ -94,6 +94,7 @@ set(HYPERVEC_HEADERS
   include/utils/algo/kmeans/kmeans.h
   include/utils/algo/bm25/text_to_sparse.h
   include/utils/algo/sparse_vector/sparse_inverted_index.h
+  include/utils/algo/bm25/analyzer.h
   include/utils/algo/bm25/bm25.h
   include/utils/algo/bm25/inverted_index.h
   include/quantization/pq/pq.h
@@ -112,6 +113,23 @@ set(HYPERVEC_HEADERS
 set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
 
 add_library(hypervec ${HYPERVEC_SRC})
+
+# ---------------------------------------------------------------------------
+# cppjieba (Chinese segmentation, header-only + dict files)
+#
+# The analyzer is compiled only when HYPERVEC_ENABLE_BM25_ANALYZER is ON; the
+# cppjieba headers themselves are vendored under third_party/cppjieba and never
+# downloaded at configure time, so offline builds stay reproducible.
+# ---------------------------------------------------------------------------
+if(HYPERVEC_ENABLE_BM25_ANALYZER)
+  target_sources(hypervec PRIVATE utils/algo/bm25/analyzer_cn.cpp)
+  target_link_libraries(hypervec PRIVATE cppjieba_iface)
+  # HYPERVEC_DEFAULT_DICT_DIR is baked from the install layout; callers can
+  # override it at run time with the HYPERVEC_DICT_DIR environment variable.
+  target_compile_definitions(hypervec
+    PUBLIC HYPERVEC_ENABLE_BM25_ANALYZER
+    PRIVATE HYPERVEC_DEFAULT_DICT_DIR="${HYPERVEC_BM25_DICT_INSTALL_DIR}")
+endif()
 
 target_include_directories(hypervec PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)

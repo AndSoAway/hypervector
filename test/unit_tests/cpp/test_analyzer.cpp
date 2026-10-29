@@ -8,51 +8,38 @@
 
 // Unit tests for CppjiebaAnalyzer (task T1, acceptance criteria §六).
 //
-// Dict files are resolved from CPPJIEBA_DICT_DIR, which is set by
-// cmake/thirdparty/fetch_cppjieba.cmake to the FetchContent source directory.
-// Tests require the cmake variable to be defined; if it is not (e.g. running
-// the binary directly without cmake), they are skipped.
+// Dict files are resolved through DefaultAnalyzerParams(): the
+// HYPERVEC_DICT_DIR environment variable, then the dict directory installed by
+// CMake.  Tests that need real dicts are skipped when neither is reachable.
 
 #include <utils/algo/bm25/analyzer.h>
+
+#include <utils/log/exception.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
+#include <fstream>
 #include <string>
 #include <vector>
 
 namespace {
 
-// CPPJIEBA_DICT_DIR is injected by CMake as a compile definition (a string
-// literal including surrounding quotes, e.g. "/path/to/dict").
-#ifndef CPPJIEBA_DICT_DIR
-#define CPPJIEBA_DICT_DIR ""
-#endif
-
 hypervec::AnalyzerParams DefaultParams() {
-  const std::string dir = std::string(CPPJIEBA_DICT_DIR);
-  return hypervec::AnalyzerParams{
-      dir + "/jieba.dict.utf8",
-      dir + "/hmm_model.utf8",
-      dir + "/user.dict.utf8",
-      dir + "/idf.utf8",
-      dir + "/stop_words.utf8",
-  };
+  return hypervec::DefaultAnalyzerParams();
 }
 
-bool DictDirAvailable() {
-  return std::string(CPPJIEBA_DICT_DIR) != std::string("");
-}
-
-// Check that `expected` is a subsequence of `terms` (all expected tokens
-// appear, in order, within the actual output).
-bool ContainsInOrder(const std::vector<std::string>& terms,
-                     const std::vector<std::string>& expected) {
-  size_t ei = 0;
-  for (const auto& t : terms) {
-    if (ei < expected.size() && t == expected[ei]) ++ei;
+bool DictsAvailable() {
+  const hypervec::AnalyzerParams params = DefaultParams();
+  if (params.jieba_dict_path.empty() || params.hmm_model_path.empty() ||
+      params.user_dict_path.empty()) {
+    return false;
   }
-  return ei == expected.size();
+  std::ifstream jieba(params.jieba_dict_path);
+  std::ifstream hmm(params.hmm_model_path);
+  std::ifstream user(params.user_dict_path);
+  return jieba.good() && hmm.good() && user.good();
 }
 
 bool Contains(const std::vector<std::string>& terms, const std::string& tok) {
@@ -65,17 +52,19 @@ bool Contains(const std::vector<std::string>& terms, const std::string& tok) {
 // Construction
 // ---------------------------------------------------------------------------
 
-TEST(CppjiebaAnalyzer, ThrowsOnEmptyDictPath) {
-  hypervec::AnalyzerParams p;
-  // All paths empty — must throw.
-  EXPECT_THROW(hypervec::CppjiebaAnalyzer a(p), std::exception);
+TEST(CppjiebaAnalyzer, ThrowsOnMissingDictFile) {
+  hypervec::AnalyzerParams params = DefaultParams();
+  params.jieba_dict_path = "nonexistent-dir/jieba.dict.utf8";
+  EXPECT_THROW(hypervec::CppjiebaAnalyzer a(params),
+               hypervec::HypervecException);
 }
 
-TEST(CppjiebaAnalyzer, ThrowsOnEmptyHmmPath) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
-  hypervec::AnalyzerParams p = DefaultParams();
-  p.hmm_model_path = "";
-  EXPECT_THROW(hypervec::CppjiebaAnalyzer a(p), std::exception);
+TEST(CppjiebaAnalyzer, ThrowsOnMissingHmmModel) {
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
+  hypervec::AnalyzerParams params = DefaultParams();
+  params.hmm_model_path = "nonexistent-dir/hmm_model.utf8";
+  EXPECT_THROW(hypervec::CppjiebaAnalyzer a(params),
+               hypervec::HypervecException);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,14 +72,14 @@ TEST(CppjiebaAnalyzer, ThrowsOnEmptyHmmPath) {
 // ---------------------------------------------------------------------------
 
 TEST(CppjiebaAnalyzer, EmptyInputReturnsEmpty) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   EXPECT_TRUE(a.Analyze("").empty());
 }
 
 // 双字词
 TEST(CppjiebaAnalyzer, TwoCharWord) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   // "数据" appears as an independent word in "数据库" context.
   auto terms = a.Analyze("数据库查询");
@@ -104,7 +93,7 @@ TEST(CppjiebaAnalyzer, TwoCharWord) {
 
 // 三字词
 TEST(CppjiebaAnalyzer, ThreeCharWord) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("电磁场理论");
   // "电磁场" should appear as a unit (in cppjieba's dict).
@@ -114,7 +103,7 @@ TEST(CppjiebaAnalyzer, ThreeCharWord) {
 
 // 成语
 TEST(CppjiebaAnalyzer, Idiom) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("守株待兔是一个成语");
   EXPECT_TRUE(Contains(terms, "守株待兔")) << "idiom '守株待兔' not segmented as a unit";
@@ -122,7 +111,7 @@ TEST(CppjiebaAnalyzer, Idiom) {
 
 // 人名 (using HMM mode for OOV)
 TEST(CppjiebaAnalyzer, PersonName) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   // "张华" is a common Chinese name; HMM should produce it as a single token.
   auto terms = a.Analyze("张华是一位工程师");
@@ -132,7 +121,7 @@ TEST(CppjiebaAnalyzer, PersonName) {
 
 // 典型 RAG/领域文本
 TEST(CppjiebaAnalyzer, DomainText) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("向量检索是大模型RAG的核心技术");
   EXPECT_TRUE(Contains(terms, "向量")) << "missing '向量'";
@@ -141,7 +130,7 @@ TEST(CppjiebaAnalyzer, DomainText) {
 
 // ASCII 内容：全小写化
 TEST(CppjiebaAnalyzer, AsciiLowercased) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("RAG System");
   for (const auto& t : terms) {
@@ -156,11 +145,11 @@ TEST(CppjiebaAnalyzer, AsciiLowercased) {
 
 // 空白字符不作为 token 输出
 TEST(CppjiebaAnalyzer, WhitespaceNotInOutput) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("数据  分析");
   for (const auto& t : terms) {
-    EXPECT_FALSE(t.empty()) << "empty token in output";
+    ASSERT_FALSE(t.empty()) << "empty token in output";
     EXPECT_NE(t.front(), ' ') << "leading space in token '" << t << "'";
     EXPECT_NE(t.back(), ' ')  << "trailing space in token '" << t << "'";
   }
@@ -168,7 +157,7 @@ TEST(CppjiebaAnalyzer, WhitespaceNotInOutput) {
 
 // 纯英文文本 — 应正常返回小写 token
 TEST(CppjiebaAnalyzer, EnglishText) {
-  if (!DictDirAvailable()) GTEST_SKIP() << "CPPJIEBA_DICT_DIR not set";
+  if (!DictsAvailable()) GTEST_SKIP() << "dict files not found";
   hypervec::CppjiebaAnalyzer a(DefaultParams());
   auto terms = a.Analyze("hello world");
   EXPECT_TRUE(Contains(terms, "hello"));

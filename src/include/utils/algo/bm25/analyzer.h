@@ -15,16 +15,14 @@ namespace hypervec {
 
 /** Parameters for constructing an Analyzer.
  *
- * Dict paths are only consumed by CppjiebaAnalyzer; a whitespace-only
- * implementation would ignore them.  Passing empty strings causes
- * CppjiebaAnalyzer to throw at construction time.
+ * Leave a path empty to accept the default resolution performed by
+ * DefaultAnalyzerParams().  An empty path is never interpreted as "skip this
+ * file": all three dict files are required by CppjiebaAnalyzer.
  */
 struct AnalyzerParams {
-  std::string jieba_dict_path;       // jieba.dict.utf8
-  std::string hmm_model_path;        // hmm_model.utf8
-  std::string user_dict_path;        // user.dict.utf8 (may be empty file)
-  std::string idf_path;              // idf.utf8 (pass "" to skip)
-  std::string stop_words_path;       // stop_words.utf8 (pass "" to skip)
+  std::string jieba_dict_path;  ///< jieba.dict.utf8
+  std::string hmm_model_path;   ///< hmm_model.utf8
+  std::string user_dict_path;   ///< user.dict.utf8 (its content may be empty)
 };
 
 /** Text segmentation interface.
@@ -41,27 +39,48 @@ struct Analyzer {
    * The returned terms are lowercased and stripped of leading/trailing ASCII
    * whitespace.  Empty terms are omitted.  The order matches the input text.
    *
-   * Thread safety: implementations must be safe to call concurrently from
+   * Thread safety: implementations are safe to call concurrently from
    * multiple threads once constructed.
    */
   virtual std::vector<std::string> Analyze(const std::string& text) const = 0;
 };
 
+#if defined(HYPERVEC_ENABLE_BM25_ANALYZER)
+/** Resolve the default dict paths.
+ *
+ * Resolution order:
+ *   1. the HYPERVEC_DICT_DIR environment variable;
+ *   2. the dict directory baked in at build time
+ *      (${CMAKE_INSTALL_DATAROOTDIR}/hypervec/dict).
+ *
+ * When neither is available the returned paths are empty and constructing a
+ * CppjiebaAnalyzer throws.
+ */
+AnalyzerParams DefaultAnalyzerParams();
+
 /** Chinese segmentation using cppjieba (MixSegment mode).
  *
- * Wraps cppjieba::Jieba and exposes it through the Analyzer interface.  The
- * Jieba object is constructed once from the dict files specified in `params`
- * and reused for all Analyze() calls.
+ * Wraps a DictTrie + HMMModel pair through MixSegment.  The dict files are
+ * loaded once at construction and reused for all Analyze() calls.
  *
- * Dict files must exist at the given paths; construction throws
- * std::runtime_error if any required path is empty or the file cannot be read.
+ * Exception contract: construction throws hypervec::HypervecException (derived
+ * from std::exception) through HYPERVEC_THROW_IF_NOT_* when a required path is
+ * empty or cannot be opened.  Nothing is aborted, so callers may recover from
+ * a bad path.
  *
- * Thread safety: cppjieba::Jieba::Cut is const and internally thread-safe for
- * read operations; this wrapper inherits that guarantee.
+ * Thread safety: Analyze() only reads the dict structures loaded at
+ * construction and keeps its working buffers on the stack, so concurrent calls
+ * on the same instance are safe.  This relies on cppjieba's Cut() being const
+ * and side-effect free; re-check after a cppjieba upgrade.
  */
 struct CppjiebaAnalyzer : Analyzer {
   explicit CppjiebaAnalyzer(const AnalyzerParams& params);
   ~CppjiebaAnalyzer() override;
+
+  CppjiebaAnalyzer(CppjiebaAnalyzer&&) noexcept;
+  CppjiebaAnalyzer& operator=(CppjiebaAnalyzer&&) noexcept;
+  CppjiebaAnalyzer(const CppjiebaAnalyzer&) = delete;
+  CppjiebaAnalyzer& operator=(const CppjiebaAnalyzer&) = delete;
 
   std::vector<std::string> Analyze(const std::string& text) const override;
 
@@ -69,5 +88,6 @@ struct CppjiebaAnalyzer : Analyzer {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+#endif
 
 }  // namespace hypervec

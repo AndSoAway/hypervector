@@ -10,20 +10,26 @@
 
 #include <utils/log/assert.h>
 
-// cppjieba is header-only; it is pulled in via FetchContent and its include
-// directories are attached to the hypervec target by fetch_cppjieba.cmake.
-#include "cppjieba/Jieba.hpp"
+// cppjieba is vendored under third_party/cppjieba; its include paths are
+// provided by the cppjieba_iface INTERFACE target.
+#include "cppjieba/DictTrie.hpp"
+#include "cppjieba/HMMModel.hpp"
+#include "cppjieba/MixSegment.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <fstream>
 #include <memory>
-#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
 
 namespace {
+
+constexpr const char* kDictDirEnvVar = "HYPERVEC_DICT_DIR";
 
 // Strip leading and trailing ASCII whitespace from s (in-place).
 void trim_inplace(std::string& s) {
@@ -43,35 +49,103 @@ void ascii_lower_inplace(std::string& s) {
   }
 }
 
+std::string join_path(const std::string& dir, const char* file) {
+  if (dir.empty()) {
+    return std::string();
+  }
+  std::string path = dir;
+  if (path.back() != '/' && path.back() != '\\') {
+    path += '/';
+  }
+  path += file;
+  return path;
+}
+
+std::string default_dict_dir() {
+  const char* from_env = std::getenv(kDictDirEnvVar);
+  if (from_env != nullptr && from_env[0] != '\0') {
+    return from_env;
+  }
+#if defined(HYPERVEC_DEFAULT_DICT_DIR)
+  return HYPERVEC_DEFAULT_DICT_DIR;
+#else
+  return std::string();
+#endif
+}
+
+AnalyzerParams resolve_params(const AnalyzerParams& params) {
+  AnalyzerParams resolved = params;
+  if (resolved.jieba_dict_path.empty() || resolved.hmm_model_path.empty() ||
+      resolved.user_dict_path.empty()) {
+    const AnalyzerParams defaults = DefaultAnalyzerParams();
+    if (resolved.jieba_dict_path.empty()) {
+      resolved.jieba_dict_path = defaults.jieba_dict_path;
+    }
+    if (resolved.hmm_model_path.empty()) {
+      resolved.hmm_model_path = defaults.hmm_model_path;
+    }
+    if (resolved.user_dict_path.empty()) {
+      resolved.user_dict_path = defaults.user_dict_path;
+    }
+  }
+  return resolved;
+}
+
+// cppjieba validates its inputs with limonp's XCHECK, which calls abort() on
+// failure.  Check readability first so a bad path becomes a catchable
+// exception instead of killing the process.
+void check_readable(const std::string& path, const char* what) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      !path.empty(),
+      "%s is not set; pass AnalyzerParams or set HYPERVEC_DICT_DIR", what);
+  std::ifstream stream(path);
+  HYPERVEC_THROW_IF_NOT_FMT(stream.good(), "cannot read %s: %s", what,
+                            path.c_str());
+}
+
 }  // namespace
 
-struct CppjiebaAnalyzer::Impl {
-  cppjieba::Jieba jieba;
+AnalyzerParams DefaultAnalyzerParams() {
+  const std::string dir = default_dict_dir();
+  AnalyzerParams params;
+  params.jieba_dict_path = join_path(dir, "jieba.dict.utf8");
+  params.hmm_model_path = join_path(dir, "hmm_model.utf8");
+  params.user_dict_path = join_path(dir, "user.dict.utf8");
+  return params;
+}
 
-  explicit Impl(const AnalyzerParams& p)
-      : jieba(p.jieba_dict_path, p.hmm_model_path, p.user_dict_path,
-              p.idf_path, p.stop_words_path) {}
+struct CppjiebaAnalyzer::Impl {
+  // Declaration order matters: MixSegment keeps non-owning pointers to the
+  // trie and the model, so both must outlive it.
+  cppjieba::DictTrie dict_trie;
+  cppjieba::HMMModel hmm_model;
+  cppjieba::MixSegment segment;
+
+  explicit Impl(const AnalyzerParams& params)
+      : dict_trie(params.jieba_dict_path, params.user_dict_path),
+        hmm_model(params.hmm_model_path),
+        segment(&dict_trie, &hmm_model) {}
 };
 
 CppjiebaAnalyzer::CppjiebaAnalyzer(const AnalyzerParams& params) {
-  HYPERVEC_THROW_IF_NOT_MSG(
-      !params.jieba_dict_path.empty(),
-      "CppjiebaAnalyzer: jieba_dict_path must not be empty");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      !params.hmm_model_path.empty(),
-      "CppjiebaAnalyzer: hmm_model_path must not be empty");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      !params.user_dict_path.empty(),
-      "CppjiebaAnalyzer: user_dict_path must not be empty");
-  impl_ = std::make_unique<Impl>(params);
+  const AnalyzerParams resolved = resolve_params(params);
+  check_readable(resolved.jieba_dict_path, "jieba_dict_path");
+  check_readable(resolved.hmm_model_path, "hmm_model_path");
+  check_readable(resolved.user_dict_path, "user_dict_path");
+  impl_ = std::make_unique<Impl>(resolved);
 }
 
 CppjiebaAnalyzer::~CppjiebaAnalyzer() = default;
 
+CppjiebaAnalyzer::CppjiebaAnalyzer(CppjiebaAnalyzer&&) noexcept = default;
+
+CppjiebaAnalyzer& CppjiebaAnalyzer::operator=(
+    CppjiebaAnalyzer&&) noexcept = default;
+
 std::vector<std::string> CppjiebaAnalyzer::Analyze(
     const std::string& text) const {
   std::vector<std::string> raw;
-  impl_->jieba.Cut(text, raw, /*hmm=*/true);
+  impl_->segment.Cut(text, raw, /*hmm=*/true);
 
   std::vector<std::string> result;
   result.reserve(raw.size());

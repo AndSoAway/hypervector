@@ -38,6 +38,10 @@ jobs:
 
       - name: Run ctest
         working-directory: build-test
+        env:
+          # Point the analyzer at the vendored dict so the CppjiebaAnalyzer
+          # cases actually segment text instead of GTEST_SKIP-ing.
+          HYPERVEC_DICT_DIR: ${{ github.workspace }}/third_party/cppjieba/dict
         run: ctest --output-on-failure --timeout 120
 
   # ─── Python pytest (pure-Python, no SWIG needed) ─────────────────────────────

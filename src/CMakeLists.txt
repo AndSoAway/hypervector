@@ -40,7 +40,6 @@ set(HYPERVEC_SRC
   utils/structures/sparse_row.cpp
   utils/structures/term_dictionary.cpp
   utils/algo/kmeans/kmeans.cpp
-  utils/algo/bm25/analyzer_cn.cpp
   utils/algo/bm25/bm25.cpp
   utils/algo/bm25/inverted_index.cpp
   utils/algo/bm25/text_to_sparse.cpp
@@ -115,6 +114,23 @@ set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
 
 add_library(hypervec ${HYPERVEC_SRC})
 
+# ---------------------------------------------------------------------------
+# cppjieba (Chinese segmentation, header-only + dict files)
+#
+# The analyzer is compiled only when HYPERVEC_ENABLE_BM25_ANALYZER is ON; the
+# cppjieba headers themselves are vendored under third_party/cppjieba and never
+# downloaded at configure time, so offline builds stay reproducible.
+# ---------------------------------------------------------------------------
+if(HYPERVEC_ENABLE_BM25_ANALYZER)
+  target_sources(hypervec PRIVATE utils/algo/bm25/analyzer_cn.cpp)
+  target_link_libraries(hypervec PRIVATE cppjieba_iface)
+  # HYPERVEC_DEFAULT_DICT_DIR is baked from the install layout; callers can
+  # override it at run time with the HYPERVEC_DICT_DIR environment variable.
+  target_compile_definitions(hypervec
+    PUBLIC HYPERVEC_ENABLE_BM25_ANALYZER
+    PRIVATE HYPERVEC_DEFAULT_DICT_DIR="${HYPERVEC_BM25_DICT_INSTALL_DIR}")
+endif()
+
 target_include_directories(hypervec PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_include_directories(hypervec PRIVATE
@@ -179,15 +195,4 @@ install(FILES ${PROJECT_BINARY_DIR}/cmake/hypervec-config.cmake
 
 install(EXPORT hypervec-targets
   DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypervec
-)
-
-# ---------------------------------------------------------------------------
-# cppjieba (Chinese segmentation, header-only + dict files)
-# ---------------------------------------------------------------------------
-include(${CMAKE_SOURCE_DIR}/cmake/thirdparty/fetch_cppjieba.cmake)
-# cppjieba is header-only; attach its include paths directly so the install
-# export set does not need to know about the cppjieba_iface target.
-target_include_directories(hypervec PRIVATE
-  ${cppjieba_SOURCE_DIR}/include
-  ${cppjieba_SOURCE_DIR}/deps/limonp/include
 )

@@ -7,7 +7,6 @@
  */
 
 #include <quantization/pq/pq.h>
-
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
@@ -17,6 +16,7 @@
 #include <algorithm>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -128,40 +128,72 @@ void ProductQuantizer::SetDerivedValues() {
 
 void ProductQuantizer::Train(idx_t n, const float* x,
                              const PQParameters& params) {
+  HYPERVEC_THROW_IF_NOT_FMT(n >= ksub,
+                            "ProductQuantizer::Train: need at least ksub=%ld "
+                            "training vectors, got %ld "
+                            "(consider lowering nbits or providing more data)",
+                            static_cast<long>(ksub), static_cast<long>(n));
   HYPERVEC_THROW_IF_NOT_FMT(
-    n >= ksub,
-    "ProductQuantizer::Train: need at least ksub=%ld training vectors, got %ld "
-    "(consider lowering nbits or providing more data)",
-    static_cast<long>(ksub), static_cast<long>(n));
-  HYPERVEC_THROW_IF_NOT_FMT(params.niter > 0,
-                            "ProductQuantizer::Train: niter must be > 0, got %d",
-                            params.niter);
-  HYPERVEC_THROW_IF_NOT_FMT(params.nredo > 0,
-                            "ProductQuantizer::Train: nredo must be > 0, got %d",
-                            params.nredo);
+      params.niter > 0, "ProductQuantizer::Train: niter must be > 0, got %d",
+      params.niter);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      params.nredo > 0, "ProductQuantizer::Train: nredo must be > 0, got %d",
+      params.nredo);
+  HYPERVEC_THROW_IF_NOT_FMT(
+      params.max_points_per_centroid >= 0,
+      "ProductQuantizer::Train: max_points_per_centroid must be non-negative, "
+      "got %d",
+      params.max_points_per_centroid);
 
-  KMeansParameters kp;
-  kp.niter = params.niter;
-  kp.nredo = params.nredo;
-  kp.verbose = params.verbose;
-  kp.metric = kMetricL2;  // T1 scope: L2 only
+  idx_t training_count = n;
+  if (params.max_points_per_centroid > 0) {
+    const size_t training_limit =
+        mul_no_overflow(static_cast<size_t>(ksub),
+                        static_cast<size_t>(params.max_points_per_centroid),
+                        "ProductQuantizer training sample limit");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        training_limit <=
+            static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+        "ProductQuantizer training sample limit exceeds idx_t");
+    training_count = std::min(n, static_cast<idx_t>(training_limit));
+  }
+  const std::vector<idx_t> training_rows =
+      training_count < n
+          ? SampleKMeansTrainingRows(n, training_count, params.seed)
+          : std::vector<idx_t>{};
 
   // Subquantizers are independent — train them in parallel. Each thread
-  // needs its own slice buffer (size n * dsub) to hold the m-th subvector
-  // slice contiguously.
+  // needs its own sampled slice buffer to hold one subspace contiguously.
+  // Do not create more workers than subquantizers: idle OpenMP workers would
+  // still allocate the full scratch buffer.
   std::vector<std::pair<int, std::exception_ptr>> exceptions;
+#ifdef _OPENMP
+  const int max_threads = omp_get_max_threads();
+  const int worker_count =
+      static_cast<idx_t>(max_threads) < M ? max_threads : static_cast<int>(M);
+#else
+  const int worker_count = 1;
+#endif
 
-#pragma omp parallel
+#pragma omp parallel num_threads(worker_count)
   {
-    std::vector<float> xslice(static_cast<size_t>(n) * dsub);
+    std::vector<float> xslice(static_cast<size_t>(training_count) * dsub);
+    KMeansParameters kp;
+    kp.niter = params.niter;
+    kp.nredo = params.nredo;
+    kp.verbose = params.verbose;
+    kp.metric = kMetricL2;           // T1 scope: L2 only
+    kp.max_points_per_centroid = 0;  // sampling already happened above
 
 #pragma omp for
     for (idx_t m = 0; m < M; m++) {
       try {
         // Gather subvector m of every training vector into a contiguous
         // (n, dsub) matrix.
-        for (idx_t i = 0; i < n; i++) {
-          std::memcpy(xslice.data() + i * dsub, x + i * d + m * dsub,
+        for (idx_t i = 0; i < training_count; i++) {
+          const idx_t source_row =
+              training_rows.empty() ? i : training_rows[static_cast<size_t>(i)];
+          std::memcpy(xslice.data() + i * dsub, x + source_row * d + m * dsub,
                       static_cast<size_t>(dsub) * sizeof(float));
         }
 
@@ -175,15 +207,18 @@ void ProductQuantizer::Train(idx_t n, const float* x,
 #pragma omp critical
 #endif
           {
-            std::fprintf(stderr, "PQ training subquantizer %ld/%ld (dsub=%ld, "
-                                 "ksub=%ld, n=%ld)\n",
+            std::fprintf(stderr,
+                         "PQ training subquantizer %ld/%ld (dsub=%ld, "
+                         "ksub=%ld, training_n=%ld, input_n=%ld)\n",
                          static_cast<long>(m + 1), static_cast<long>(M),
                          static_cast<long>(dsub), static_cast<long>(ksub),
+                         static_cast<long>(training_count),
                          static_cast<long>(n));
           }
         }
 
-        RunKMeans(n, xslice.data(), dsub, ksub, GetCentroids(m, 0), kp);
+        RunKMeans(training_count, xslice.data(), dsub, ksub, GetCentroids(m, 0),
+                  kp);
       } catch (...) {
 #pragma omp critical
         exceptions.emplace_back(static_cast<int>(m), std::current_exception());
@@ -275,37 +310,105 @@ void ProductQuantizer::ComputeDistanceTables(idx_t nx, const float* x,
 // Brute-force PQ search (L2)
 // ===========================================================================
 
-float ProductQuantizer::ApplyDistanceTable(const float* dis_table,
-                                           const uint8_t* code) const {
+namespace {
+
+template <int Bits>
+float ApplySpecializedTable(const ProductQuantizer& pq, const float* table,
+                            const uint8_t* code) {
+  constexpr size_t kStride = size_t{1} << Bits;
+  const auto lookup = [&](size_t m) {
+    size_t value;
+    if constexpr (Bits == 4) {
+      value = (code[m / 2] >> ((m % 2) * 4)) & 15U;
+    } else if constexpr (Bits == 8) {
+      value = code[m];
+    } else {
+      value = static_cast<size_t>(code[m * 2]) |
+              (static_cast<size_t>(code[m * 2 + 1]) << 8);
+    }
+    return table[m * kStride + value];
+  };
+  // Independent accumulators shorten the reduction dependency chain without
+  // changing the code layout or requiring gathers on scattered table entries.
+  float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+  size_t m = 0;
+  const size_t count = static_cast<size_t>(pq.M);
+  for (; m + 4 <= count; m += 4) {
+    s0 += lookup(m);
+    s1 += lookup(m + 1);
+    s2 += lookup(m + 2);
+    s3 += lookup(m + 3);
+  }
+  float sum = (s0 + s1) + (s2 + s3);
+  for (; m < count; ++m) sum += lookup(m);
+  return sum;
+}
+
+float ApplyGenericTable(const ProductQuantizer& pq, const float* dis_table,
+                        const uint8_t* code) {
   float dis = 0.0f;
-  if (nbits == 8) {
-    for (idx_t m = 0; m < M; m++) {
-      dis += dis_table[m * ksub + code[m]];
-    }
-  } else if (nbits == 16) {
-    for (idx_t m = 0; m < M; m++) {
-      const uint64_t k = static_cast<uint64_t>(code[2 * m]) |
-                         (static_cast<uint64_t>(code[2 * m + 1]) << 8);
-      dis += dis_table[m * ksub + static_cast<idx_t>(k)];
-    }
-  } else {
-    PQDecoderGeneric dec(code, nbits);
-    for (idx_t m = 0; m < M; m++) {
-      const idx_t k = static_cast<idx_t>(dec.decode());
-      dis += dis_table[m * ksub + k];
-    }
+  PQDecoderGeneric dec(code, pq.nbits);
+  for (idx_t m = 0; m < pq.M; m++) {
+    const idx_t k = static_cast<idx_t>(dec.decode());
+    dis += dis_table[m * pq.ksub + k];
   }
   return dis;
+}
+
+}  // namespace
+
+auto ProductQuantizer::GetDistanceKernel() const -> DistanceKernel {
+  switch (nbits) {
+    case 4:
+      return ApplySpecializedTable<4>;
+    case 8:
+      return ApplySpecializedTable<8>;
+    case 16:
+      return ApplySpecializedTable<16>;
+    default:
+      return ApplyGenericTable;
+  }
+}
+
+float ProductQuantizer::ApplyDistanceTable(const float* dis_table,
+                                           const uint8_t* code) const {
+  return GetDistanceKernel()(*this, dis_table, code);
 }
 
 void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
                                 const uint8_t* codes, idx_t k,
                                 float* distances, idx_t* labels) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT(k > 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nx >= 0, "ProductQuantizer::SearchL2: nx must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes >= 0, "ProductQuantizer::SearchL2: ncodes must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0,
+                            "ProductQuantizer::SearchL2: k must be positive");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(k),
+                        "ProductQuantizer::SearchL2 output size");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(d),
+                        "ProductQuantizer::SearchL2 input size");
+  (void)mul_no_overflow(static_cast<size_t>(ncodes), code_size,
+                        "ProductQuantizer::SearchL2 code size");
+  if (nx == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "ProductQuantizer::SearchL2: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      distances != nullptr,
+      "ProductQuantizer::SearchL2: distances must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      labels != nullptr, "ProductQuantizer::SearchL2: labels must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes == 0 || codes != nullptr,
+      "ProductQuantizer::SearchL2: codes must not be null when ncodes is "
+      "positive");
 
   const size_t table_sz = static_cast<size_t>(M) * ksub;
 
+  const auto distance_kernel = GetDistanceKernel();
 #pragma omp parallel
   {
     std::vector<float> dis_table(table_sz);
@@ -321,7 +424,7 @@ void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
       float threshold = heap_dis[0];
       for (idx_t j = 0; j < ncodes; j++) {
         const float dis =
-          ApplyDistanceTable(dis_table.data(), codes + j * code_size);
+            distance_kernel(*this, dis_table.data(), codes + j * code_size);
         if (CMax<float, idx_t>::cmp(threshold, dis)) {
           heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis, j);
           threshold = heap_dis[0];

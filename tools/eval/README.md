@@ -1,0 +1,63 @@
+# HyperVec evaluation tools
+
+Four executables form a file-based pipeline; every artifact is SHA-256
+fingerprinted so a mismatch is detectable rather than silently scored.
+
+| Stage | Tool | Input | Output |
+| --- | --- | --- | --- |
+| 1. Prepare | `hypervec_dataset prepare` | source `.fvecs` | disjoint `base.fvecs`, `queries.fvecs`, metadata |
+| 1'. Import | `hypervec_convert_hdf5` | ANN `.hdf5` | the same three plus `ground-truth.ivecs` |
+| 2. Ground truth | `hypervec_ground_truth` | base, queries | exact `.ivecs`, optional `--provenance` |
+| 3. Build | `hypervec_build` | base | persisted index, manifest, optional `--provenance` |
+| 4. Evaluate | `hypervec_eval` | index, queries, ground truth | recall, latency, QPS, memory |
+Stages 1 and 1' are alternatives: `prepare` holds query rows out of the base so a
+query cannot match itself; importing keeps the source's split and neighbours. Give
+stage 2 and 3 `--provenance`, then pass both records to stage 4
+with `--build-provenance` and `--ground-truth-provenance` to reject an index that
+is not the one stage 3 built, or a ground truth computed from a base other than
+the indexed one.
+
+## Optional exact reranking
+
+Retrieve a wider candidate set approximately, then score those candidates
+exactly against the original float32 base:
+
+```sh
+hypervec_eval --index compressed.index --queries query.fvecs \
+  --ground-truth truth.ivecs --metric l2 --k 10 \
+  --rerank-base base.fvecs --rerank-candidates 128 \
+  --json-output reranked.json
+```
+
+The base must contain exactly the vectors used to build the index, **in index
+label order**. The tool checks dimensions and row count and records path, size
+and SHA-256, but cannot independently prove ID order. Keep the base available
+across index save/load: raw vectors are *not* written to compressed index files.
+Only squared L2 and inner product are supported and candidates must be at least
+`k`. Reranking is refused for `id_map` indexes, whose labels are external IDs
+rather than base rows. Useful for PQ, OPQ-PQ, LVQ and IVF-RaBitQ when
+approximate distances misorder candidates; it cannot recover a true neighbour
+the index never returned. Exact-storage graph/IVF indexes and DiskANN already
+hold or rerank raw vectors. The base adds roughly `n * d * 4` bytes.
+
+LVQ now uses mean-centered, per-vector scalar quantization: `nbits` (1–8)
+applies **to each dimension**, and `nlocal` is no longer a valid parameter.
+LVQ-8 on 300 dimensions uses 308 bytes per vector. The old whole-vector codebook
+format is incompatible; rebuild previously saved LVQ, IVF-LVQ and HNSW-LVQ
+indexes from the original vectors.
+
+## Provenance checks and output safety
+
+Use `--provenance RECORD.prov` with the build and ground-truth tools; evaluation
+accepts `--build-provenance` and `--ground-truth-provenance` (not JSON manifests).
+Ground-truth records use `hypervec-ground-truth-provenance-v2` and bind the base,
+queries, semantic metric, neighbor width and ground-truth bytes. Regenerate older
+records: a legacy record cannot establish query or metric identity. Both LF and
+CRLF records are accepted; new records use LF on every platform.
+
+When either supplied record identifies the original base, `--rerank-base` must
+have exactly the same SHA-256, including row order. Without provenance, the
+existing shape checks still apply and the caller must establish row identity.
+All output paths, including provenance, must differ from input paths and other
+outputs. Existing symbolic-link and hard-link aliases are also rejected before
+building or writing any artifact.

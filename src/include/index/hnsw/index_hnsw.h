@@ -10,9 +10,9 @@
 
 #pragma once
 
-#include <index/index.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/hnsw.h>
+#include <index/index.h>
 #include <utils/utils.h>
 
 #include <optional>
@@ -33,6 +33,10 @@ struct IndexHNSW : Index {
   // the link structure
   HNSW hnsw;
 
+  /** Build-only parallel insertion hint; not serialized. Default preserves
+   * deterministic sequential insertion. Searches must not overlap Add. */
+  int build_threads = 1;
+
   // the sequential storage
   bool own_fields = false;
   Index* storage = nullptr;
@@ -48,7 +52,8 @@ struct IndexHNSW : Index {
   // used during copyFrom operations.
   bool keep_max_size_level0 = false;
 
-  // See impl/VisitedTable.h.
+  // Query-time visited-table policy. When unset, the shared VisitedTable
+  // chooses automatically from the index size.
   std::optional<bool> use_visited_hashset;
 
   explicit IndexHNSW(int d = 0, int M = 32, MetricType metric = kMetricL2);
@@ -56,6 +61,10 @@ struct IndexHNSW : Index {
 
   ~IndexHNSW() override;
 
+  IndexCapabilities GetCapabilities() const override;
+
+  /** Transactional append for the built-in FlatCodes, PQ, and LVQ stores.
+   *  Other storage implementations are rejected before mutation. */
   void Add(idx_t n, const float* x) override;
 
   /// Trains the storage if needed
@@ -66,8 +75,8 @@ struct IndexHNSW : Index {
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   /** Search one vector with a custom result handler */
   void Search1(const float* x, ResultHandler& handler,
@@ -77,38 +86,57 @@ struct IndexHNSW : Index {
 
   void Reset() override;
 
+  /** Transactionally prune each level-0 neighbor list to at most size
+   * entries. Higher graph levels are preserved. */
   void ShrinkLevel0Neighbors(int size);
 
   /** Perform Search only on level 0, given the starting points for
    * each vertex.
    *
-   * @param search_type 1:perform one Search per nprobe, 2: enqueue
-   *                    all entry points
+   * @param nearest entry-point IDs, stored as n rows of nprobe IDs
+   * @param nearest_d entry-point distances or similarities in public metric
+   *                  direction, stored as n rows of nprobe values
+   * @param search_type 1: perform one Search per entry point; 2: enqueue all
+   *                    entry points for each query
    */
   void SearchLevel0(idx_t n, const float* x, idx_t k,
-                      const storage_idx_t* nearest, const float* nearest_d,
-                      float* distances, idx_t* labels, int nprobe = 1,
-                      int search_type = 1,
-                      const SearchParameters* params = nullptr) const;
+                    const storage_idx_t* nearest, const float* nearest_d,
+                    float* distances, idx_t* labels, int nprobe = 1,
+                    int search_type = 1,
+                    const SearchParameters* params = nullptr) const;
 
-  /// alternative graph building
-  void InitLevel0FromKnngraph(int k, const float* D, const idx_t* I);
+  /** Replace level 0 from an external row-major k-NN graph. Distances use
+   * public metric direction: smaller for distances, larger for similarities.
+   * Existing upper levels are preserved and the update is transactional. */
+  void InitLevel0FromKnngraph(int k, const float* distances,
+                              const idx_t* labels);
 
-  /// alternative graph building
+  /** Transactionally add level-0 links for currently unlinked points by
+   * searching from the corresponding entry points. Both arrays contain npt
+   * internal IDs. */
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
-                                      const storage_idx_t* nearests);
+                                 const storage_idx_t* nearests);
 
-  // reorder links from nearest to farthest
+  /** Transactionally reorder existing level-0 links from nearest to farthest.
+   * Similarity metrics are ordered from highest to lowest similarity. */
   void ReorderLinks();
 
+  /** Transactionally reconnect level-0 nodes with zero incoming degree.
+   * Existing upper levels are preserved. */
   void LinkSingletons();
 
   virtual void PermuteEntries(const idx_t* perm);
 
   DistanceComputer* GetDistanceComputer() const override;
 
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
+ protected:
+  /** Append storage and graph state as one rollback-capable operation. */
+  void AddImpl(idx_t n, const float* x, Index* construction_storage,
+               Index* secondary_storage = nullptr);
+
+  /** Permute the graph, encoded storage, and an optional build-time store as
+   * one validated operation. */
+  void PermuteEntriesImpl(const idx_t* perm, Index* secondary_storage);
 };
 
 /** Flat index topped with with a HNSW structure to access elements
@@ -118,9 +146,6 @@ struct IndexHNSW : Index {
 struct IndexHNSWFlat : IndexHNSW {
   IndexHNSWFlat();
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

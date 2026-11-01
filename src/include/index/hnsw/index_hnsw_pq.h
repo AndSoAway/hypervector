@@ -76,6 +76,8 @@ struct IndexHNSWPQ : IndexHNSW {
   /// calling on an already-frozen index is a no-op.
   void Freeze();
 
+  void PermuteEntries(const idx_t* perm) override;
+
   /// Forwarders to storage(=IndexPQ) for the standalone codec interface.
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
@@ -88,9 +90,6 @@ struct IndexHNSWPQ : IndexHNSW {
   void RangeSearch(idx_t n, const float* x, float radius,
                     RangeSearchResult* result,
                     const SearchParameters* params = nullptr) const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

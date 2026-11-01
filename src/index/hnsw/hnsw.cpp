@@ -6,20 +6,27 @@
  * source tree.
  */
 
-#include <utils/distances/distance_computer.h>
-#include <utils/selector/id_selector.h>
 #include <index/hnsw/hnsw.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/common/result_handler.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstddef>
+#include <cstdio>
+#include <functional>
+#include <limits>
+#include <queue>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #ifdef __AVX2__
 #include <immintrin.h>
 
-#include <limits>
 #include <type_traits>
 #endif
 
@@ -307,8 +314,8 @@ void ShrinkNeighborList(DistanceComputer& qdis,
 /// Add a link between two elements, possibly shrinking the list
 /// of links to make room for it.
 void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
-              storage_idx_t dest, int level,
-              bool keep_max_size_level0 = false) {
+              storage_idx_t dest, int level, bool keep_max_size_level0,
+              const std::function<void(storage_idx_t)>& before_node_mutation) {
   size_t begin, end;
   hnsw.NeighborRange(src, level, &begin, &end);
   if (hnsw.neighbors[end - 1] == -1) {
@@ -319,6 +326,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
         break;
       }
       i--;
+    }
+    if (before_node_mutation) {
+      before_node_mutation(src);
     }
     hnsw.neighbors[i] = dest;
     return;
@@ -337,6 +347,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
   ShrinkNeighborList(qdis, resultSet, end - begin, keep_max_size_level0);
 
   // ...and back
+  if (before_node_mutation) {
+    before_node_mutation(src);
+  }
   size_t i = begin;
   while (resultSet.size()) {
     hnsw.neighbors[i++] = resultSet.top().id;
@@ -464,11 +477,11 @@ void SearchNeighborsToAdd(HNSW& hnsw, DistanceComputer& qdis,
 
 /// Finds neighbors and builds links with them, starting from an entry
 /// point. The own neighbor list is assumed to be locked.
-void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
-                                   storage_idx_t nearest, float d_nearest,
-                                   int level, omp_lock_t* locks,
-                                   VisitedTable& vt,
-                                   bool keep_max_size_level0) {
+void HNSW::AddLinksStartingFrom(
+    DistanceComputer& ptdis, storage_idx_t pt_id, storage_idx_t nearest,
+    float d_nearest, int level, omp_lock_t* locks, VisitedTable& vt,
+    bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   std::priority_queue<NodeDistCloser> link_targets;
 
   SearchNeighborsToAdd(*this, ptdis, link_targets, nearest, d_nearest, level,
@@ -484,7 +497,8 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   neighbors_to_add.reserve(link_targets.size());
   while (!link_targets.empty()) {
     storage_idx_t other_id = link_targets.top().id;
-    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0);
+    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0,
+             before_node_mutation);
     neighbors_to_add.push_back(other_id);
     link_targets.pop();
   }
@@ -492,7 +506,14 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   omp_unset_lock(&locks[pt_id]);
   for (storage_idx_t other_id : neighbors_to_add) {
     omp_set_lock(&locks[other_id]);
-    add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0);
+    try {
+      add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0,
+               before_node_mutation);
+    } catch (...) {
+      omp_unset_lock(&locks[other_id]);
+      omp_set_lock(&locks[pt_id]);
+      throw;
+    }
     omp_unset_lock(&locks[other_id]);
   }
   omp_set_lock(&locks[pt_id]);
@@ -502,9 +523,10 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
  * Building, parallel
  **************************************************************/
 
-void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
-                          std::vector<omp_lock_t>& locks, VisitedTable& vt,
-                          bool keep_max_size_level0) {
+void HNSW::AddWithLocks(
+    DistanceComputer& ptdis, int pt_level, int pt_id,
+    std::vector<omp_lock_t>& locks, VisitedTable& vt, bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   storage_idx_t nearest = entry_point;
   if (nearest == -1) {  // avoid locking after the first point.
 #pragma omp critical
@@ -523,18 +545,23 @@ void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
   }
 
   omp_set_lock(&locks[pt_id]);
+  try {
+    int level = max_level;  // level at which we start adding neighbors
+    float d_nearest = ptdis(nearest);
 
-  int level = max_level;  // level at which we start adding neighbors
-  float d_nearest = ptdis(nearest);
+    //  greedy Search on upper levels
+    for (; level > pt_level; level--) {
+      GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
+    }
 
-  //  greedy Search on upper levels
-  for (; level > pt_level; level--) {
-    GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
-  }
-
-  for (; level >= 0; level--) {
-    AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
-                            locks.data(), vt, keep_max_size_level0);
+    for (; level >= 0; level--) {
+      AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
+                           locks.data(), vt, keep_max_size_level0,
+                           before_node_mutation);
+    }
+  } catch (...) {
+    omp_unset_lock(&locks[pt_id]);
+    throw;
   }
 
   omp_unset_lock(&locks[pt_id]);
@@ -1003,36 +1030,80 @@ void HNSW::SearchLevel0(DistanceComputer& qdis, ResultHandler& res,
 }
 
 void HNSW::PermuteEntries(const idx_t* map) {
-  // remap levels
-  storage_idx_t n_total = levels.size();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      levels.size() <=
+          static_cast<size_t>((std::numeric_limits<storage_idx_t>::max)()),
+      "HNSW::PermuteEntries: graph is too large for storage ids");
+  const size_t n_total = levels.size();
+  HYPERVEC_THROW_IF_NOT_MSG(offsets.size() == n_total + 1 && offsets[0] == 0,
+                            "HNSW::PermuteEntries: invalid graph offsets");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      offsets.back() == neighbors.size(),
+      "HNSW::PermuteEntries: offsets do not cover the neighbor array");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      entry_point == -1 ||
+          (entry_point >= 0 && static_cast<size_t>(entry_point) < n_total),
+      "HNSW::PermuteEntries: invalid entry point");
+  if (n_total > 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        map != nullptr, "HNSW::PermuteEntries: permutation must not be null");
+  }
+
   std::vector<storage_idx_t> imap(n_total);  // inverse mapping
+  std::vector<uint8_t> seen(n_total, 0);
   // map: new index -> old index
   // imap: old index -> new index
-  for (int i = 0; i < n_total; i++) {
-    assert(map[i] >= 0 && map[i] < n_total);
-    imap[map[i]] = i;
+  for (size_t i = 0; i < n_total; ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        map[i] >= 0 && static_cast<size_t>(map[i]) < n_total,
+        "HNSW::PermuteEntries: permutation entry is out of range");
+    const size_t old_id = static_cast<size_t>(map[i]);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        seen[old_id] == 0,
+        "HNSW::PermuteEntries: permutation contains a duplicate id");
+    seen[old_id] = 1;
+    imap[old_id] = static_cast<storage_idx_t>(i);
   }
-  if (entry_point != -1) {
-    entry_point = imap[entry_point];
+
+  for (size_t i = 0; i < n_total; ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        offsets[i] <= offsets[i + 1] && offsets[i + 1] <= neighbors.size(),
+        "HNSW::PermuteEntries: graph offsets are not monotonic");
+    HYPERVEC_THROW_IF_NOT_MSG(levels[i] > 0,
+                              "HNSW::PermuteEntries: graph level is invalid");
   }
+  for (size_t i = 0; i < neighbors.size(); ++i) {
+    const storage_idx_t neighbor = neighbors[i];
+    HYPERVEC_THROW_IF_NOT_MSG(
+        neighbor == -1 ||
+            (neighbor >= 0 && static_cast<size_t>(neighbor) < n_total),
+        "HNSW::PermuteEntries: graph contains an invalid neighbor");
+  }
+
+  const storage_idx_t new_entry_point =
+      entry_point == -1 ? -1 : imap[static_cast<size_t>(entry_point)];
   std::vector<int> new_levels(n_total);
   std::vector<size_t> new_offsets(n_total + 1);
-  std::vector<storage_idx_t> new_neighbors(neighbors.size());
+  MaybeOwnedVector<storage_idx_t> new_neighbors(neighbors.size());
   size_t no = 0;
-  for (int i = 0; i < n_total; i++) {
-    storage_idx_t o = map[i];  // corresponding "old" index
+  for (size_t i = 0; i < n_total; ++i) {
+    const size_t o = static_cast<size_t>(map[i]);  // corresponding old index
     new_levels[i] = levels[o];
     for (size_t j = offsets[o]; j < offsets[o + 1]; j++) {
-      storage_idx_t neigh = neighbors[j];
-      new_neighbors[no++] = neigh >= 0 ? imap[neigh] : neigh;
+      const storage_idx_t neighbor = neighbors[j];
+      new_neighbors[no++] =
+          neighbor >= 0 ? imap[static_cast<size_t>(neighbor)] : neighbor;
     }
     new_offsets[i + 1] = no;
   }
-  assert(new_offsets[n_total] == offsets[n_total]);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      no == neighbors.size(),
+      "HNSW::PermuteEntries: permuted neighbor count is inconsistent");
   // swap everyone
   std::swap(levels, new_levels);
   std::swap(offsets, new_offsets);
-  neighbors = std::move(new_neighbors);
+  swap(neighbors, new_neighbors);
+  entry_point = new_entry_point;
 }
 
 /**************************************************************

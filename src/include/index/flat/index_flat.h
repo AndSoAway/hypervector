@@ -22,12 +22,14 @@ struct IndexFlat : IndexFlatCodes {
   explicit IndexFlat(idx_t d,  ///< dimensionality of the input vectors
                      MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 
   void Reconstruct(idx_t key, float* recons) const override;
 
@@ -39,16 +41,19 @@ struct IndexFlat : IndexFlatCodes {
    * @param distances
    *                corresponding output distances, size n * k
    */
-  void ComputeDistanceSubset(idx_t n, const float* x, idx_t k,
-                               float* distances, const idx_t* labels) const;
+  void ComputeDistanceSubset(idx_t n, const float* x, idx_t k, float* distances,
+                             const idx_t* labels) const;
 
-  // get pointer to the floating point data
-  float* GetXb() {
-    return (float*)codes.data();
-  }
-  const float* GetXb() const {
-    return (const float*)codes.data();
-  }
+  /** Whether the encoded storage can be accessed directly as floats. */
+  bool IsDataAligned() const noexcept;
+
+  /** Return the floating-point storage.
+   *
+   * Throws when a memory-mapped legacy payload is not float-aligned. Public
+   * search APIs transparently use an alignment-safe path in that case.
+   */
+  float* GetXb();
+  const float* GetXb() const;
 
   IndexFlat() {}
 
@@ -58,20 +63,11 @@ struct IndexFlat : IndexFlatCodes {
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
 
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
-
-  /// Base IndexFlat is only serializable through its IndexFlatL2/IndexFlatIP
-  /// subclasses; a bare IndexFlat (e.g. L1/Linf metric) throws on fourcc(),
-  /// matching the pre-refactor "unsupported index type" behaviour.
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 struct IndexFlatIP : IndexFlat {
   explicit IndexFlatIP(idx_t d) : IndexFlat(d, kMetricInnerProduct) {}
   IndexFlatIP() {}
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 struct IndexFlatL2 : IndexFlat {
@@ -87,6 +83,13 @@ struct IndexFlatL2 : IndexFlat {
   explicit IndexFlatL2(idx_t d) : IndexFlat(d, kMetricL2) {}
   IndexFlatL2() {}
 
+  void Add(idx_t n, const float* x) override;
+  void AddSaCodes(idx_t n, const uint8_t* codes, const idx_t* xids) override;
+  void Reset() override;
+  size_t RemoveIds(const IDSelector& sel) override;
+  void MergeFrom(Index& other, idx_t add_id = 0) override;
+  void PermuteEntries(const idx_t* perm) override;
+
   // override for l2 norms cache.
   FlatCodesDistanceComputer* GetFlatCodesDistanceComputer() const override;
 
@@ -94,9 +97,6 @@ struct IndexFlatL2 : IndexFlat {
   void SyncL2Norms();
   // clear L2 norms
   void ClearL2Norms();
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 /// optimized version for 1D "vectors".

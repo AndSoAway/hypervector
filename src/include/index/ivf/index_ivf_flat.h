@@ -26,14 +26,11 @@ struct IndexIVFFlat : IndexIVF {
   /** Encode: store raw floats as bytes (memcpy). */
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
 
-  /** Exact distance search within pre-assigned inverted lists. */
-  void SearchPreassigned(idx_t n, const float* x, idx_t k,
-                         const idx_t* list_ids, const float* centroid_dis,
-                         float* distances, idx_t* labels, idx_t nprobe_actual,
-                         const IDSelector* sel) const override;
-
   /** Reconstruct a vector by scanning all inverted lists for the given ID. */
   void Reconstruct(idx_t key, float* recons) const override;
+
+ protected:
+  InvertedListScannerPtr CreateInvertedListScanner() const override;
 };
 
 }  // namespace hypervec

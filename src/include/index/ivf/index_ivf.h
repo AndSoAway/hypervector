@@ -13,9 +13,13 @@
 #include <utils/common/range_search_result.h>
 #include <utils/selector/id_selector.h>
 
+#include <memory>
 #include <vector>
 
 namespace hypervec {
+
+class InvertedListScanner;
+using InvertedListScannerPtr = std::unique_ptr<InvertedListScanner>;
 
 /** Search parameters for IVF-family indexes. */
 struct IVFSearchParameters : SearchParameters {
@@ -30,12 +34,13 @@ struct IVFSearchParameters : SearchParameters {
  * corresponding inverted list.  Search probes nprobe cells and merges
  * results.
  *
- * Subclasses provide EncodeVectors() (how to store a vector as bytes in the
- * list) and SearchPreassigned() (how to compute distances within a list). */
+ * Subclasses provide EncodeVectors() (how to store a vector as bytes) and may
+ * use the common scanner-driven search path or override SearchPreassigned(). */
 struct IndexIVF : Index {
-  idx_t nlist;                   ///< number of inverted lists (cluster cells)
-  idx_t nprobe;                  ///< default number of lists to probe per query
-  std::vector<float> centroids;  ///< cluster centroids, size nlist * d, row-major
+  idx_t nlist;   ///< number of inverted lists (cluster cells)
+  idx_t nprobe;  ///< default number of lists to probe per query
+  std::vector<float>
+      centroids;  ///< cluster centroids, size nlist * d, row-major
 
   InvertedLists* invlists;  ///< per-cell vector storage
   bool own_invlists;        ///< whether to delete invlists on destruction
@@ -60,8 +65,7 @@ struct IndexIVF : Index {
   /** Assign vectors to cells and add them with explicit IDs. */
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;
 
-  void Search(idx_t n, const float* x, idx_t k, float* distances,
-              idx_t* labels,
+  void Search(idx_t n, const float* x, idx_t k, float* distances, idx_t* labels,
               const SearchParameters* params = nullptr) const override;
 
   void RangeSearch(idx_t n, const float* x, float radius,
@@ -77,12 +81,10 @@ struct IndexIVF : Index {
    *  @param n      number of vectors
    *  @param x      input vectors, size n * d
    *  @param codes  output buffer, size n * invlists->code_size */
-  virtual void EncodeVectors(idx_t n, const float* x,
-                             uint8_t* codes) const = 0;
+  virtual void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const = 0;
 
-  /** Search within pre-selected inverted lists and update heap-formatted
-   *  output arrays.  Heaps must be initialised by the caller before the
-   *  first call (distances / labels filled with neutral values and -1).
+  /** Search within pre-selected inverted lists. The common implementation
+   *  initializes, updates, and reorders each query's output heap.
    *
    *  @param n             number of queries
    *  @param x             query vectors, size n * d
@@ -98,7 +100,7 @@ struct IndexIVF : Index {
                                  const idx_t* list_ids,
                                  const float* centroid_dis, float* distances,
                                  idx_t* labels, idx_t nprobe_actual,
-                                 const IDSelector* sel) const = 0;
+                                 const IDSelector* sel) const;
 
   // -----------------------------------------------------------------------
   // Utility (non-virtual, available to subclasses and users)
@@ -124,6 +126,12 @@ struct IndexIVF : Index {
   /** Append pre-encoded vectors, rolling back partial list writes on error. */
   void AddEncodedVectors(idx_t n, const idx_t* list_ids, const uint8_t* codes,
                          const idx_t* xids);
+
+  /** Create independent state for interpreting one inverted-list code layout.
+   *
+   * Subclasses that use the common SearchPreassigned or RangeSearch paths
+   * must override this method. */
+  virtual InvertedListScannerPtr CreateInvertedListScanner() const;
 };
 
 }  // namespace hypervec

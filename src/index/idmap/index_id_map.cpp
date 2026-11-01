@@ -6,6 +6,7 @@
  * source tree.
  */
 
+#include <index/diskann/index_diskann.h>
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
 #include <index/lsh/index_lsh.h>
@@ -14,6 +15,7 @@
 
 #include <cinttypes>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <typeinfo>
@@ -58,6 +60,12 @@ std::unique_ptr<SearchParameters> TranslateSearchParameters(
     translated->sel = translated_selector;
     return translated;
   }
+  if (typeid(params) == typeid(SearchParametersDiskANN)) {
+    auto translated = std::make_unique<SearchParametersDiskANN>(
+        static_cast<const SearchParametersDiskANN&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
   HYPERVEC_THROW_MSG(
       "IndexIDMap: selector translation does not support this search "
       "parameter subtype");
@@ -74,6 +82,49 @@ void TranslateLabels(const IndexIDMap& index, idx_t n, idx_t* labels) {
         "IndexIDMap: underlying index returned an unmapped internal id");
     labels[i] = external_id;
   }
+}
+
+template <typename BuildOperation>
+void BuildWithIdentityIds(IndexIDMap* mapped, idx_t n, const float* x,
+                          BuildOperation&& build) {
+  HYPERVEC_THROW_IF_NOT_MSG(n > 0, "IndexIDMap::Build: n must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "IndexIDMap::Build: x must not be null");
+  mapped->check_consistency();
+  HYPERVEC_THROW_IF_NOT_MSG(mapped->n_total == 0,
+                            "IndexIDMap::Build: index must be empty");
+
+  std::unordered_map<idx_t, idx_t> next_id_map;
+  std::vector<idx_t> next_rev_map;
+  next_id_map.reserve(static_cast<size_t>(n));
+  next_rev_map.reserve(static_cast<size_t>(n));
+  for (idx_t i = 0; i < n; ++i) {
+    next_id_map.emplace(i, i);
+    next_rev_map.push_back(i);
+  }
+
+  try {
+    build();
+  } catch (...) {
+    const std::exception_ptr build_error = std::current_exception();
+    if (mapped->index->n_total != 0) {
+      mapped->index->Reset();
+    }
+    mapped->is_trained = mapped->index->is_trained;
+    std::rethrow_exception(build_error);
+  }
+  if (mapped->index->n_total != n) {
+    mapped->index->Reset();
+    mapped->is_trained = mapped->index->is_trained;
+    HYPERVEC_THROW_MSG(
+        "IndexIDMap::Build: underlying index built an unexpected number of "
+        "vectors");
+  }
+
+  mapped->id_map.swap(next_id_map);
+  mapped->rev_map.swap(next_rev_map);
+  mapped->n_total = mapped->index->n_total;
+  mapped->is_trained = mapped->index->is_trained;
 }
 
 idx_t ShiftExternalId(idx_t external_id, idx_t add_id) {
@@ -169,6 +220,17 @@ void IndexIDMap::Train(idx_t n, const float* x, idx_t n_train_q,
     throw;
   }
   is_trained = index->is_trained;
+}
+
+void IndexIDMap::Build(idx_t n, const float* x) {
+  BuildWithIdentityIds(this, n, x, [this, n, x] { index->Build(n, x); });
+}
+
+void IndexIDMap::Build(idx_t n, const float* x, idx_t n_train_q,
+                       const float* xq_train) {
+  BuildWithIdentityIds(this, n, x, [this, n, x, n_train_q, xq_train] {
+    index->Build(n, x, n_train_q, xq_train);
+  });
 }
 
 void IndexIDMap::Add(idx_t n, const float* x) {

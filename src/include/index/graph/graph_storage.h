@@ -10,7 +10,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
@@ -20,6 +22,37 @@ using GraphId = int32_t;
 constexpr GraphId kInvalidGraphId = -1;
 using GraphNeighborView = std::span<const GraphId>;
 
+/** Neighbor view with an optional lease on its backing storage.
+ *
+ * In-memory graphs return an empty lease. Page-backed graphs attach the page
+ * handle so the view remains valid for the lifetime of this object, including
+ * after cache eviction.
+ */
+class GraphNeighborList {
+ public:
+  using const_iterator = GraphNeighborView::iterator;
+
+  GraphNeighborList() noexcept = default;
+  explicit GraphNeighborList(GraphNeighborView neighbors,
+                             std::shared_ptr<const void> owner = {}) noexcept
+      : neighbors_(neighbors), owner_(std::move(owner)) {}
+
+  const GraphId* data() const noexcept { return neighbors_.data(); }
+  size_t size() const noexcept { return neighbors_.size(); }
+  bool empty() const noexcept { return neighbors_.empty(); }
+  const_iterator begin() const noexcept { return neighbors_.begin(); }
+  const_iterator end() const noexcept { return neighbors_.end(); }
+  const GraphId& operator[](size_t index) const noexcept {
+    return neighbors_[index];
+  }
+
+  operator GraphNeighborView() const noexcept { return neighbors_; }
+
+ private:
+  GraphNeighborView neighbors_;
+  std::shared_ptr<const void> owner_;
+};
+
 /** Read-only adjacency contract consumed by graph search algorithms. */
 class GraphStorage {
  public:
@@ -27,7 +60,7 @@ class GraphStorage {
 
   virtual size_t NodeCount() const noexcept = 0;
   virtual size_t MaxDegree() const noexcept = 0;
-  virtual GraphNeighborView Neighbors(GraphId node) const = 0;
+  virtual GraphNeighborList Neighbors(GraphId node) const = 0;
 
   /** Best-effort prefetch. Invalid node identifiers are ignored. */
   virtual void Prefetch(GraphId node) const noexcept;
@@ -48,7 +81,7 @@ class MutableBoundedGraph final : public MutableGraphStorage {
 
   size_t NodeCount() const noexcept override;
   size_t MaxDegree() const noexcept override;
-  GraphNeighborView Neighbors(GraphId node) const override;
+  GraphNeighborList Neighbors(GraphId node) const override;
   void Prefetch(GraphId node) const noexcept override;
 
   void Resize(size_t node_count) override;
@@ -73,7 +106,7 @@ class FixedDegreeGraph final : public MutableGraphStorage {
 
   size_t NodeCount() const noexcept override;
   size_t MaxDegree() const noexcept override;
-  GraphNeighborView Neighbors(GraphId node) const override;
+  GraphNeighborList Neighbors(GraphId node) const override;
   void Prefetch(GraphId node) const noexcept override;
 
   void Resize(size_t node_count) override;
@@ -96,7 +129,7 @@ class CsrGraph final : public GraphStorage {
 
   size_t NodeCount() const noexcept override;
   size_t MaxDegree() const noexcept override;
-  GraphNeighborView Neighbors(GraphId node) const override;
+  GraphNeighborList Neighbors(GraphId node) const override;
   void Prefetch(GraphId node) const noexcept override;
 
   const std::vector<size_t>& Offsets() const noexcept { return offsets_; }

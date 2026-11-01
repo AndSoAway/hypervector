@@ -61,4 +61,25 @@ class HnswHeuristicPruner final : public NeighborPruner {
   bool fill_to_capacity_;
 };
 
+/** Alpha-scaled relative-neighborhood pruning used by Vamana graphs.
+ *
+ * A candidate is rejected when an already selected neighbor provides an
+ * alpha-scaled shorter route. Alpha must be finite and at least one; larger
+ * values retain more edges.
+ */
+class VamanaRobustPruner final : public NeighborPruner {
+ public:
+  explicit VamanaRobustPruner(float alpha);
+
+  std::vector<NeighborCandidate> Prune(
+      std::span<const NeighborCandidate> candidates, size_t max_neighbors,
+      DistanceComputer& distance,
+      GraphPruneStats* stats = nullptr) const override;
+
+  float Alpha() const noexcept { return alpha_; }
+
+ private:
+  float alpha_;
+};
+
 }  // namespace hypervec

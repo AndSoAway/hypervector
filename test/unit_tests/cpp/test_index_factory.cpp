@@ -7,6 +7,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <index/diskann/index_diskann.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
@@ -25,8 +26,10 @@
 #include <quantization/rabitq/index_ivf_rabitq.h>
 #include <transform/opq_matrix.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -56,6 +59,12 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("max_degree", 4)
       .SetInteger("build_search_width", 4)
       .SetInteger("candidate_pool_size", 8)
+      .SetDouble("alpha", 1.2)
+      .SetInteger("build_passes", 2)
+      .SetInteger("search_width", 8)
+      .SetInteger("page_size", 4096)
+      .SetInteger("cache_capacity_pages", 2)
+      .SetString("node_data_path", "")
       .SetInteger("ef_construction", 8)
       .SetInteger("ef_search", 4)
       .SetBoolean("check_relative_distance", true)
@@ -74,8 +83,11 @@ void ExpectBuiltIn(std::string name,
     if (parameter == "check_relative_distance" ||
         parameter == "fill_to_max_degree") {
       filtered.SetBoolean(parameter, config.GetBoolean(parameter, false));
-    } else if (parameter == "nn_descent_convergence_threshold") {
+    } else if (parameter == "nn_descent_convergence_threshold" ||
+               parameter == "alpha") {
       filtered.SetDouble(parameter, config.GetDouble(parameter, 0.0));
+    } else if (parameter == "node_data_path") {
+      filtered.SetString(parameter, config.GetString(parameter, ""));
     } else {
       filtered.SetInteger(parameter, config.GetInteger(parameter, 0));
     }
@@ -121,12 +133,13 @@ TEST(IndexRegistry, ListsAllBuiltInIndexesDeterministically) {
   }
 
   EXPECT_EQ(names, (std::vector<std::string>{
-                       "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
-                       "ivf_lvq", "ivf_pq", "ivf_rabitq", "lsh", "lvq",
-                       "nsg_flat", "nsw_flat", "opq_pq", "pq"}));
+                       "diskann", "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq",
+                       "ivf_flat", "ivf_lvq", "ivf_pq", "ivf_rabitq", "lsh",
+                       "lvq", "nsg_flat", "nsw_flat", "opq_pq", "pq"}));
 }
 
 TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
+  ExpectBuiltIn<hypervec::IndexDiskANN>("diskann");
   ExpectBuiltIn<hypervec::IndexFlat>("flat");
   ExpectBuiltIn<hypervec::IndexPQ>("pq");
   ExpectBuiltIn<hypervec::IndexPreTransform>("opq_pq");
@@ -144,6 +157,33 @@ TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
 }
 
 TEST(IndexRegistry, AppliesAlgorithmParameters) {
+  hypervec::IndexConfig diskann_config("diskann", 12);
+  diskann_config.SetInteger("max_degree", 7)
+      .SetInteger("build_search_width", 11)
+      .SetInteger("candidate_pool_size", 13)
+      .SetDouble("alpha", 1.4)
+      .SetInteger("build_passes", 3)
+      .SetInteger("random_seed", 29)
+      .SetInteger("search_width", 17)
+      .SetBoolean("check_relative_distance", false)
+      .SetInteger("page_size", 4096)
+      .SetInteger("cache_capacity_pages", 5)
+      .SetString("node_data_path", "nodes.bin");
+  auto diskann_base = hypervec::CreateIndex(diskann_config);
+  auto* diskann = dynamic_cast<hypervec::IndexDiskANN*>(diskann_base.get());
+  ASSERT_NE(diskann, nullptr);
+  EXPECT_EQ(diskann->Options().max_degree, 7U);
+  EXPECT_EQ(diskann->Options().build_search_width, 11U);
+  EXPECT_EQ(diskann->Options().candidate_pool_size, 13U);
+  EXPECT_FLOAT_EQ(diskann->Options().alpha, 1.4F);
+  EXPECT_EQ(diskann->Options().build_passes, 3U);
+  EXPECT_EQ(diskann->Options().random_seed, 29U);
+  EXPECT_EQ(diskann->Options().search_width, 17U);
+  EXPECT_FALSE(diskann->Options().check_relative_distance);
+  EXPECT_EQ(diskann->Options().page_size, 4096U);
+  EXPECT_EQ(diskann->Options().cache_capacity_pages, 5U);
+  EXPECT_EQ(diskann->Options().node_data_path, "nodes.bin");
+
   hypervec::IndexConfig ivf_config("ivf_pq", 12);
   ivf_config.SetInteger("nlist", 7)
       .SetInteger("m_pq", 3)
@@ -260,6 +300,10 @@ TEST(IndexRegistry, AppliesMetricArgumentsToCompositeStorage) {
 }
 
 TEST(IndexRegistry, ResolvesAliasesCaseInsensitively) {
+  hypervec::IndexConfig diskann_config("InDeXdIsKaNnFlAt", 4);
+  auto diskann = hypervec::CreateIndex(diskann_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexDiskANN*>(diskann.get()), nullptr);
+
   hypervec::IndexConfig ivf_config("InDeXiVfFlAt", 4,
                                    hypervec::kMetricInnerProduct);
   ivf_config.SetInteger("nlist", 2);
@@ -311,6 +355,35 @@ TEST(IndexRegistry, CanComposeAnOwningIdMap) {
   EXPECT_TRUE(mapped->GetCapabilities().supports_add_with_ids);
 }
 
+TEST(IndexRegistry, ComposesDiskAnnBuildAndRuntimeSelectorWithIdMap) {
+  hypervec::IndexConfig config("diskann", 1);
+  config.use_id_map = true;
+  config.SetInteger("max_degree", 4)
+      .SetInteger("build_search_width", 8)
+      .SetInteger("candidate_pool_size", 8)
+      .SetInteger("search_width", 8)
+      .SetInteger("page_size", 64)
+      .SetInteger("cache_capacity_pages", 1);
+  auto base = hypervec::CreateIndex(config);
+  auto* mapped = dynamic_cast<hypervec::IndexIDMap*>(base.get());
+  ASSERT_NE(mapped, nullptr);
+  const std::vector<float> database = {0.0F, 2.0F, 5.0F, 9.0F, 14.0F, 20.0F};
+  mapped->Build(6, database.data());
+  mapped->check_consistency();
+
+  hypervec::IDSelectorRange selector(2, 5);
+  hypervec::SearchParametersDiskANN params;
+  params.search_width = 8;
+  params.check_relative_distance = false;
+  params.sel = &selector;
+  std::array<float, 4> distances;
+  std::array<hypervec::idx_t, 4> labels;
+  const float query = 1.0F;
+  mapped->Search(1, &query, 4, distances.data(), labels.data(), &params);
+
+  EXPECT_EQ(labels, (std::array<hypervec::idx_t, 4>{2, 3, 4, -1}));
+}
+
 TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig("flat", 0)),
                hypervec::HypervecException);
@@ -337,6 +410,17 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_nsg("nsg_flat", 4);
   bad_nsg.SetDouble("nn_descent_convergence_threshold", 2.0);
   EXPECT_THROW(hypervec::CreateIndex(bad_nsg), hypervec::HypervecException);
+
+  EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig(
+                   "diskann", 4, hypervec::kMetricInnerProduct)),
+               hypervec::HypervecException);
+  hypervec::IndexConfig bad_diskann("diskann", 4);
+  bad_diskann.SetInteger("build_search_width", 8)
+      .SetInteger("candidate_pool_size", 4);
+  EXPECT_THROW(hypervec::CreateIndex(bad_diskann), hypervec::HypervecException);
+  bad_diskann = hypervec::IndexConfig("diskann", 4);
+  bad_diskann.SetInteger("cache_capacity_pages", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_diskann), hypervec::HypervecException);
 
   EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig("lsh", 4)),
                hypervec::HypervecException);

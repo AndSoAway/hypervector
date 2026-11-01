@@ -58,8 +58,9 @@ class MalformedGraph final : public hypervec::GraphStorage {
  public:
   size_t NodeCount() const noexcept override { return 2; }
   size_t MaxDegree() const noexcept override { return 1; }
-  hypervec::GraphNeighborView Neighbors(hypervec::GraphId node) const override {
-    return adjacency_.at(static_cast<size_t>(node));
+  hypervec::GraphNeighborList Neighbors(hypervec::GraphId node) const override {
+    return hypervec::GraphNeighborList(
+        hypervec::GraphNeighborView(adjacency_.at(static_cast<size_t>(node))));
   }
 
  private:

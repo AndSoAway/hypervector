@@ -7,6 +7,10 @@
 
 set(HYPERVEC_SRC
   eval/search_evaluator.cpp
+
+  eval/exact_ground_truth.cpp
+  eval/search_evaluator.cpp
+  eval/semantic_metric.cpp
   eval/vector_dataset.cpp
   index/index.cpp
   index/index_factory.cpp
@@ -41,6 +45,9 @@ set(HYPERVEC_SRC
   index/nsg/index_nsg.cpp
   index/nsw/index_nsw.cpp
 
+
+  index/hnsw/hnsw_graph_storage.cpp
+  index/idmap/index_id_map.cpp
 
   index/hnsw/hnsw_graph_storage.cpp
   index/idmap/index_id_map.cpp

@@ -46,6 +46,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <typeindex>
 #include <vector>
 
@@ -673,13 +674,34 @@ void ValidateHNSWStorageForWrite(const IndexHNSW& index) {
           index.storage->metric_arg == index.metric_arg &&
           index.storage->is_trained == index.is_trained,
       "IndexHNSW serialize: storage metadata does not match the graph");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.ef_search > 0 && !index.hnsw.is_panorama,
+      "IndexHNSW serialize: search configuration is invalid");
   ValidateHNSWGraphForWrite(index);
+}
+
+uint8_t EncodeOptionalBool(const std::optional<bool>& value) {
+  if (!value.has_value()) {
+    return 0;
+  }
+  return *value ? 2 : 1;
 }
 
 void WriteHNSWPayload(const IndexHNSW& index, IOWriter* f) {
   write_index_header(index, f);
   write_HNSW(index.hnsw, f);
   WriteIndex(index.storage, f, 0);
+  WRITE1(index.hnsw.ef_search);
+  const uint8_t check_relative_distance = index.hnsw.check_relative_distance;
+  const uint8_t search_bounded_queue = index.hnsw.search_bounded_queue;
+  const uint8_t build_use_visited_hashset =
+      EncodeOptionalBool(index.hnsw.use_visited_hashset);
+  const uint8_t search_use_visited_hashset =
+      EncodeOptionalBool(index.use_visited_hashset);
+  WRITE1(check_relative_distance);
+  WRITE1(search_bounded_queue);
+  WRITE1(build_use_visited_hashset);
+  WRITE1(search_use_visited_hashset);
 }
 
 }  // namespace

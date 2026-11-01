@@ -12,6 +12,9 @@ set(HYPERVEC_TEST_SRC
   test_sparse_inverted_index.cpp
 
 
+
+  test_exact_ground_truth.cpp
+  test_heap.cpp
   test_diskann_searcher.cpp
   test_diskann_storage.cpp
   test_index_diskann.cpp

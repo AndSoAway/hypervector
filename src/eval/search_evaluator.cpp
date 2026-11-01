@@ -9,7 +9,9 @@
 #include <eval/search_evaluator.h>
 #include <utils/log/assert.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -53,6 +55,36 @@ void ValidateGroundTruth(const NeighborLabelsView& ground_truth, idx_t k) {
           "ground-truth labels within one query must be unique");
     }
   }
+}
+
+void SearchBatches(const Index& index, const SearchEvaluationInput& input,
+                   idx_t k, idx_t batch_size, float* distances, idx_t* labels,
+                   const SearchParameters* parameters,
+                   std::vector<double>* latency_samples_ms) {
+  for (idx_t first = 0; first < input.query_count;) {
+    const idx_t count = std::min(batch_size, input.query_count - first);
+    const size_t query_offset =
+        static_cast<size_t>(first) * static_cast<size_t>(index.d);
+    const size_t result_offset =
+        static_cast<size_t>(first) * static_cast<size_t>(k);
+    const auto start = std::chrono::steady_clock::now();
+    index.Search(count, input.queries + query_offset, k,
+                 distances + result_offset, labels + result_offset, parameters);
+    if (latency_samples_ms != nullptr) {
+      const auto end = std::chrono::steady_clock::now();
+      latency_samples_ms->push_back(
+          std::chrono::duration<double, std::milli>(end - start).count());
+    }
+    first += count;
+  }
+}
+
+double NearestRankPercentile(const std::vector<double>& sorted_values,
+                             double percentile) {
+  const long double rank =
+      std::ceil(static_cast<long double>(percentile) * sorted_values.size());
+  const size_t offset = std::max<size_t>(1, static_cast<size_t>(rank)) - 1U;
+  return sorted_values[offset];
 }
 
 }  // namespace
@@ -108,6 +140,8 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
   HYPERVEC_THROW_IF_NOT_MSG(options.k > 0, "evaluation k must be positive");
   HYPERVEC_THROW_IF_NOT_MSG(options.measured_runs > 0,
                             "evaluation measured_runs must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(options.query_batch_size >= 0,
+                            "evaluation query_batch_size must be non-negative");
   HYPERVEC_THROW_IF_NOT_MSG(
       input.ground_truth.query_count == input.query_count,
       "evaluation and ground-truth query counts must match");
@@ -116,6 +150,7 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
       "ground-truth rows must contain at least evaluation k labels");
   ValidateLabelsView(input.ground_truth, "ground-truth");
   ValidateGroundTruth(input.ground_truth, options.k);
+  (void)CheckedCount(input.query_count, index.d, "evaluation query");
 
   const size_t output_count =
       CheckedCount(input.query_count, options.k, "evaluation output");
@@ -123,18 +158,30 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
       options.measured_runs <= (std::numeric_limits<size_t>::max)() /
                                    static_cast<size_t>(input.query_count),
       "evaluation measured query count exceeds size_t");
+  const idx_t batch_size =
+      options.query_batch_size == 0
+          ? input.query_count
+          : std::min(options.query_batch_size, input.query_count);
+  const size_t batches_per_run =
+      1U + static_cast<size_t>((input.query_count - 1) / batch_size);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      options.measured_runs <=
+          (std::numeric_limits<size_t>::max)() / batches_per_run,
+      "evaluation latency sample count exceeds size_t");
   std::vector<float> distances(output_count);
   std::vector<idx_t> labels(output_count);
 
   for (size_t run = 0; run < options.warmup_runs; ++run) {
-    index.Search(input.query_count, input.queries, options.k, distances.data(),
-                 labels.data(), parameters);
+    SearchBatches(index, input, options.k, batch_size, distances.data(),
+                  labels.data(), parameters, nullptr);
   }
 
+  std::vector<double> latency_samples_ms;
+  latency_samples_ms.reserve(options.measured_runs * batches_per_run);
   const auto start = std::chrono::steady_clock::now();
   for (size_t run = 0; run < options.measured_runs; ++run) {
-    index.Search(input.query_count, input.queries, options.k, distances.data(),
-                 labels.data(), parameters);
+    SearchBatches(index, input, options.k, batch_size, distances.data(),
+                  labels.data(), parameters, &latency_samples_ms);
   }
   const auto end = std::chrono::steady_clock::now();
   const double elapsed_seconds =
@@ -156,6 +203,15 @@ SearchEvaluationResult EvaluateSearch(const Index& index,
       elapsed_seconds > 0.0
           ? static_cast<double>(measured_queries) / elapsed_seconds
           : (std::numeric_limits<double>::infinity)();
+  std::sort(latency_samples_ms.begin(), latency_samples_ms.end());
+  evaluation.query_batch_size = batch_size;
+  evaluation.latency_sample_count = latency_samples_ms.size();
+  evaluation.batch_latency_p50_ms =
+      NearestRankPercentile(latency_samples_ms, 0.50);
+  evaluation.batch_latency_p95_ms =
+      NearestRankPercentile(latency_samples_ms, 0.95);
+  evaluation.batch_latency_p99_ms =
+      NearestRankPercentile(latency_samples_ms, 0.99);
   return evaluation;
 }
 

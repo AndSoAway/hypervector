@@ -28,7 +28,7 @@ struct IndexIORegistry::Impl {
     IndexIODescriptor descriptor;
     std::type_index index_type;
     IndexPayloadWriter writer;
-    IndexPayloadReader reader;
+    TaggedIndexPayloadReader reader;
     IndexWriteValidator write_validator;
   };
 
@@ -46,6 +46,21 @@ void IndexIORegistry::Register(IndexIODescriptor descriptor,
                                std::type_index index_type,
                                IndexPayloadWriter writer,
                                IndexPayloadReader reader,
+                               IndexWriteValidator write_validator) {
+  HYPERVEC_THROW_IF_NOT_MSG(static_cast<bool>(reader),
+                            "registered index reader must not be empty");
+  TaggedIndexPayloadReader tagged_reader =
+      [reader = std::move(reader)](uint32_t, IOReader* input, int io_flags) {
+        return reader(input, io_flags);
+      };
+  Register(std::move(descriptor), index_type, std::move(writer),
+           std::move(tagged_reader), std::move(write_validator));
+}
+
+void IndexIORegistry::Register(IndexIODescriptor descriptor,
+                               std::type_index index_type,
+                               IndexPayloadWriter writer,
+                               TaggedIndexPayloadReader reader,
                                IndexWriteValidator write_validator) {
   HYPERVEC_THROW_IF_NOT_MSG(!descriptor.name.empty(),
                             "registered index codec name must not be empty");
@@ -159,7 +174,7 @@ std::unique_ptr<Index> IndexIORegistry::ReadPayload(uint32_t read_tag,
   HYPERVEC_THROW_IF_NOT_MSG(reader != nullptr,
                             "index persistence reader must not be null");
 
-  IndexPayloadReader payload_reader;
+  TaggedIndexPayloadReader payload_reader;
   std::type_index expected_type(typeid(void));
   {
     std::shared_lock lock(impl_->mutex);
@@ -172,7 +187,7 @@ std::unique_ptr<Index> IndexIORegistry::ReadPayload(uint32_t read_tag,
     expected_type = entry.index_type;
   }
 
-  std::unique_ptr<Index> index = payload_reader(reader, io_flags);
+  std::unique_ptr<Index> index = payload_reader(read_tag, reader, io_flags);
   HYPERVEC_THROW_IF_NOT_MSG(index != nullptr,
                             "registered index reader returned null");
   const Index* loaded_index = index.get();

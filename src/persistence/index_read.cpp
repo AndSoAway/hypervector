@@ -542,6 +542,41 @@ static bool read_bool(IOReader* f, const char* context) {
   return value != 0;
 }
 
+static std::optional<bool> read_optional_bool(IOReader* f,
+                                              const char* context) {
+  uint8_t value;
+  READ1(value);
+  HYPERVEC_THROW_IF_NOT_FMT(value <= 2, "%s must be encoded as 0, 1, or 2",
+                            context);
+  if (value == 0) {
+    return std::nullopt;
+  }
+  return value == 2;
+}
+
+static bool has_hnsw_runtime_config(uint32_t read_tag, uint32_t current_tag,
+                                    uint32_t legacy_tag, const char* context) {
+  HYPERVEC_THROW_IF_NOT_FMT(read_tag == current_tag || read_tag == legacy_tag,
+                            "%s deserialize: unexpected format tag 0x%08x",
+                            context, read_tag);
+  return read_tag == current_tag;
+}
+
+static void read_hnsw_runtime_config(IndexHNSW& index, IOReader* f) {
+  READ1(index.hnsw.ef_search);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.ef_search > 0,
+      "IndexHNSW deserialize: ef_search must be positive");
+  index.hnsw.check_relative_distance =
+      read_bool(f, "IndexHNSW check_relative_distance");
+  index.hnsw.search_bounded_queue =
+      read_bool(f, "IndexHNSW search_bounded_queue");
+  index.hnsw.use_visited_hashset =
+      read_optional_bool(f, "IndexHNSW build_use_visited_hashset");
+  index.use_visited_hashset =
+      read_optional_bool(f, "IndexHNSW search_use_visited_hashset");
+}
+
 struct LinearTransformState {
   idx_t d_in = 0;
   idx_t d_out = 0;
@@ -879,6 +914,11 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   READ1(options.ef_search);
   options.check_relative_distance =
       read_bool(f, "IndexNSGFlat check_relative_distance");
+  const size_t configured_capacity = add_no_overflow(
+      options.max_degree, size_t{1}, "IndexNSGFlat graph capacity");
+  const size_t graph_capacity =
+      total == 0 ? configured_capacity
+                 : (total == 1 ? 1 : std::min(total - 1, configured_capacity));
   GraphId entry_point;
   READ1(entry_point);
   HYPERVEC_THROW_IF_NOT_MSG(
@@ -906,18 +946,18 @@ static std::unique_ptr<IndexNSGFlat> read_nsg_flat(
   for (size_t node = 0; node < total; ++node) {
     HYPERVEC_THROW_IF_NOT_MSG(
         offsets[node] <= offsets[node + 1] &&
-            offsets[node + 1] - offsets[node] <= options.max_degree,
+            offsets[node + 1] - offsets[node] <= graph_capacity,
         "IndexNSGFlat offsets contain an invalid neighbor span");
   }
-  const size_t max_edges = mul_no_overflow(total, options.max_degree,
-                                           "IndexNSGFlat maximum edge count");
+  const size_t max_edges =
+      mul_no_overflow(total, graph_capacity, "IndexNSGFlat maximum edge count");
   HYPERVEC_THROW_IF_NOT_MSG(
       offsets.back() <= max_edges,
       "IndexNSGFlat edge count exceeds the configured degree bound");
   std::vector<GraphId> edges;
   ReadVectorExact(edges, offsets.back(), f, "IndexNSGFlat edges");
 
-  MutableBoundedGraph graph(total, options.max_degree);
+  MutableBoundedGraph graph(total, graph_capacity);
   for (size_t node = 0; node < total; ++node) {
     const size_t degree = offsets[node + 1] - offsets[node];
     const GraphId* neighbors =
@@ -1238,8 +1278,11 @@ std::unique_ptr<Index> ReadDiskANNFlatPayload(IOReader* reader, int io_flags) {
   return read_diskann_flat(header, reader);
 }
 
-std::unique_ptr<Index> ReadHNSWFlatPayload(IOReader* reader, int io_flags) {
+std::unique_ptr<Index> ReadHNSWFlatPayload(uint32_t read_tag, IOReader* reader,
+                                           int io_flags) {
   (void)io_flags;
+  const bool has_runtime_config = has_hnsw_runtime_config(
+      read_tag, fourcc("IH2f"), fourcc("IHNf"), "IndexHNSWFlat");
   auto index = std::make_unique<IndexHNSWFlat>();
   read_index_header(*index, reader);
   read_HNSW(index->hnsw, *index, reader);
@@ -1248,12 +1291,18 @@ std::unique_ptr<Index> ReadHNSWFlatPayload(IOReader* reader, int io_flags) {
   HYPERVEC_THROW_IF_NOT_MSG(
       dynamic_cast<IndexFlat*>(index->storage) != nullptr,
       "IndexHNSWFlat deserialize: inner storage is not an IndexFlat");
+  if (has_runtime_config) {
+    read_hnsw_runtime_config(*index, reader);
+  }
   ValidateHnswStorage(*index);
   return index;
 }
 
-std::unique_ptr<Index> ReadHNSWPQPayload(IOReader* reader, int io_flags) {
+std::unique_ptr<Index> ReadHNSWPQPayload(uint32_t read_tag, IOReader* reader,
+                                         int io_flags) {
   (void)io_flags;
+  const bool has_runtime_config = has_hnsw_runtime_config(
+      read_tag, fourcc("IH2p"), fourcc("IHNp"), "IndexHNSWPQ");
   auto index = std::make_unique<IndexHNSWPQ>();
   read_index_header(*index, reader);
   read_HNSW(index->hnsw, *index, reader);
@@ -1262,12 +1311,18 @@ std::unique_ptr<Index> ReadHNSWPQPayload(IOReader* reader, int io_flags) {
   HYPERVEC_THROW_IF_NOT_MSG(
       dynamic_cast<IndexPQ*>(index->storage) != nullptr,
       "IndexHNSWPQ deserialize: inner storage is not an IndexPQ");
+  if (has_runtime_config) {
+    read_hnsw_runtime_config(*index, reader);
+  }
   ValidateHnswStorage(*index);
   return index;
 }
 
-std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags) {
+std::unique_ptr<Index> ReadHNSWLVQPayload(uint32_t read_tag, IOReader* reader,
+                                          int io_flags) {
   (void)io_flags;
+  const bool has_runtime_config = has_hnsw_runtime_config(
+      read_tag, fourcc("IH2l"), fourcc("IHNl"), "IndexHNSWLVQ");
   auto index = std::make_unique<IndexHNSWLVQ>();
   read_index_header(*index, reader);
   read_HNSW(index->hnsw, *index, reader);
@@ -1276,6 +1331,9 @@ std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags) {
   HYPERVEC_THROW_IF_NOT_MSG(
       dynamic_cast<IndexLVQ*>(index->storage) != nullptr,
       "IndexHNSWLVQ deserialize: inner storage is not an IndexLVQ");
+  if (has_runtime_config) {
+    read_hnsw_runtime_config(*index, reader);
+  }
   ValidateHnswStorage(*index);
   return index;
 }

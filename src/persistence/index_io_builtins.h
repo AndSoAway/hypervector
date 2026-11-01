@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 namespace hypervec {
@@ -69,9 +70,12 @@ std::unique_ptr<Index> ReadLSHPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadNSWFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadNSGFlatPayload(IOReader* reader, int io_flags);
 std::unique_ptr<Index> ReadDiskANNFlatPayload(IOReader* reader, int io_flags);
-std::unique_ptr<Index> ReadHNSWFlatPayload(IOReader* reader, int io_flags);
-std::unique_ptr<Index> ReadHNSWPQPayload(IOReader* reader, int io_flags);
-std::unique_ptr<Index> ReadHNSWLVQPayload(IOReader* reader, int io_flags);
+std::unique_ptr<Index> ReadHNSWFlatPayload(uint32_t read_tag, IOReader* reader,
+                                           int io_flags);
+std::unique_ptr<Index> ReadHNSWPQPayload(uint32_t read_tag, IOReader* reader,
+                                         int io_flags);
+std::unique_ptr<Index> ReadHNSWLVQPayload(uint32_t read_tag, IOReader* reader,
+                                          int io_flags);
 std::unique_ptr<Index> ReadVamanaFlatPayload(IOReader* reader, int io_flags);
 
 }  // namespace persistence_internal

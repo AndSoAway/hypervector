@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <typeindex>
+#include <vector>
 
 namespace {
 
@@ -116,6 +117,50 @@ TEST(IndexIORegistry, RoundtripsCanonicalTagAndReadsLegacyAlias) {
   EXPECT_EQ(descriptors.front().read_tags.size(), 2);
 }
 
+TEST(IndexIORegistry, TaggedReaderReceivesCanonicalAndLegacyTags) {
+  hypervec::IndexIORegistry registry;
+  uint32_t observed_tag = 0;
+  registry.Register(
+      {"tagged", hypervec::fourcc("Tr01"), {hypervec::fourcc("Tr00")}},
+      std::type_index(typeid(OtherIndex)),
+      [](const hypervec::Index& base, hypervec::IOWriter* writer, int) {
+        const auto& index = static_cast<const OtherIndex&>(base);
+        HYPERVEC_THROW_IF_NOT_MSG(
+            (*writer)(&index.value, sizeof(index.value), 1) == 1,
+            "tagged test payload write failed");
+      },
+      [&observed_tag](uint32_t read_tag, hypervec::IOReader* reader, int) {
+        observed_tag = read_tag;
+        int32_t value = 0;
+        HYPERVEC_THROW_IF_NOT_MSG((*reader)(&value, sizeof(value), 1) == 1,
+                                  "tagged test payload read failed");
+        auto index = std::make_unique<OtherIndex>();
+        index->value = value;
+        return index;
+      });
+
+  OtherIndex source;
+  source.value = 51;
+  hypervec::VectorIOWriter writer;
+  registry.Write(source, &writer);
+
+  hypervec::VectorIOReader current_reader;
+  current_reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> current = registry.Read(&current_reader);
+  EXPECT_EQ(observed_tag, hypervec::fourcc("Tr01"));
+  ASSERT_NE(dynamic_cast<OtherIndex*>(current.get()), nullptr);
+
+  const uint32_t legacy_tag = hypervec::fourcc("Tr00");
+  std::memcpy(writer.data.data(), &legacy_tag, sizeof(legacy_tag));
+  hypervec::VectorIOReader legacy_reader;
+  legacy_reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> legacy = registry.Read(&legacy_reader);
+  EXPECT_EQ(observed_tag, legacy_tag);
+  auto* restored = dynamic_cast<OtherIndex*>(legacy.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->value, 51);
+}
+
 TEST(IndexIORegistry, GlobalEntrypointsUseFixedCodeRegistry) {
   hypervec::IndexFlatL2 source(2);
   const float vectors[] = {1.0F, 2.0F, 3.0F, 4.0F};
@@ -177,13 +222,22 @@ TEST(IndexIORegistry, RoundtripsGenericFlatMetricsWithDistinctTag) {
 TEST(IndexIORegistry, RoundtripsFactoryCreatedHnswWithGenericFlatStorage) {
   hypervec::IndexConfig config("hnsw_flat", 2, hypervec::kMetricLp);
   config.metric_arg = 3.0F;
-  config.SetInteger("m_hnsw", 4).SetInteger("ef_construction", 8);
+  config.SetInteger("m_hnsw", 4)
+      .SetInteger("ef_construction", 8)
+      .SetInteger("ef_search", 29)
+      .SetBoolean("check_relative_distance", false)
+      .SetBoolean("bounded_queue", false)
+      .SetBoolean("build_use_visited_hashset", true)
+      .SetBoolean("search_use_visited_hashset", false);
   std::unique_ptr<hypervec::Index> source = hypervec::CreateIndex(config);
   const float vectors[] = {0.0F, 0.0F, 2.0F, 2.0F, 4.0F, 4.0F};
   source->Add(3, vectors);
 
   hypervec::VectorIOWriter writer;
   hypervec::WriteIndex(source.get(), &writer);
+  uint32_t tag = 0;
+  std::memcpy(&tag, writer.data.data(), sizeof(tag));
+  EXPECT_EQ(tag, hypervec::fourcc("IH2f"));
   hypervec::VectorIOReader reader;
   reader.data = writer.data;
   std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
@@ -194,6 +248,13 @@ TEST(IndexIORegistry, RoundtripsFactoryCreatedHnswWithGenericFlatStorage) {
   EXPECT_EQ(hnsw->metric_type, hypervec::kMetricLp);
   EXPECT_FLOAT_EQ(hnsw->metric_arg, 3.0F);
   EXPECT_FLOAT_EQ(hnsw->storage->metric_arg, 3.0F);
+  EXPECT_EQ(hnsw->hnsw.ef_search, 29);
+  EXPECT_FALSE(hnsw->hnsw.check_relative_distance);
+  EXPECT_FALSE(hnsw->hnsw.search_bounded_queue);
+  ASSERT_TRUE(hnsw->hnsw.use_visited_hashset.has_value());
+  EXPECT_TRUE(*hnsw->hnsw.use_visited_hashset);
+  ASSERT_TRUE(hnsw->use_visited_hashset.has_value());
+  EXPECT_FALSE(*hnsw->use_visited_hashset);
 
   const float query[] = {0.0F, 1.0F};
   float distance = 0.0F;
@@ -201,6 +262,40 @@ TEST(IndexIORegistry, RoundtripsFactoryCreatedHnswWithGenericFlatStorage) {
   loaded->Search(1, query, 1, &distance, &label);
   EXPECT_EQ(label, 0);
   EXPECT_FLOAT_EQ(distance, 1.0F);
+
+  constexpr size_t kRuntimeConfigBytes = sizeof(int) + 4 * sizeof(uint8_t);
+  ASSERT_GT(writer.data.size(), kRuntimeConfigBytes);
+  std::vector<uint8_t> legacy_data = writer.data;
+  legacy_data.resize(legacy_data.size() - kRuntimeConfigBytes);
+  const uint32_t legacy_tag = hypervec::fourcc("IHNf");
+  std::memcpy(legacy_data.data(), &legacy_tag, sizeof(legacy_tag));
+  hypervec::VectorIOReader legacy_reader;
+  legacy_reader.data = legacy_data;
+  std::unique_ptr<hypervec::Index> legacy_base =
+      hypervec::ReadIndexUp(&legacy_reader);
+  auto* legacy_hnsw = dynamic_cast<hypervec::IndexHNSWFlat*>(legacy_base.get());
+  ASSERT_NE(legacy_hnsw, nullptr);
+  EXPECT_EQ(legacy_hnsw->hnsw.ef_search, 16);
+  EXPECT_TRUE(legacy_hnsw->hnsw.check_relative_distance);
+  EXPECT_TRUE(legacy_hnsw->hnsw.search_bounded_queue);
+  EXPECT_FALSE(legacy_hnsw->hnsw.use_visited_hashset.has_value());
+  EXPECT_FALSE(legacy_hnsw->use_visited_hashset.has_value());
+
+  std::vector<uint8_t> invalid_ef = writer.data;
+  const int zero = 0;
+  std::memcpy(invalid_ef.data() + invalid_ef.size() - kRuntimeConfigBytes,
+              &zero, sizeof(zero));
+  hypervec::VectorIOReader invalid_ef_reader;
+  invalid_ef_reader.data = invalid_ef;
+  EXPECT_THROW(hypervec::ReadIndexUp(&invalid_ef_reader),
+               hypervec::HypervecException);
+
+  std::vector<uint8_t> invalid_optional = writer.data;
+  invalid_optional.back() = 3;
+  hypervec::VectorIOReader invalid_optional_reader;
+  invalid_optional_reader.data = invalid_optional;
+  EXPECT_THROW(hypervec::ReadIndexUp(&invalid_optional_reader),
+               hypervec::HypervecException);
 }
 
 TEST(IndexIORegistry, GlobalEntrypointsSupportCustomRegistrations) {

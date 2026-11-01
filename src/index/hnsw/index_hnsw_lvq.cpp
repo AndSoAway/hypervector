@@ -6,30 +6,11 @@
  * source tree.
  */
 
-#include <index/hnsw/index_hnsw_lvq.h>
-
 #include <index/flat/index_flat.h>
-#include <index/hnsw/visited_table.h>
-#include <persistence/index_write_utils.h>
-#include <utils/distances/distance_computer.h>
+#include <index/hnsw/index_hnsw_lvq.h>
 #include <utils/log/assert.h>
 
-#include <omp.h>
-
-#include <vector>
-
 namespace hypervec {
-
-namespace {
-
-DistanceComputer* StorageDistanceComputer(const Index* storage) {
-  if (IsSimilarityMetric(storage->metric_type)) {
-    return new NegativeDistanceComputer(storage->GetDistanceComputer());
-  }
-  return storage->GetDistanceComputer();
-}
-
-}  // namespace
 
 IndexHNSWLVQ::IndexHNSWLVQ() {
   is_trained = false;
@@ -61,44 +42,14 @@ void IndexHNSWLVQ::Train(idx_t n, const float* x) {
 }
 
 void IndexHNSWLVQ::Add(idx_t n, const float* x) {
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSWLVQ::Add: storage is null");
   HYPERVEC_THROW_IF_NOT_MSG(
     raw_storage != nullptr,
     "IndexHNSWLVQ::Add: index is frozen or deserialized");
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
                             "IndexHNSWLVQ::Add: call Train before Add");
-  if (n == 0) {
-    return;
-  }
-
-  raw_storage->Add(n, x);
-  storage->Add(n, x);
-  HYPERVEC_THROW_IF_NOT(raw_storage->n_total == storage->n_total);
-
-  const idx_t n0 = n_total;
-  n_total = storage->n_total;
-
-  if (hnsw.ef_construction == 0) {
-    hnsw.ef_construction = 40;
-  }
-  hnsw.PrepareLevelTab(n_total, false);
-
-  DistanceComputer* dis = StorageDistanceComputer(raw_storage);
-  std::vector<omp_lock_t> locks(static_cast<size_t>(n_total) + 1);
-  for (idx_t i = 0; i <= n_total; ++i) {
-    omp_init_lock(&locks[i]);
-  }
-
-  VisitedTable vt(static_cast<size_t>(n_total));
-  for (idx_t i = n0; i < n_total; ++i) {
-    const int pt_level = hnsw.levels[i] - 1;
-    dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), locks, vt, false);
-  }
-
-  for (idx_t i = 0; i <= n_total; ++i) {
-    omp_destroy_lock(&locks[i]);
-  }
-  delete dis;
+  AddImpl(n, x, raw_storage, raw_storage);
 }
 
 void IndexHNSWLVQ::Reset() {
@@ -117,6 +68,10 @@ void IndexHNSWLVQ::Freeze() {
     delete raw_storage;
     raw_storage = nullptr;
   }
+}
+
+void IndexHNSWLVQ::PermuteEntries(const idx_t* perm) {
+  PermuteEntriesImpl(perm, raw_storage);
 }
 
 size_t IndexHNSWLVQ::SaCodeSize() const {
@@ -144,16 +99,6 @@ void IndexHNSWLVQ::RangeSearch(idx_t /*n*/, const float* /*x*/,
                                RangeSearchResult* /*result*/,
                                const SearchParameters* /*params*/) const {
   HYPERVEC_THROW_MSG("IndexHNSWLVQ::RangeSearch not supported");
-}
-
-uint32_t IndexHNSWLVQ::fourcc() const {
-  return hypervec::fourcc("IHNl");
-}
-
-void IndexHNSWLVQ::write_body(IOWriter* f) const {
-  write_HNSW(hnsw, f);
-  HYPERVEC_THROW_IF_NOT(storage != nullptr);
-  WriteIndex(storage, f);
 }
 
 }  // namespace hypervec

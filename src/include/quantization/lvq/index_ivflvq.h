@@ -22,8 +22,6 @@ struct IndexIVFLVQ : IndexIVF {
 
   IndexCapabilities GetCapabilities() const override;
 
-  IndexCapabilities GetCapabilities() const override;
-
   void Train(idx_t n, const float* x) override;
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
   void AddWithIds(idx_t n, const float* x, const idx_t* xids) override;

@@ -52,6 +52,9 @@ set(HYPERVEC_TEST_SRC
 
   test_index_rerank.cpp
   test_hnsw.cpp
+
+  test_index_rerank.cpp
+  test_hnsw.cpp
   test_hnsw_graph_storage.cpp
   test_inverted_list_scanner.cpp
   test_index_build.cpp

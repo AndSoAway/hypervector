@@ -25,8 +25,6 @@ struct IndexLVQ : Index {
 
   IndexCapabilities GetCapabilities() const override;
 
-  IndexCapabilities GetCapabilities() const override;
-
   void Train(idx_t n, const float* x) override;
   void Add(idx_t n, const float* x) override;
   void Search(idx_t n, const float* x, idx_t k, float* distances,

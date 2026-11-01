@@ -12,6 +12,8 @@
 #include <charconv>
 #include <exception>
 #include <filesystem>  // NOLINT(build/c++17): the project requires C++20.
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -19,12 +21,17 @@
 #include <string_view>
 #include <system_error>
 
+#include "eval/artifact_fingerprint.h"
+#include "eval/artifact_paths.h"
+#include "eval/provenance.h"
+
 namespace {
 
 struct CommandLine {
   std::string base_path;
   std::string query_path;
   std::string output_path;
+  std::string provenance_path;
   hypervec::idx_t k = 0;
   hypervec::GroundTruthMetric metric = hypervec::GroundTruthMetric::kL2;
   bool has_metric = false;
@@ -32,15 +39,20 @@ struct CommandLine {
 };
 
 void PrintUsage(std::ostream& output) {
-  output << "Usage: hypervec_ground_truth [options]\n"
-         << "Options:\n"
-         << "  --base BASE.fvecs       Prepared base vectors\n"
-         << "  --queries QUERY.fvecs   Prepared query vectors\n"
-         << "  --output GT.ivecs       Exact neighbor IDs\n"
-         << "  --k N                   Number of neighbors per query\n"
-         << "  --metric METRIC         l2, inner_product, or cosine\n"
-         << "                           (cosine inputs must be L2-normalized)\n"
-         << "  --help                  Show this message\n";
+  output
+      << "Usage: hypervec_ground_truth [options]\n"
+      << "Options:\n"
+      << "  --base BASE.fvecs       Prepared base vectors\n"
+      << "  --queries QUERY.fvecs   Prepared query vectors\n"
+      << "  --output GT.ivecs       Exact neighbor IDs\n"
+      << "  --k N                   Number of neighbors per query\n"
+      << "  --metric METRIC         l2, inner_product, or cosine\n"
+      << "                           (cosine inputs must be L2-normalized)\n"
+      << "  --json-output REPORT.json\n"
+      << "                          Record which base produced this ground\n"
+      << "                          truth, so evaluation can cross-check it\n"
+      << "  --provenance RECORD.prov  Optional source record for evaluation\n"
+      << "  --help                  Show this message\n";
 }
 
 std::string_view RequireValue(int argc, char** argv, int* position,
@@ -95,6 +107,8 @@ CommandLine ParseCommandLine(int argc, char** argv) {
       command.query_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--output") {
       command.output_path = RequireValue(argc, argv, &position, argument);
+    } else if (argument == "--provenance") {
+      command.provenance_path = RequireValue(argc, argv, &position, argument);
     } else if (argument == "--k") {
       command.k = ParsePositive(RequireValue(argc, argv, &position, argument),
                                 argument);
@@ -115,15 +129,28 @@ void ValidateCommand(const CommandLine& command) {
     throw std::runtime_error(
         "--base, --queries, --output, --k, and --metric are required");
   }
-  const std::filesystem::path output =
-      std::filesystem::absolute(command.output_path).lexically_normal();
-  const std::filesystem::path base =
-      std::filesystem::absolute(command.base_path).lexically_normal();
-  const std::filesystem::path queries =
-      std::filesystem::absolute(command.query_path).lexically_normal();
-  if (output == base || output == queries) {
-    throw std::runtime_error("ground-truth output must differ from its inputs");
+  hypervec::eval_cli::ValidateArtifactPaths(
+      {command.base_path, command.query_path},
+      {command.output_path, command.provenance_path});
+}
+
+/** Record which base produced this ground truth. The .ivecs carries only
+ * neighbour IDs, so evaluation cannot otherwise tell its source. */
+void WriteProvenanceRecord(const CommandLine& command) {
+  if (command.provenance_path.empty()) {
+    return;
   }
+  hypervec::eval_cli::WriteProvenance(
+      command.provenance_path,
+      {{"format", "hypervec-ground-truth-provenance-v2"},
+       {"queries_sha256",
+        hypervec::eval_cli::FingerprintFile(command.query_path).sha256},
+       {"semantic_metric", std::string(MetricName(command.metric))},
+       {"ground_truth_width", std::to_string(command.k)},
+       {"base_sha256",
+        hypervec::eval_cli::FingerprintFile(command.base_path).sha256},
+       {"ground_truth_sha256",
+        hypervec::eval_cli::FingerprintFile(command.output_path).sha256}});
 }
 
 int Run(const CommandLine& command) {
@@ -136,12 +163,16 @@ int Run(const CommandLine& command) {
       hypervec::ComputeExactGroundTruth(base, queries, command.k,
                                         command.metric);
   hypervec::WriteIvecsFile(command.output_path, result);
+  WriteProvenanceRecord(command);
 
   std::cout << "base_count=" << base.vector_count << '\n';
   std::cout << "query_count=" << queries.vector_count << '\n';
   std::cout << "dimension=" << base.dimension << '\n';
   std::cout << "k=" << command.k << '\n';
   std::cout << "metric=" << MetricName(command.metric) << '\n';
+  if (!command.provenance_path.empty()) {
+    std::cout << "provenance=" << command.provenance_path << '\n';
+  }
   return 0;
 }
 

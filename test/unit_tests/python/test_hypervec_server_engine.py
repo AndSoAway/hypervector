@@ -9,18 +9,16 @@ import numpy as np
 class FakeIndexFlatL2:
     def __init__(self, d: int, *, trained: bool = True) -> None:
         self.d = d
+        self.n_total = 0
         self.is_trained = trained
         self.vectors = np.empty((0, d), dtype=np.float32)
 
     def train(self, x) -> None:
         self.is_trained = True
 
-    @property
-    def n_total(self) -> int:
-        return self.vectors.shape[0]
-
     def add(self, x) -> None:
         self.vectors = np.vstack([self.vectors, np.asarray(x, dtype=np.float32)])
+        self.n_total = int(self.vectors.shape[0])
 
     def search(self, x, k: int):
         x = np.asarray(x, dtype=np.float32)
@@ -40,6 +38,35 @@ class FakeHypervec:
     def __init__(self) -> None:
         self.saved_index = None
         self.constructor_calls = []
+        self.factory_calls = []
+
+    def create_index(
+        self,
+        index_type: str,
+        dimension: int,
+        metric_type: int,
+        params: dict,
+        use_id_map: bool = False,
+        metric_arg: float = 0.0,
+    ):
+        self.factory_calls.append(
+            (
+                index_type,
+                dimension,
+                metric_type,
+                dict(params),
+                use_id_map,
+                metric_arg,
+            )
+        )
+        normalized = index_type.casefold().replace("_", "")
+        requires_training = (
+            normalized.startswith("ivf")
+            or normalized.startswith("indexivf")
+            or "pq" in normalized
+            or "lvq" in normalized
+        )
+        return FakeIndexFlatL2(dimension, trained=not requires_training)
 
     def IndexFlatL2(self, d: int):
         self.constructor_calls.append(("IndexFlatL2", d))
@@ -53,8 +80,8 @@ class FakeHypervec:
         self.constructor_calls.append(("IndexIVFFlat", d, nlist, metric))
         return FakeIndexFlatL2(d, trained=False)
 
-    def IndexIVFLVQ(self, d: int, nlist: int, nlocal: int, nbits: int, metric: int):
-        self.constructor_calls.append(("IndexIVFLVQ", d, nlist, nlocal, nbits, metric))
+    def IndexIVFLVQ(self, d: int, nlist: int, nbits: int, metric: int):
+        self.constructor_calls.append(("IndexIVFLVQ", d, nlist, nbits, metric))
         return FakeIndexFlatL2(d, trained=False)
 
     def IndexIVFPQ(self, d: int, nlist: int, m_pq: int, nbits: int, metric: int):
@@ -65,8 +92,8 @@ class FakeHypervec:
         self.constructor_calls.append(("IndexHNSWFlat", d, m_hnsw, metric))
         return FakeIndexFlatL2(d)
 
-    def IndexHNSWLVQ(self, d: int, nlocal: int, nbits: int, m_hnsw: int, metric: int):
-        self.constructor_calls.append(("IndexHNSWLVQ", d, nlocal, nbits, m_hnsw, metric))
+    def IndexHNSWLVQ(self, d: int, nbits: int, m_hnsw: int, metric: int):
+        self.constructor_calls.append(("IndexHNSWLVQ", d, nbits, m_hnsw, metric))
         return FakeIndexFlatL2(d, trained=False)
 
     def IndexHNSWPQ(self, d: int, m_pq: int, nbits: int, m_hnsw: int, metric: int):
@@ -183,36 +210,30 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_pa
         (
             "IndexIVFFlat",
             {"nlist": 2},
-            ("IndexIVFFlat", 4, 2, fake.kMetricL2),
         ),
         (
             "IndexIVFLVQ",
-            {"nlist": 2, "nlocal": 2, "nbits": 1},
-            ("IndexIVFLVQ", 4, 2, 2, 1, fake.kMetricL2),
+            {"nlist": 2, "nbits": 1},
         ),
         (
             "IndexIVFPQ",
             {"nlist": 2, "m_pq": 2, "nbits": 1},
-            ("IndexIVFPQ", 4, 2, 2, 1, fake.kMetricL2),
         ),
         (
             "IndexHNSWFlat",
             {"m_hnsw": 8},
-            ("IndexHNSWFlat", 4, 8, fake.kMetricL2),
         ),
         (
             "IndexHNSWLVQ",
-            {"m_hnsw": 8, "nlocal": 2, "nbits": 1},
-            ("IndexHNSWLVQ", 4, 2, 1, 8, fake.kMetricL2),
+            {"m_hnsw": 8, "nbits": 1},
         ),
         (
             "IndexHNSWPQ",
             {"m_hnsw": 8, "m_pq": 2, "nbits": 1},
-            ("IndexHNSWPQ", 4, 2, 1, 8, fake.kMetricL2),
         ),
     ]
 
-    for index_type, params, expected in cases:
+    for index_type, params in cases:
         engine._make_index(
             4,
             {
@@ -222,29 +243,39 @@ def test_hypervec_server_engine_maps_supported_index_types_to_cpp_classes(tmp_pa
                 "params": params,
             },
         )
-        assert fake.constructor_calls[-1] == expected
+        assert fake.factory_calls[-1] == (
+            index_type,
+            4,
+            fake.kMetricL2,
+            params,
+            False,
+            0.0,
+        )
 
 
-def test_hypervec_server_engine_rejects_ambiguous_index_m_params(tmp_path):
+def test_hypervec_server_engine_translates_cpp_factory_errors(tmp_path):
     module = load_engine_module()
     fake = FakeHypervec()
     engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=fake)
 
-    for bad_param in ["M", "m", "M_hnsw", "M_pq"]:
-        try:
-            engine._make_index(
-                4,
-                {
-                    "field_name": "vector",
-                    "metric_type": "L2",
-                    "index_type": "IndexHNSWPQ",
-                    "params": {bad_param: 2},
-                },
-            )
-        except ValueError as exc:
-            assert "use explicit m_hnsw or m_pq" in str(exc)
-        else:
-            raise AssertionError(f"expected {bad_param} to be rejected")
+    def reject_config(*args, **kwargs):
+        raise RuntimeError("unknown parameter 'M' for index type 'IndexHNSWPQ'")
+
+    fake.create_index = reject_config
+    try:
+        engine._make_index(
+            4,
+            {
+                "field_name": "vector",
+                "metric_type": "L2",
+                "index_type": "IndexHNSWPQ",
+                "params": {"M": 2},
+            },
+        )
+    except ValueError as exc:
+        assert "unknown parameter 'M'" in str(exc)
+    else:
+        raise AssertionError("expected the C++ factory error to be translated")
 
 
 def test_hypervec_server_engine_supported_index_examples_follow_exports():
@@ -335,7 +366,9 @@ def test_engine_purge_removes_data_keeps_metadata(tmp_path):
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hello"}])
     engine.flush("col1")
-    engine.export_collection_bundle("col1")
+    export_result = engine.export_collection_bundle("col1")
+    exported_path = Path(export_result["path"])
+    assert exported_path.exists()
 
     result = engine.purge_collection_data("col1")
     assert result["purged"] is True
@@ -349,8 +382,8 @@ def test_engine_purge_removes_data_keeps_metadata(tmp_path):
     assert meta.last_purged_at is not None
 
     # Index file gone
-    from pathlib import Path
     assert not Path(meta.index_path).exists()
+    assert not exported_path.exists()
 
     # Scalar count = 0
     assert engine.scalar_store.count("col1") == 0
@@ -366,13 +399,12 @@ def test_engine_purge_requires_export_by_default(tmp_path):
         engine.purge_collection_data("col1", require_exported=True)
     except Exception as exc:
         assert type(exc).__name__ == "ConflictError"
-        assert "has no export matching" in str(exc)
+        assert "no export matching the current data+index snapshot" in str(exc)
     else:
         raise AssertionError("should have raised ConflictError")
 
 
 def test_engine_import_bundle_restores_data(tmp_path):
-    import shutil
     engine, fake = make_engine(tmp_path)
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert(
@@ -383,17 +415,16 @@ def test_engine_import_bundle_restores_data(tmp_path):
         ],
     )
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
-    # Copy the bundle out before purge, which deletes .export.tmp
-    bundle_copy = tmp_path / "col1_saved.hypervec-bundle"
-    shutil.copy2(export_result["path"], bundle_copy)
+    backup_path = tmp_path / "client-backup.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", backup_path)
     engine.purge_collection_data("col1", require_exported=True)
 
     # Verify purged state
     assert engine.scalar_store.count("col1") == 0
+    assert backup_path.exists()
 
     # Restore
-    restore_result = engine.import_collection_bundle("col1", bundle_copy)
+    restore_result = engine.import_collection_bundle("col1", export_result["path"])
     assert restore_result["uploaded"] is True
     assert restore_result["total"] == 2
     assert restore_result["data_state"] == "ready"
@@ -429,21 +460,19 @@ def test_engine_import_bundle_rejects_wrong_collection_name(tmp_path):
 
 
 def test_engine_import_bundle_rejects_bad_checksum(tmp_path):
-    import shutil
     engine, _ = make_engine(tmp_path)
     engine.create_collection("col1", schema=_SCHEMA, index_params=_INDEX_PARAMS)
     engine.insert("col1", [{"id": "a", "vector": [0.0, 1.0], "contents": "hi"}])
     engine.flush("col1")
-    export_result = engine.export_collection_bundle("col1")
-    # Copy bundle before purge removes .export.tmp
-    bundle_copy = tmp_path / "col1_saved.hypervec-bundle"
-    shutil.copy2(export_result["path"], bundle_copy)
+    backup_path = tmp_path / "client-backup.hypervec-bundle"
+    export_result = engine.export_collection_bundle("col1", backup_path)
 
     engine.purge_collection_data("col1")
+    assert backup_path.exists()
     try:
         engine.import_collection_bundle(
             "col1",
-            bundle_copy,
+            export_result["path"],
             checksum="sha256:deadbeef",
         )
     except ValueError as exc:

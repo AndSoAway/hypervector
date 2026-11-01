@@ -6,9 +6,7 @@
  */
 
 // Core SIMDConfig API tests - works in both static and DD modes.
-// Hardware execution tests (DD-only) are in separate files:
-// - test_simd_levels_x86_avx2.cpp (compiled with AVX2 flags)
-// - test_simd_levels_x86_avx512.cpp (compiled with AVX512 flags)
+// Runtime kernel, tail and fallback tests are in test_runtime_simd.cpp.
 
 #include <gtest/gtest.h>
 
@@ -148,15 +146,8 @@ TEST(SIMDConfig, modern_hardware_has_simd_support) {
 
     hypervec::SIMDLevel detected = hypervec::SIMDConfig::auto_detect_simd_level();
 
-#if defined(__x86_64__) || defined(_M_X64)
-    // All modern x86_64 machines (Haswell 2013+) support at least AVX2
-    EXPECT_NE(detected, hypervec::SIMDLevel::NONE)
-            << "x86_64 machines should support at least AVX2";
-#elif defined(__aarch64__) || defined(_M_ARM64)
-    // NEON is mandatory on aarch64
-    EXPECT_NE(detected, hypervec::SIMDLevel::NONE)
-            << "ARM64 machines should support at least NEON";
-#endif
+    // Old CPUs and virtual machines may legitimately require NONE.
+    EXPECT_TRUE(hypervec::SIMDConfig::is_simd_level_available(detected));
 }
 
 TEST(CompileOptions, lists_expected_levels) {

@@ -16,7 +16,104 @@ Some of the methods, like those based on binary vectors and compact quantization
 
 ## Installing
 
-HyperVec comes with precompiled libraries for Anaconda in Python, see [hypervec-cpu](https://anaconda.org/pytorch/hypervec-cpu). The library is mostly implemented in C++, the only dependency is a [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms) implementation. The Python interface is also optional. It compiles with cmake. See [INSTALL.md](INSTALL.md) for details.
+HyperVec is mostly implemented in C++. A source build requires a C++20
+compiler, CMake 3.16 or newer, OpenMP, BLAS, and LAPACK. The optional Python
+extension additionally requires Python development files, NumPy, and SWIG.
+
+### Building from source
+
+The default `generic` build uses portable compiler-generated code (which may
+include baseline SIMD). On x86-64 with GCC/Clang, `HYPERVEC_OPT_LEVEL=dd` adds
+AVX2/FMA and (when supported by the compiler) AVX-512 FP32 distance kernels to
+the same library, selected only when CPU and OS support them. Other optimization
+levels, the MKL-specific switch, and the C API switch remain unavailable.
+
+The default configuration builds only the core library and does not download
+dependencies:
+
+```bash
+cmake -S . -B build/release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_OPT_LEVEL=generic \
+  -DBUILD_TESTING=OFF
+cmake --build build/release -j
+```
+
+To enable runtime SIMD dispatch, use `-DHYPERVEC_OPT_LEVEL=dd` in a separate
+build directory. Only isolated kernel objects receive AVX2/FMA or AVX-512 flags;
+do not add global `-march=native` flags to a portable build. C++ and Python
+use the same dispatch; no separate AVX Python module is needed.
+
+In a `dd` build, `HYPERVEC_SIMD_LEVEL=NONE` forces the baseline distance
+implementation, `HYPERVEC_SIMD_LEVEL=AVX2` requests AVX2/FMA, and
+`HYPERVEC_SIMD_LEVEL=AVX512` requests AVX-512F/DQ/BW/VL (also requiring AVX2/FMA).
+Unsupported or invalid requests raise an exception on first dispatch, rather than execute
+unsupported instructions. Leave the variable unset to retain automatic
+AVX2/FMA selection with a generic fallback. AVX-512 is opt-in in this release:
+kernel speedups do not necessarily translate into faster end-to-end searches.
+This differs from `HYPERVEC_OPT_LEVEL`, which controls the build (and the
+legacy Python module loader), not runtime kernel selection.
+
+C++ callers can inspect `hypervec::SIMDConfig::get_level_name()` from
+`<utils/simd/simd_levels.h>`. Set the environment before using the library;
+existing distance computers retain their selected kernel. Runtime SIMD changes
+neither the index format nor its parameters. Floating-point accumulation order
+may change slightly. LVQ8 also uses an AVX2 distance kernel, selected once per
+distance computer or scan, shared by LVQ, IVF-LVQ and HNSW-LVQ. LVQ1–7 retain
+their generic bit-packed implementation. PQ4/PQ8/PQ16 table scans use portable
+bit-width-specialized kernels with independent accumulators, selected once per
+scanner (also effective in `generic` builds). Other PQ widths retain the generic
+decoder. RaBitQ table scans also use portable independent accumulators, retaining
+double-precision tables and estimates. AVX-512 specializes FP32 L2, inner
+product, squared norm and four-vector batches; short vectors below 32 dimensions
+retain AVX2. LVQ8 continues to select its AVX2 kernel even at the AVX-512 level;
+PQ/RaBitQ code scans are unchanged. No AVX-512-specific quantizer kernels or
+AVX512_SPR level are enabled. Performance depends on CPU and workload; use the
+runtime override to compare against AVX2 on the same indices.
+
+To build the C++ unit tests with an installed GoogleTest package:
+
+```bash
+cmake -S . -B build/test \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_TESTING=ON \
+  -DHYPERVEC_UNIT_TESTS_ONLY=ON \
+  -DHYPERVEC_FETCH_DEPS=OFF
+cmake --build build/test -j
+ctest --test-dir build/test --output-on-failure
+```
+
+If GoogleTest is unavailable, configuration stops with an actionable error.
+Set `HYPERVEC_FETCH_DEPS=ON` only when CMake is explicitly allowed to download
+the pinned test dependency.
+
+Examples are opt-in and build as normal targets:
+
+```bash
+cmake -S . -B build/examples \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHYPERVEC_ENABLE_EXTRAS=ON \
+  -DBUILD_TESTING=OFF
+cmake --build build/examples -j
+```
+
+### Using an installed CMake package
+
+Install HyperVec into a prefix, then point a separate CMake project at that
+prefix:
+
+```bash
+cmake --install build/release --prefix /path/to/hypervec-install
+cmake -S /path/to/consumer -B build/consumer \
+  -DCMAKE_PREFIX_PATH=/path/to/hypervec-install
+```
+
+Consumers use the namespaced target instead of copying HyperVec link flags:
+
+```cmake
+find_package(hypervec 1.14 CONFIG REQUIRED)
+target_link_libraries(my_application PRIVATE hypervec::hypervec)
+```
 
 ## How HyperVec works
 

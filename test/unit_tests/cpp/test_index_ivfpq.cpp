@@ -7,20 +7,26 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/ivf/index_ivf.h>
 #include <persistence/index_io.h>
 #include <quantization/pq/index_ivfpq.h>
+#include <utils/algo/kmeans/kmeans.h>
+#include <utils/common/range_search_result.h>
+#include <utils/distances/distances.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
+#include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -51,15 +57,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 
@@ -96,6 +94,48 @@ TEST(IndexIVFPQ, TrainAddSearchSmoke) {
   }
 }
 
+TEST(IndexIVFPQ, ResidualTrainingMatchesExplicitSample) {
+  constexpr hypervec::idx_t n = 1024;
+  constexpr hypervec::idx_t d = 4;
+  constexpr hypervec::idx_t ksub = 2;
+  const auto vectors = RandomVectors(n, d, 71, 5.0F);
+
+  hypervec::IndexIVFPQ index(d, 2, 2, 1);
+  index.Train(n, vectors.data());
+
+  const hypervec::idx_t training_count =
+      ksub * HYPERVEC_PQ_DEFAULT_MAX_POINTS_PER_CENTROID;
+  const auto rows = hypervec::SampleKMeansTrainingRows(
+      n, training_count, HYPERVEC_PQ_DEFAULT_SEED);
+  std::vector<float> residuals(static_cast<size_t>(training_count) * d);
+  for (hypervec::idx_t i = 0; i < training_count; ++i) {
+    const float* x = vectors.data() + rows[static_cast<size_t>(i)] * d;
+    hypervec::idx_t nearest = 0;
+    float best_distance = (std::numeric_limits<float>::infinity)();
+    for (hypervec::idx_t cell = 0; cell < index.nlist; ++cell) {
+      const float distance = hypervec::fvec_L2sqr(
+          x, index.centroids.data() + cell * d, static_cast<size_t>(d));
+      if (distance < best_distance) {
+        best_distance = distance;
+        nearest = cell;
+      }
+    }
+    for (hypervec::idx_t j = 0; j < d; ++j) {
+      residuals[static_cast<size_t>(i * d + j)] =
+          x[j] - index.centroids[static_cast<size_t>(nearest * d + j)];
+    }
+  }
+
+  hypervec::ProductQuantizer expected(d, 2, 1);
+  hypervec::PQParameters params;
+  params.max_points_per_centroid = 0;
+  expected.Train(training_count, residuals.data(), params);
+  EXPECT_EQ(index.pq.centroids, expected.centroids);
+
+  index.Add(n, vectors.data());
+  EXPECT_EQ(index.n_total, n);
+}
+
 TEST(IndexIVFPQ, RecallImprovesWithNprobe) {
   // With more nprobe lists scanned, recall should rise (or stay equal),
   // never fall, against the ground-truth flat index.
@@ -127,7 +167,7 @@ TEST(IndexIVFPQ, RecallImprovesWithNprobe) {
     idx.Search(nq, query.data(), k, dists.data(), labels.data(), &params);
     const float r = Recall(labels, gt_l, nq, k);
     EXPECT_GE(r, prev_recall - 0.02f)
-      << "recall regressed at nprobe=" << nprobe;
+        << "recall regressed at nprobe=" << nprobe;
     prev_recall = r;
   }
   // At nprobe=nlist (i.e., scan everything), PQ recall should be at least
@@ -139,21 +179,6 @@ TEST(IndexIVFPQ, PrecomputedTableMatchesBasicPath) {
   // The killer test: with use_precomputed_table=1 and =0, the index must
   // return the IDENTICAL labels and (within float rounding) identical
   // distances for every query. Anything else is a bug in the L2 expansion.
-  //
-  // NOTE (disabled): the test establishes its "same inputs" precondition by
-  // training two independent indexes and asserting their PQ centroids are
-  // bit-identical (line below). That precondition is flaky: PQ training runs
-  // k-means under OpenMP and is NOT deterministic across runs — some subspaces
-  // converge to different clusters, so idx_basic.pq.centroids !=
-  // idx_pre.pq.centroids intermittently (observed: whole 256-float centroid
-  // blocks differing by up to ~5.4, varying position/count per run). This is
-  // unrelated to what the test wants to verify (precomputed-table vs basic
-  // path). To re-enable, share one trained model between the two indexes
-  // (clone, then flip use_precomputed_table) instead of training twice.
-  // Surfaced by the new unit-tests workflow; wheel-check never ran the target.
-  GTEST_SKIP() << "flaky precondition: PQ k-means training is non-"
-                  "deterministic under OpenMP; see tracking issue.";
-
   const hypervec::idx_t d = 16, nb = 2000, nq = 50, nlist = 32;
   const hypervec::idx_t M = 8;
   const int nbits = 7;
@@ -193,9 +218,41 @@ TEST(IndexIVFPQ, PrecomputedTableMatchesBasicPath) {
   // small tolerance because the two paths add the same terms in different
   // order.
   for (size_t i = 0; i < d_b.size(); i++) {
-    EXPECT_NEAR(d_b[i], d_p[i],
-                1e-3f * std::max(std::abs(d_b[i]), 1.0f))
-      << "distance mismatch at i=" << i;
+    EXPECT_NEAR(d_b[i], d_p[i], 1e-3f * std::max(std::abs(d_b[i]), 1.0f))
+        << "distance mismatch at i=" << i;
+  }
+}
+
+TEST(IndexIVFPQ, ScannerRangeSearchSupportsEveryEncodingMode) {
+  constexpr hypervec::idx_t d = 4;
+  constexpr hypervec::idx_t count = 64;
+  constexpr hypervec::idx_t target = 17;
+  const auto vectors = RandomVectors(count, d, 201, 5.0F);
+
+  for (int mode = 0; mode < 3; ++mode) {
+    hypervec::IndexIVFPQ index(d, 4, 2, 2);
+    index.by_residual = mode != 0;
+    index.use_precomputed_table = mode == 2 ? 1 : 0;
+    index.Train(count, vectors.data());
+    index.Add(count, vectors.data());
+
+    hypervec::IDSelectorRange selector(target, target + 1);
+    hypervec::IVFSearchParameters params;
+    params.nprobe = index.nlist;
+    params.sel = &selector;
+
+    float knn_distance = 0.0F;
+    hypervec::idx_t knn_label = -1;
+    const float* query = vectors.data() + target * d;
+    index.Search(1, query, 1, &knn_distance, &knn_label, &params);
+    ASSERT_EQ(knn_label, target) << "mode=" << mode;
+
+    hypervec::RangeSearchResult result(1);
+    index.RangeSearch(1, query, (std::numeric_limits<float>::infinity)(),
+                      &result, &params);
+    ASSERT_EQ(result.lims[1], 1U) << "mode=" << mode;
+    EXPECT_EQ(result.labels[0], target) << "mode=" << mode;
+    EXPECT_FLOAT_EQ(result.distances[0], knn_distance) << "mode=" << mode;
   }
 }
 
@@ -244,7 +301,7 @@ TEST(IndexIVFPQ, ByResidualImprovesOverRawEncoding) {
   // Loose: residual should not be much worse than raw. On clustered data it
   // would be strictly better; on uniform random data the gap is small.
   EXPECT_GE(r_residual, r_raw - 0.05f)
-    << "residual=" << r_residual << " raw=" << r_raw;
+      << "residual=" << r_residual << " raw=" << r_raw;
 }
 
 TEST(IndexIVFPQ, PersistenceRoundtrip) {
@@ -264,8 +321,7 @@ TEST(IndexIVFPQ, PersistenceRoundtrip) {
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
 
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexIVFPQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);
@@ -323,14 +379,12 @@ TEST(IndexIVFPQ, ReconstructAddsCentroidBackForResidual) {
     // error like 5x off.
     for (hypervec::idx_t j = 0; j < d; j++) {
       const float diff = recons[j] - base[key * d + j];
-      EXPECT_LT(std::abs(diff), 5.0f)
-        << "key=" << key << " j=" << j;
+      EXPECT_LT(std::abs(diff), 5.0f) << "key=" << key << " j=" << j;
     }
   }
 }
 
 TEST(IndexIVFPQ, RejectsNonL2Metric) {
-  EXPECT_THROW(
-    hypervec::IndexIVFPQ(8, 4, 4, 8, hypervec::kMetricInnerProduct),
-    hypervec::HypervecException);
+  EXPECT_THROW(hypervec::IndexIVFPQ(8, 4, 4, 8, hypervec::kMetricInnerProduct),
+               hypervec::HypervecException);
 }

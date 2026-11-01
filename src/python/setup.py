@@ -54,7 +54,7 @@ swighypervec_avx512_lib = f"{prefix}_swighypervec_avx512{ext}"
 swighypervec_avx512_spr_lib = f"{prefix}_swighypervec_avx512_spr{ext}"
 callbacks_lib = f"{prefix}libhypervec_python_callbacks{ext}"
 swighypervec_sve_lib = f"{prefix}_swighypervec_sve{ext}"
-Hypervec_example_external_module_lib = f"_Hypervec_example_external_module{ext}"
+external_module_lib = f"_hypervec_example_external_module{ext}"
 
 found_swighypervec_generic = os.path.exists(swighypervec_generic_lib)
 found_swighypervec_avx2 = os.path.exists(swighypervec_avx2_lib)
@@ -62,9 +62,7 @@ found_swighypervec_avx512 = os.path.exists(swighypervec_avx512_lib)
 found_swighypervec_avx512_spr = os.path.exists(swighypervec_avx512_spr_lib)
 found_callbacks = os.path.exists(callbacks_lib)
 found_swighypervec_sve = os.path.exists(swighypervec_sve_lib)
-found_Hypervec_example_external_module_lib = os.path.exists(
-    Hypervec_example_external_module_lib
-)
+found_external_module = os.path.exists(external_module_lib)
 
 if platform.system() != "AIX":
     assert (
@@ -73,10 +71,10 @@ if platform.system() != "AIX":
         or found_swighypervec_avx512
         or found_swighypervec_avx512_spr
         or found_swighypervec_sve
-        or found_Hypervec_example_external_module_lib
+        or found_external_module
     ), (
         f"Could not find {swighypervec_generic_lib} or "
-        f"{swighypervec_avx2_lib} or {swighypervec_avx512_lib} or {swighypervec_avx512_spr_lib} or {swighypervec_sve_lib} or {Hypervec_example_external_module_lib}. "
+        f"{swighypervec_avx2_lib} or {swighypervec_avx512_lib} or {swighypervec_avx512_spr_lib} or {swighypervec_sve_lib} or {external_module_lib}. "
         f"hypervec may not be compiled yet."
     )
 
@@ -109,14 +107,14 @@ if found_swighypervec_sve:
     shutil.copyfile("swighypervec_sve.py", "hypervec/swighypervec_sve.py")
     shutil.copyfile(swighypervec_sve_lib, f"hypervec/_swighypervec_sve{ext}")
 
-if found_Hypervec_example_external_module_lib:
-    print(f"Copying {Hypervec_example_external_module_lib}")
+if found_external_module:
+    print(f"Copying {external_module_lib}")
     shutil.copyfile(
         "Hypervec_example_external_module.py", "hypervec/Hypervec_example_external_module.py"
     )
     shutil.copyfile(
-        Hypervec_example_external_module_lib,
-        f"hypervec/_Hypervec_example_external_module{ext}",
+        external_module_lib,
+        f"hypervec/_hypervec_example_external_module{ext}",
     )
 
 long_description = """

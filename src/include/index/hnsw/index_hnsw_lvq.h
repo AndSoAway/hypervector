@@ -17,14 +17,14 @@ struct IndexHNSWLVQ : IndexHNSW {
   Index* raw_storage = nullptr;
 
   IndexHNSWLVQ();
-  IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
-               MetricType metric = kMetricL2);
+  IndexHNSWLVQ(int d, int nbits, int M_hnsw, MetricType metric = kMetricL2);
   ~IndexHNSWLVQ() override;
 
   void Train(idx_t n, const float* x) override;
   void Add(idx_t n, const float* x) override;
   void Reset() override;
   void Freeze();
+  void PermuteEntries(const idx_t* perm) override;
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
@@ -33,9 +33,6 @@ struct IndexHNSWLVQ : IndexHNSW {
   void RangeSearch(idx_t n, const float* x, float radius,
                    RangeSearchResult* result,
                    const SearchParameters* params = nullptr) const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

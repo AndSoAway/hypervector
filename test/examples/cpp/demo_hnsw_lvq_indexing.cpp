@@ -26,15 +26,12 @@ int main() {
   const int d = 128;
   const int nb = 100000;
   const int nq = 1000;
-  const int nlocal = 16;   // local centroids → 16×1024=16K distance table entries
-  const int nbits = 10;    // ksub = 1024 (16K codewords → 6.25:1 compression)
+  const int nbits = 8;     // bits per vector component
   const int M_hnsw = 16;   // good graph quality
   const int k = 10;
 
-  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq
-            << " nlocal=" << nlocal << " nbits=" << nbits
-            << " M_hnsw=" << M_hnsw << " (ksub=" << (1 << nbits) << ")"
-            << std::endl;
+  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq << " nbits=" << nbits
+            << " M_hnsw=" << M_hnsw << std::endl;
 
   std::cout << "Generating random vectors..." << std::endl;
   std::vector<float> database(nb * d);
@@ -50,7 +47,7 @@ int main() {
   gt_index.Search(nq, query.data(), k, gt_distances.data(), gt_labels.data());
 
   std::cout << "\nBuilding IndexHNSWLVQ..." << std::endl;
-  IndexHNSWLVQ idx(d, nlocal, nbits, M_hnsw);
+  IndexHNSWLVQ idx(d, nbits, M_hnsw);
   idx.hnsw.ef_construction = 20;  // balanced graph quality
 
   auto t0 = std::chrono::high_resolution_clock::now();

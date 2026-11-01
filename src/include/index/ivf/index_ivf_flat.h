@@ -21,6 +21,8 @@ struct IndexIVFFlat : IndexIVF {
   explicit IndexIVFFlat(idx_t d = 0, idx_t nlist = 0,
                         MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Encode: store raw floats as bytes (memcpy). */
   void EncodeVectors(idx_t n, const float* x, uint8_t* codes) const override;
 
@@ -32,9 +34,6 @@ struct IndexIVFFlat : IndexIVF {
 
   /** Reconstruct a vector by scanning all inverted lists for the given ID. */
   void Reconstruct(idx_t key, float* recons) const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

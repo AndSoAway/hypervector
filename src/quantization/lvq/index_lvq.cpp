@@ -8,7 +8,6 @@
 
 #include <quantization/lvq/index_lvq.h>
 
-#include <persistence/index_write_utils.h>
 #include <quantization/lvq/lvq_distance_computer.h>
 #include <utils/log/assert.h>
 
@@ -24,6 +23,13 @@ IndexLVQ::IndexLVQ(idx_t d, idx_t nlocal, int nbits, MetricType metric)
     metric == kMetricL2, "IndexLVQ: supports kMetricL2 only, got metric=%d",
     static_cast<int>(metric));
   is_trained = false;
+}
+
+IndexCapabilities IndexLVQ::GetCapabilities() const {
+  IndexCapabilities capabilities;
+  capabilities.requires_training = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
 }
 
 void IndexLVQ::Train(idx_t n, const float* x) {
@@ -83,15 +89,6 @@ void IndexLVQ::SaEncode(idx_t n, const float* x, uint8_t* bytes) const {
 void IndexLVQ::SaDecode(idx_t n, const uint8_t* bytes, float* x) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   lvq.DecodeBatch(n, bytes, x);
-}
-
-uint32_t IndexLVQ::fourcc() const {
-  return hypervec::fourcc("ILVQ");
-}
-
-void IndexLVQ::write_body(IOWriter* f) const {
-  write_lvq(lvq, f);
-  WRITEVECTOR(codes);
 }
 
 }  // namespace hypervec

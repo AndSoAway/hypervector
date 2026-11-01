@@ -8,21 +8,18 @@
  * HNSW-only index clone implementation
  */
 
-#include <utils/log/assert.h>
-#include <persistence/index_clone.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <persistence/index_clone.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_pq.h>
+#include <utils/log/assert.h>
 
-// TODO(tech-debt): clone_IndexHNSW uses the same dynamic_cast dispatch pattern
-// that WriteIndex used before PR #42. Follow-up: add virtual Index* clone()
-// const to the Index base class and let each subclass self-implement, mirroring
-// the fourcc()/write_body() refactor.
+#include <memory>
 
 namespace hypervec {
 
@@ -78,8 +75,10 @@ Index* clone_index(const Index* index) {
 
   const IndexIDMap* idxmap = dynamic_cast<const IndexIDMap*>(index);
   if (idxmap) {
-    Index* underlying = clone_index(idxmap->index);
-    auto* res = new IndexIDMap(underlying);
+    std::unique_ptr<Index> underlying(clone_index(idxmap->index));
+    auto* res = new IndexIDMap(underlying.get());
+    res->own_fields = true;
+    underlying.release();
     return res;
   }
 

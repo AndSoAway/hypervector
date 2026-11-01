@@ -6,20 +6,30 @@
  * source tree.
  */
 
-#include <utils/distances/distance_computer.h>
-#include <utils/selector/id_selector.h>
+#include <index/graph/graph_searcher.h>
 #include <index/hnsw/hnsw.h>
+#include <index/hnsw/hnsw_graph_storage.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <utils/common/result_handler.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/selector/id_selector.h>
 
+#include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstddef>
+#include <cstdio>
+#include <functional>
+#include <limits>
+#include <queue>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #ifdef __AVX2__
 #include <immintrin.h>
 
-#include <limits>
 #include <type_traits>
 #endif
 
@@ -307,8 +317,8 @@ void ShrinkNeighborList(DistanceComputer& qdis,
 /// Add a link between two elements, possibly shrinking the list
 /// of links to make room for it.
 void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
-              storage_idx_t dest, int level,
-              bool keep_max_size_level0 = false) {
+              storage_idx_t dest, int level, bool keep_max_size_level0,
+              const std::function<void(storage_idx_t)>& before_node_mutation) {
   size_t begin, end;
   hnsw.NeighborRange(src, level, &begin, &end);
   if (hnsw.neighbors[end - 1] == -1) {
@@ -319,6 +329,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
         break;
       }
       i--;
+    }
+    if (before_node_mutation) {
+      before_node_mutation(src);
     }
     hnsw.neighbors[i] = dest;
     return;
@@ -337,6 +350,9 @@ void add_link(HNSW& hnsw, DistanceComputer& qdis, storage_idx_t src,
   ShrinkNeighborList(qdis, resultSet, end - begin, keep_max_size_level0);
 
   // ...and back
+  if (before_node_mutation) {
+    before_node_mutation(src);
+  }
   size_t i = begin;
   while (resultSet.size()) {
     hnsw.neighbors[i++] = resultSet.top().id;
@@ -464,11 +480,11 @@ void SearchNeighborsToAdd(HNSW& hnsw, DistanceComputer& qdis,
 
 /// Finds neighbors and builds links with them, starting from an entry
 /// point. The own neighbor list is assumed to be locked.
-void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
-                                   storage_idx_t nearest, float d_nearest,
-                                   int level, omp_lock_t* locks,
-                                   VisitedTable& vt,
-                                   bool keep_max_size_level0) {
+void HNSW::AddLinksStartingFrom(
+    DistanceComputer& ptdis, storage_idx_t pt_id, storage_idx_t nearest,
+    float d_nearest, int level, omp_lock_t* locks, VisitedTable& vt,
+    bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   std::priority_queue<NodeDistCloser> link_targets;
 
   SearchNeighborsToAdd(*this, ptdis, link_targets, nearest, d_nearest, level,
@@ -484,7 +500,8 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   neighbors_to_add.reserve(link_targets.size());
   while (!link_targets.empty()) {
     storage_idx_t other_id = link_targets.top().id;
-    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0);
+    add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0,
+             before_node_mutation);
     neighbors_to_add.push_back(other_id);
     link_targets.pop();
   }
@@ -492,7 +509,14 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
   omp_unset_lock(&locks[pt_id]);
   for (storage_idx_t other_id : neighbors_to_add) {
     omp_set_lock(&locks[other_id]);
-    add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0);
+    try {
+      add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0,
+               before_node_mutation);
+    } catch (...) {
+      omp_unset_lock(&locks[other_id]);
+      omp_set_lock(&locks[pt_id]);
+      throw;
+    }
     omp_unset_lock(&locks[other_id]);
   }
   omp_set_lock(&locks[pt_id]);
@@ -502,9 +526,10 @@ void HNSW::AddLinksStartingFrom(DistanceComputer& ptdis, storage_idx_t pt_id,
  * Building, parallel
  **************************************************************/
 
-void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
-                          std::vector<omp_lock_t>& locks, VisitedTable& vt,
-                          bool keep_max_size_level0) {
+void HNSW::AddWithLocks(
+    DistanceComputer& ptdis, int pt_level, int pt_id,
+    std::vector<omp_lock_t>& locks, VisitedTable& vt, bool keep_max_size_level0,
+    const std::function<void(storage_idx_t)>& before_node_mutation) {
   storage_idx_t nearest = entry_point;
   if (nearest == -1) {  // avoid locking after the first point.
 #pragma omp critical
@@ -523,18 +548,23 @@ void HNSW::AddWithLocks(DistanceComputer& ptdis, int pt_level, int pt_id,
   }
 
   omp_set_lock(&locks[pt_id]);
+  try {
+    int level = max_level;  // level at which we start adding neighbors
+    float d_nearest = ptdis(nearest);
 
-  int level = max_level;  // level at which we start adding neighbors
-  float d_nearest = ptdis(nearest);
+    //  greedy Search on upper levels
+    for (; level > pt_level; level--) {
+      GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
+    }
 
-  //  greedy Search on upper levels
-  for (; level > pt_level; level--) {
-    GreedyUpdateNearest(*this, ptdis, level, nearest, d_nearest);
-  }
-
-  for (; level >= 0; level--) {
-    AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
-                            locks.data(), vt, keep_max_size_level0);
+    for (; level >= 0; level--) {
+      AddLinksStartingFrom(ptdis, pt_id, nearest, d_nearest, level,
+                           locks.data(), vt, keep_max_size_level0,
+                           before_node_mutation);
+    }
+  } catch (...) {
+    omp_unset_lock(&locks[pt_id]);
+    throw;
   }
 
   omp_unset_lock(&locks[pt_id]);
@@ -694,14 +724,6 @@ int SearchFromCandidates(const HNSW& hnsw, DistanceComputer& qdis,
   }
 
   return nres;
-}
-
-int search_from_candidates_panorama(const HNSW& hnsw, const IndexHNSW* index,
-                                    DistanceComputer& qdis, ResultHandler& res,
-                                    MinimaxHeap& candidates, VisitedTable& vt,
-                                    HNSWStats& stats, int level, int nres_in,
-                                    const SearchParameters* params) {
-  return nres_in;
 }
 
 std::priority_queue<HNSW::Node> SearchFromCandidateUnbounded(
@@ -868,35 +890,45 @@ using MinimaxHeap = HNSW::MinimaxHeap;
 using Node = HNSW::Node;
 using C = HNSW::C;
 
-// just used as a lower bound for the minmaxheap, but it is set for heap Search
+// Returns zero for handlers without a fixed top-k capacity. Those handlers
+// receive every candidate retained by the ef_search-bounded graph traversal.
 int extract_k_from_ResultHandler(ResultHandler& res) {
-  using RH = HeapBlockResultHandler<C>;
-  if (auto hres = dynamic_cast<RH::SingleResultHandler*>(&res)) {
-    return hres->k;
+  if (const auto* hres = dynamic_cast<HeapResultHandler<C>*>(&res)) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        hres->k <= static_cast<size_t>((std::numeric_limits<int>::max)()),
+        "HNSW::Search: result handler capacity is too large");
+    return static_cast<int>(hres->k);
   }
-  return 1;
+  return 0;
 }
 
 }  // namespace
 
-HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
+HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* /*index*/,
                        ResultHandler& res, VisitedTable& vt,
                        const SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      !is_panorama,
+      "HNSW::Search: panorama mode is not implemented in Hypervector");
   HNSWStats stats;
   if (entry_point == -1) {
     return stats;
   }
-  int k = extract_k_from_ResultHandler(res);
+  const int k = extract_k_from_ResultHandler(res);
 
   bool bounded_queue = this->search_bounded_queue;
   int ef_search = this->ef_search;
+  bool check_relative_distance = this->check_relative_distance;
   if (params) {
     if (const SearchParametersHNSW* hnsw_params =
-          dynamic_cast<const SearchParametersHNSW*>(params)) {
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
       bounded_queue = hnsw_params->bounded_queue;
       ef_search = hnsw_params->ef_search;
+      check_relative_distance = hnsw_params->check_relative_distance;
     }
   }
+  HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                            "HNSW::Search: ef_search must be positive");
 
   //  greedy Search on upper levels
   storage_idx_t nearest = entry_point;
@@ -904,39 +936,40 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
 
   for (int level = max_level; level >= 1; level--) {
     HNSWStats local_stats =
-      GreedyUpdateNearest(*this, qdis, level, nearest, d_nearest);
+        GreedyUpdateNearest(*this, qdis, level, nearest, d_nearest);
     stats.combine(local_stats);
   }
 
-  int ef = std::max(ef_search, k);
-  if (bounded_queue) {  // this is the most common branch, for now we only
-    MinimaxHeap candidates(ef);
+  const int ef = std::max(ef_search, std::max(k, 1));
+  const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
+  const GraphSearcher searcher(graph);
+  const std::array<GraphSearchSeed, 1> seeds = {
+      GraphSearchSeed{nearest, d_nearest}};
+  GraphSearchOptions options;
+  options.ef_search = static_cast<size_t>(ef);
+  options.check_relative_distance = check_relative_distance;
+  options.selector = params == nullptr ? nullptr : params->sel;
+  options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+  options.max_expansions =
+      check_relative_distance ? 0
+                              : static_cast<size_t>(std::max(ef_search, 0)) + 1;
+  options.max_candidates = bounded_queue ? static_cast<size_t>(ef) : 0;
+  options.relative_distance_limit = static_cast<size_t>(ef_search);
+  options.advance_visited = false;
+  GraphSearchStats graph_stats;
+  const std::vector<GraphSearchResult> results =
+      searcher.Search(qdis, seeds, options, &vt, &graph_stats);
 
-    candidates.push(nearest, d_nearest);
-
-    if (!is_panorama) {
-      SearchFromCandidates(*this, qdis, res, candidates, vt, stats, 0, 0,
-                             params);
-    } else {
-      search_from_candidates_panorama(*this, index, qdis, res, candidates, vt,
-                                      stats, 0, 0, params);
-    }
-  } else {
-    std::priority_queue<Node> top_candidates = SearchFromCandidateUnbounded(
-      *this, Node(d_nearest, nearest), qdis, ef, &vt, stats);
-
-    while (top_candidates.size() > k) {
-      top_candidates.pop();
-    }
-
-    while (!top_candidates.empty()) {
-      float d;
-      storage_idx_t label;
-      std::tie(d, label) = top_candidates.top();
-      res.AddResult(d, label);
-      top_candidates.pop();
-    }
+  const size_t result_count =
+      k == 0 ? results.size()
+             : std::min(results.size(), static_cast<size_t>(k));
+  for (size_t result = 0; result < result_count; ++result) {
+    res.AddResult(results[result].distance, results[result].id);
   }
+  stats.n1 += graph_stats.queries;
+  stats.n2 += graph_stats.exhausted_queries;
+  stats.ndis += graph_stats.distance_computations;
+  stats.nhops += graph_stats.expanded_nodes;
 
   vt.advance();
 
@@ -944,95 +977,159 @@ HNSWStats HNSW::Search(DistanceComputer& qdis, const IndexHNSW* index,
 }
 
 void HNSW::SearchLevel0(DistanceComputer& qdis, ResultHandler& res,
-                          idx_t nprobe, const storage_idx_t* nearest_i,
-                          const float* nearest_d, int search_type,
-                          HNSWStats& search_stats, VisitedTable& vt,
-                          const SearchParameters* params) const {
-  const HNSW& hnsw = *this;
-
-  auto ef_search = hnsw.ef_search;
+                        idx_t nprobe, const storage_idx_t* nearest_i,
+                        const float* nearest_d, int search_type,
+                        HNSWStats& search_stats, VisitedTable& vt,
+                        const SearchParameters* params) const {
+  int ef_search = this->ef_search;
+  bool check_relative_distance = this->check_relative_distance;
   if (params) {
     if (const SearchParametersHNSW* hnsw_params =
-          dynamic_cast<const SearchParametersHNSW*>(params)) {
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
       ef_search = hnsw_params->ef_search;
+      check_relative_distance = hnsw_params->check_relative_distance;
     }
   }
+  HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                            "HNSW::SearchLevel0: ef_search must be positive");
 
-  int k = extract_k_from_ResultHandler(res);
+  const int k = extract_k_from_ResultHandler(res);
+  const HNSWGraphStorage graph(*this, 0, HNSWGraphValidation::kOnAccess);
+  const GraphSearcher searcher(graph);
+  const auto search_from_seeds = [&](std::span<const GraphSearchSeed> seeds,
+                                     int candidate_capacity) {
+    GraphSearchOptions options;
+    options.ef_search = static_cast<size_t>(candidate_capacity);
+    options.check_relative_distance = check_relative_distance;
+    options.selector = params == nullptr ? nullptr : params->sel;
+    options.frontier_policy = GraphSearchFrontierPolicy::kNavigationBound;
+    options.max_expansions =
+        check_relative_distance ? 0 : static_cast<size_t>(ef_search) + 1;
+    options.max_candidates = static_cast<size_t>(candidate_capacity);
+    options.relative_distance_limit = static_cast<size_t>(ef_search);
+    options.advance_visited = false;
+
+    GraphSearchStats graph_stats;
+    const std::vector<GraphSearchResult> results =
+        searcher.Search(qdis, seeds, options, &vt, &graph_stats);
+    for (const GraphSearchResult& result : results) {
+      res.AddResult(result.distance, result.id);
+    }
+    search_stats.n1 += graph_stats.queries;
+    search_stats.n2 += graph_stats.exhausted_queries;
+    search_stats.ndis += graph_stats.distance_computations;
+    search_stats.nhops += graph_stats.expanded_nodes;
+  };
 
   if (search_type == 1) {
-    int nres = 0;
-
     for (int j = 0; j < nprobe; j++) {
-      storage_idx_t cj = nearest_i[j];
+      const storage_idx_t candidate = nearest_i[j];
 
-      if (cj < 0) {
+      if (candidate < 0) {
         break;
       }
-
-      if (vt.get(cj)) {
+      if (vt.get(candidate)) {
         continue;
       }
 
-      int candidates_size = std::max(ef_search, k);
-      MinimaxHeap candidates(candidates_size);
-
-      candidates.push(cj, nearest_d[j]);
-
-      nres = SearchFromCandidates(hnsw, qdis, res, candidates, vt,
-                                    search_stats, 0, nres, params);
-      nres = std::min(nres, candidates_size);
+      const int candidate_capacity = std::max(ef_search, k);
+      const std::array<GraphSearchSeed, 1> seed = {
+          GraphSearchSeed{candidate, nearest_d[j]}};
+      search_from_seeds(seed, candidate_capacity);
     }
   } else if (search_type == 2) {
-    int candidates_size = std::max(ef_search, int(k));
-    candidates_size = std::max(candidates_size, int(nprobe));
-
-    MinimaxHeap candidates(candidates_size);
+    const int candidate_capacity =
+        std::max(std::max(ef_search, k), static_cast<int>(nprobe));
+    std::vector<GraphSearchSeed> seeds;
+    if (nprobe > 0) {
+      seeds.reserve(static_cast<size_t>(nprobe));
+    }
     for (int j = 0; j < nprobe; j++) {
-      storage_idx_t cj = nearest_i[j];
-
-      if (cj < 0) {
+      const storage_idx_t candidate = nearest_i[j];
+      if (candidate < 0) {
         break;
       }
-      candidates.push(cj, nearest_d[j]);
+      seeds.push_back({candidate, nearest_d[j]});
     }
-
-    SearchFromCandidates(hnsw, qdis, res, candidates, vt, search_stats, 0, 0,
-                           params);
+    search_from_seeds(seeds, candidate_capacity);
   }
 }
 
 void HNSW::PermuteEntries(const idx_t* map) {
-  // remap levels
-  storage_idx_t n_total = levels.size();
+  HYPERVEC_THROW_IF_NOT_MSG(
+      levels.size() <=
+          static_cast<size_t>((std::numeric_limits<storage_idx_t>::max)()),
+      "HNSW::PermuteEntries: graph is too large for storage ids");
+  const size_t n_total = levels.size();
+  HYPERVEC_THROW_IF_NOT_MSG(offsets.size() == n_total + 1 && offsets[0] == 0,
+                            "HNSW::PermuteEntries: invalid graph offsets");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      offsets.back() == neighbors.size(),
+      "HNSW::PermuteEntries: offsets do not cover the neighbor array");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      entry_point == -1 ||
+          (entry_point >= 0 && static_cast<size_t>(entry_point) < n_total),
+      "HNSW::PermuteEntries: invalid entry point");
+  if (n_total > 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        map != nullptr, "HNSW::PermuteEntries: permutation must not be null");
+  }
+
   std::vector<storage_idx_t> imap(n_total);  // inverse mapping
+  std::vector<uint8_t> seen(n_total, 0);
   // map: new index -> old index
   // imap: old index -> new index
-  for (int i = 0; i < n_total; i++) {
-    assert(map[i] >= 0 && map[i] < n_total);
-    imap[map[i]] = i;
+  for (size_t i = 0; i < n_total; ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        map[i] >= 0 && static_cast<size_t>(map[i]) < n_total,
+        "HNSW::PermuteEntries: permutation entry is out of range");
+    const size_t old_id = static_cast<size_t>(map[i]);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        seen[old_id] == 0,
+        "HNSW::PermuteEntries: permutation contains a duplicate id");
+    seen[old_id] = 1;
+    imap[old_id] = static_cast<storage_idx_t>(i);
   }
-  if (entry_point != -1) {
-    entry_point = imap[entry_point];
+
+  for (size_t i = 0; i < n_total; ++i) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        offsets[i] <= offsets[i + 1] && offsets[i + 1] <= neighbors.size(),
+        "HNSW::PermuteEntries: graph offsets are not monotonic");
+    HYPERVEC_THROW_IF_NOT_MSG(levels[i] > 0,
+                              "HNSW::PermuteEntries: graph level is invalid");
   }
+  for (size_t i = 0; i < neighbors.size(); ++i) {
+    const storage_idx_t neighbor = neighbors[i];
+    HYPERVEC_THROW_IF_NOT_MSG(
+        neighbor == -1 ||
+            (neighbor >= 0 && static_cast<size_t>(neighbor) < n_total),
+        "HNSW::PermuteEntries: graph contains an invalid neighbor");
+  }
+
+  const storage_idx_t new_entry_point =
+      entry_point == -1 ? -1 : imap[static_cast<size_t>(entry_point)];
   std::vector<int> new_levels(n_total);
   std::vector<size_t> new_offsets(n_total + 1);
-  std::vector<storage_idx_t> new_neighbors(neighbors.size());
+  MaybeOwnedVector<storage_idx_t> new_neighbors(neighbors.size());
   size_t no = 0;
-  for (int i = 0; i < n_total; i++) {
-    storage_idx_t o = map[i];  // corresponding "old" index
+  for (size_t i = 0; i < n_total; ++i) {
+    const size_t o = static_cast<size_t>(map[i]);  // corresponding old index
     new_levels[i] = levels[o];
     for (size_t j = offsets[o]; j < offsets[o + 1]; j++) {
-      storage_idx_t neigh = neighbors[j];
-      new_neighbors[no++] = neigh >= 0 ? imap[neigh] : neigh;
+      const storage_idx_t neighbor = neighbors[j];
+      new_neighbors[no++] =
+          neighbor >= 0 ? imap[static_cast<size_t>(neighbor)] : neighbor;
     }
     new_offsets[i + 1] = no;
   }
-  assert(new_offsets[n_total] == offsets[n_total]);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      no == neighbors.size(),
+      "HNSW::PermuteEntries: permuted neighbor count is inconsistent");
   // swap everyone
   std::swap(levels, new_levels);
   std::swap(offsets, new_offsets);
-  neighbors = std::move(new_neighbors);
+  swap(neighbors, new_neighbors);
+  entry_point = new_entry_point;
 }
 
 /**************************************************************

@@ -7,7 +7,6 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_pq.h>
@@ -15,16 +14,20 @@
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
 #include <quantization/pq/pq_distance_computer.h>
+#include <utils/common/range_search_result.h>
+#include <utils/common/result_handler.h>
 #include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -55,14 +58,16 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
+using TempFile = hypervec::test::ScopedTempFile;
+
+class CollectingResultHandler final : public hypervec::ResultHandler {
+ public:
+  bool AddResult(float distance, hypervec::idx_t id) override {
+    results.emplace_back(distance, id);
+    return false;
   }
-  ~TempFile() { std::remove(path.c_str()); }
+
+  std::vector<std::pair<float, hypervec::idx_t>> results;
 };
 
 }  // namespace
@@ -312,15 +317,25 @@ TEST(IndexHNSWPQ, PersistenceRoundtrip) {
   EXPECT_THROW(dst->Add(10, base.data()), hypervec::HypervecException);
 }
 
-TEST(IndexHNSWPQ, Search1AndRangeSearchThrow) {
+TEST(IndexHNSWPQ, Search1AndRangeSearchUseCompressedGraph) {
   // ksub = 1 << 8 = 256, so need >= 256 training vectors.
   hypervec::IndexHNSWPQ idx(16, 4, 8, 16);
   const auto base = RandomVectors(400, 16, 91, 4.0f);
   idx.Train(400, base.data());
   idx.Add(400, base.data());
 
-  // Search1 / RangeSearch are explicitly unsupported — verify they throw
-  // rather than silently misbehaving via the IndexPQ storage.
-  EXPECT_THROW(idx.RangeSearch(1, base.data(), 1.0f, nullptr),
-               hypervec::HypervecException);
+  hypervec::SearchParametersHNSW params;
+  params.ef_search = 32;
+  params.check_relative_distance = false;
+
+  CollectingResultHandler collected;
+  idx.Search1(base.data(), collected, &params);
+  EXPECT_FALSE(collected.results.empty());
+  EXPECT_LE(collected.results.size(), 32U);
+
+  hypervec::RangeSearchResult range(1);
+  idx.RangeSearch(1, base.data(), (std::numeric_limits<float>::infinity)(),
+                  &range, &params);
+  EXPECT_GT(range.lims[1], 0U);
+  EXPECT_LE(range.lims[1], 32U);
 }

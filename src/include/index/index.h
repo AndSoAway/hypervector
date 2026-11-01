@@ -14,7 +14,6 @@
 #include <utils/log/assert.h>
 #include <utils/distances/metric_type.h>
 
-#include <cstdint>
 #include <cstdio>
 
 #define HYPERVEC_VERSION_MAJOR 1
@@ -56,7 +55,6 @@ namespace hypervec {
 struct IDSelector;
 struct RangeSearchResult;
 struct DistanceComputer;
-struct IOWriter;
 template <typename T, typename TI>
 struct ResultHandlerUnordered;
 using ResultHandler = ResultHandlerUnordered<float, idx_t>;
@@ -95,6 +93,20 @@ struct SearchParameters {
   virtual ~SearchParameters() {}
 };
 
+/** Optional operations and construction requirements exposed by an index.
+ *
+ * These flags describe the index type, not its current trained or populated
+ * state. A supported operation can still reject invalid arguments or state.
+ */
+struct IndexCapabilities {
+  bool requires_training = false;
+  bool supports_add_with_ids = false;
+  bool supports_remove_ids = false;
+  bool supports_range_search = false;
+  bool supports_reconstruct = false;
+  bool supports_merge = false;
+};
+
 /** Abstract structure for an index, supports adding vectors and searching
  * them.
  *
@@ -127,11 +139,8 @@ struct Index {
 
   virtual ~Index();
 
-  /// Returns the 4-byte magic tag identifying this index type on disk.
-  virtual uint32_t fourcc() const = 0;
-
-  /// Writes index-specific data to f (caller writes fourcc + header first).
-  virtual void write_body(IOWriter* f) const = 0;
+  /** Report optional operations supported by this index type. */
+  virtual IndexCapabilities GetCapabilities() const;
 
   /** Perform training on a representative set of vectors
    *
@@ -151,11 +160,35 @@ struct Index {
   virtual void Train(idx_t n, const float* x, idx_t n_train_q,
                      const float* xq_train);
 
+  /** Train an empty index and add its initial dataset in one operation.
+   *
+   * Build is the common construction entry point for callers that should not
+   * need to know whether a concrete index requires training. Implementations
+   * that need a different construction pipeline may override it.
+   *
+   * @param n      number of vectors; must be positive
+   * @param x      input vectors, size n * d
+   */
+  virtual void Build(idx_t n, const float* x);
+
+  /** Query-aware Build variant for algorithms that train with representative
+   * queries as well as base vectors. */
+  virtual void Build(idx_t n, const float* x, idx_t n_train_q,
+                     const float* xq_train);
+
   virtual void TrainEx(idx_t n, const void* x, NumericType numeric_type) {
     if (numeric_type == NumericType::kFloat32) {
       Train(n, static_cast<const float*>(x));
     } else {
       HYPERVEC_THROW_MSG("Index::Train: unsupported numeric type");
+    }
+  }
+
+  virtual void BuildEx(idx_t n, const void* x, NumericType numeric_type) {
+    if (numeric_type == NumericType::kFloat32) {
+      Build(n, static_cast<const float*>(x));
+    } else {
+      HYPERVEC_THROW_MSG("Index::Build: unsupported numeric type");
     }
   }
 

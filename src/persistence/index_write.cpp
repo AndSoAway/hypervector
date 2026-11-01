@@ -209,6 +209,13 @@ void WriteInvertedLists(const IndexIVF& index, size_t code_size, IOWriter* f) {
 
 }  // namespace
 
+void WriteFlatPayload(const Index& index, IOWriter* f, int io_flags) {
+  (void)io_flags;
+  const auto& flat = static_cast<const IndexFlat&>(index);
+  write_index_header(flat, f);
+  WRITEVECTOR(flat.codes);
+}
+
 void WriteFlatL2Payload(const Index& index, IOWriter* f, int io_flags) {
   (void)io_flags;
   const auto& flat = static_cast<const IndexFlatL2&>(index);
@@ -682,7 +689,8 @@ void ValidateHNSWFlatForWrite(const Index& index, int io_flags) {
   const auto& hnsw = static_cast<const IndexHNSWFlat&>(index);
   ValidateHNSWStorageForWrite(hnsw);
   HYPERVEC_THROW_IF_NOT_MSG(
-      typeid(*hnsw.storage) == typeid(IndexFlatL2) ||
+      typeid(*hnsw.storage) == typeid(IndexFlat) ||
+          typeid(*hnsw.storage) == typeid(IndexFlatL2) ||
           typeid(*hnsw.storage) == typeid(IndexFlatIP),
       "IndexHNSWFlat serialize: inner storage has no registered flat codec");
 }

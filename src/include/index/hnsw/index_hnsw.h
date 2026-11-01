@@ -48,7 +48,8 @@ struct IndexHNSW : Index {
   // used during copyFrom operations.
   bool keep_max_size_level0 = false;
 
-  // See impl/VisitedTable.h.
+  // Query-time visited-table policy. When unset, the shared VisitedTable
+  // chooses automatically from the index size.
   std::optional<bool> use_visited_hashset;
 
   explicit IndexHNSW(int d = 0, int M = 32, MetricType metric = kMetricL2);
@@ -81,6 +82,8 @@ struct IndexHNSW : Index {
 
   void Reset() override;
 
+  /** Transactionally prune each level-0 neighbor list to at most size
+   * entries. Higher graph levels are preserved. */
   void ShrinkLevel0Neighbors(int size);
 
   /** Perform Search only on level 0, given the starting points for
@@ -98,16 +101,24 @@ struct IndexHNSW : Index {
                     int search_type = 1,
                     const SearchParameters* params = nullptr) const;
 
-  /// alternative graph building
-  void InitLevel0FromKnngraph(int k, const float* D, const idx_t* I);
+  /** Replace level 0 from an external row-major k-NN graph. Distances use
+   * public metric direction: smaller for distances, larger for similarities.
+   * Existing upper levels are preserved and the update is transactional. */
+  void InitLevel0FromKnngraph(int k, const float* distances,
+                              const idx_t* labels);
 
-  /// alternative graph building
+  /** Transactionally add level-0 links for currently unlinked points by
+   * searching from the corresponding entry points. Both arrays contain npt
+   * internal IDs. */
   void InitLevel0FromEntryPoints(int npt, const storage_idx_t* points,
                                  const storage_idx_t* nearests);
 
-  // reorder links from nearest to farthest
+  /** Transactionally reorder existing level-0 links from nearest to farthest.
+   * Similarity metrics are ordered from highest to lowest similarity. */
   void ReorderLinks();
 
+  /** Transactionally reconnect level-0 nodes with zero incoming degree.
+   * Existing upper levels are preserved. */
   void LinkSingletons();
 
   virtual void PermuteEntries(const idx_t* perm);

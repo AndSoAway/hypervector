@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
+#include <index/index_factory.h>
 #include <persistence/index_io.h>
 #include <persistence/index_io_registry.h>
 #include <persistence/io.h>
@@ -139,6 +140,67 @@ TEST(IndexIORegistry, GlobalEntrypointsUseFixedCodeRegistry) {
   flat->Reconstruct(1, reconstructed);
   EXPECT_FLOAT_EQ(reconstructed[0], 3.0F);
   EXPECT_FLOAT_EQ(reconstructed[1], 4.0F);
+}
+
+TEST(IndexIORegistry, RoundtripsGenericFlatMetricsWithDistinctTag) {
+  hypervec::IndexConfig config("flat", 2, hypervec::kMetricLp);
+  config.metric_arg = 3.0F;
+  std::unique_ptr<hypervec::Index> source = hypervec::CreateIndex(config);
+  const hypervec::Index* source_index = source.get();
+  ASSERT_EQ(typeid(*source_index), typeid(hypervec::IndexFlat));
+  const float vectors[] = {0.0F, 0.0F, 2.0F, 2.0F};
+  source->Add(2, vectors);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(source.get(), &writer);
+  ASSERT_GE(writer.data.size(), sizeof(uint32_t));
+  uint32_t tag = 0;
+  std::memcpy(&tag, writer.data.data(), sizeof(tag));
+  EXPECT_EQ(tag, hypervec::fourcc("IFlx"));
+
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
+  const hypervec::Index* loaded_index = loaded.get();
+  ASSERT_EQ(typeid(*loaded_index), typeid(hypervec::IndexFlat));
+  EXPECT_EQ(loaded->metric_type, hypervec::kMetricLp);
+  EXPECT_FLOAT_EQ(loaded->metric_arg, 3.0F);
+
+  const float query[] = {0.0F, 1.0F};
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  loaded->Search(1, query, 1, &distance, &label);
+  EXPECT_EQ(label, 0);
+  EXPECT_FLOAT_EQ(distance, 1.0F);
+}
+
+TEST(IndexIORegistry, RoundtripsFactoryCreatedHnswWithGenericFlatStorage) {
+  hypervec::IndexConfig config("hnsw_flat", 2, hypervec::kMetricLp);
+  config.metric_arg = 3.0F;
+  config.SetInteger("m_hnsw", 4).SetInteger("ef_construction", 8);
+  std::unique_ptr<hypervec::Index> source = hypervec::CreateIndex(config);
+  const float vectors[] = {0.0F, 0.0F, 2.0F, 2.0F, 4.0F, 4.0F};
+  source->Add(3, vectors);
+
+  hypervec::VectorIOWriter writer;
+  hypervec::WriteIndex(source.get(), &writer);
+  hypervec::VectorIOReader reader;
+  reader.data = writer.data;
+  std::unique_ptr<hypervec::Index> loaded = hypervec::ReadIndexUp(&reader);
+  auto* hnsw = dynamic_cast<hypervec::IndexHNSWFlat*>(loaded.get());
+  ASSERT_NE(hnsw, nullptr);
+  ASSERT_NE(hnsw->storage, nullptr);
+  EXPECT_EQ(typeid(*hnsw->storage), typeid(hypervec::IndexFlat));
+  EXPECT_EQ(hnsw->metric_type, hypervec::kMetricLp);
+  EXPECT_FLOAT_EQ(hnsw->metric_arg, 3.0F);
+  EXPECT_FLOAT_EQ(hnsw->storage->metric_arg, 3.0F);
+
+  const float query[] = {0.0F, 1.0F};
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+  loaded->Search(1, query, 1, &distance, &label);
+  EXPECT_EQ(label, 0);
+  EXPECT_FLOAT_EQ(distance, 1.0F);
 }
 
 TEST(IndexIORegistry, GlobalEntrypointsSupportCustomRegistrations) {

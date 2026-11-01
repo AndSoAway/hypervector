@@ -23,8 +23,8 @@ IndexHNSWLVQ::IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
     metric == kMetricL2, "IndexHNSWLVQ: supports kMetricL2 only, got metric=%d",
     static_cast<int>(metric));
   storage = new IndexLVQ(d, nlocal, nbits, kMetricL2);
-  raw_storage = new IndexFlatL2(d);
   own_fields = true;
+  raw_storage = new IndexFlatL2(d);
   is_trained = false;
 }
 
@@ -53,13 +53,13 @@ void IndexHNSWLVQ::Add(idx_t n, const float* x) {
 }
 
 void IndexHNSWLVQ::Reset() {
-  hnsw.Reset();
-  if (storage) {
-    storage->Reset();
-  }
+  HYPERVEC_THROW_IF_NOT_MSG(storage != nullptr,
+                            "IndexHNSWLVQ::Reset: storage must not be null");
   if (raw_storage) {
     raw_storage->Reset();
   }
+  storage->Reset();
+  hnsw.Reset();
   n_total = 0;
 }
 

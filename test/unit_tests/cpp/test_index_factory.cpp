@@ -19,6 +19,7 @@
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
 #include <index/pretransform/index_pre_transform.h>
+#include <index/vamana/index_vamana.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -68,6 +69,9 @@ void ExpectBuiltIn(std::string name,
       .SetInteger("ef_construction", 8)
       .SetInteger("ef_search", 4)
       .SetBoolean("check_relative_distance", true)
+      .SetBoolean("bounded_queue", true)
+      .SetBoolean("build_use_visited_hashset", false)
+      .SetBoolean("search_use_visited_hashset", false)
       .SetBoolean("fill_to_max_degree", true);
 
   const auto allowed = hypervec::GetIndexRegistry().List();
@@ -80,8 +84,11 @@ void ExpectBuiltIn(std::string name,
   hypervec::IndexConfig filtered(config.index_type, config.dimension,
                                  config.metric_type);
   for (const std::string& parameter : type->parameter_names) {
-    if (parameter == "check_relative_distance" ||
-        parameter == "fill_to_max_degree") {
+    if (parameter == "bounded_queue" ||
+        parameter == "build_use_visited_hashset" ||
+        parameter == "check_relative_distance" ||
+        parameter == "fill_to_max_degree" ||
+        parameter == "search_use_visited_hashset") {
       filtered.SetBoolean(parameter, config.GetBoolean(parameter, false));
     } else if (parameter == "nn_descent_convergence_threshold" ||
                parameter == "alpha") {
@@ -132,10 +139,11 @@ TEST(IndexRegistry, ListsAllBuiltInIndexesDeterministically) {
     names.push_back(descriptor.name);
   }
 
-  EXPECT_EQ(names, (std::vector<std::string>{
-                       "diskann", "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq",
-                       "ivf_flat", "ivf_lvq", "ivf_pq", "ivf_rabitq", "lsh",
-                       "lvq", "nsg_flat", "nsw_flat", "opq_pq", "pq"}));
+  EXPECT_EQ(names,
+            (std::vector<std::string>{
+                "diskann", "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq",
+                "ivf_flat", "ivf_lvq", "ivf_pq", "ivf_rabitq", "lsh", "lvq",
+                "nsg_flat", "nsw_flat", "opq_pq", "pq", "vamana_flat"}));
 }
 
 TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
@@ -154,6 +162,7 @@ TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
   ExpectBuiltIn<hypervec::IndexLSH>("lsh", hypervec::kMetricInnerProduct);
   ExpectBuiltIn<hypervec::IndexNSGFlat>("nsg_flat");
   ExpectBuiltIn<hypervec::IndexNSWFlat>("nsw_flat");
+  ExpectBuiltIn<hypervec::IndexVamanaFlat>("vamana_flat");
 }
 
 TEST(IndexRegistry, AppliesAlgorithmParameters) {
@@ -183,6 +192,27 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(diskann->Options().page_size, 4096U);
   EXPECT_EQ(diskann->Options().cache_capacity_pages, 5U);
   EXPECT_EQ(diskann->Options().node_data_path, "nodes.bin");
+
+  hypervec::IndexConfig vamana_config("vamana", 12);
+  vamana_config.SetInteger("max_degree", 7)
+      .SetInteger("build_search_width", 11)
+      .SetInteger("candidate_pool_size", 13)
+      .SetDouble("alpha", 1.4)
+      .SetInteger("build_passes", 3)
+      .SetInteger("random_seed", 31)
+      .SetInteger("search_width", 17)
+      .SetBoolean("check_relative_distance", false);
+  auto vamana_base = hypervec::CreateIndex(vamana_config);
+  auto* vamana = dynamic_cast<hypervec::IndexVamana*>(vamana_base.get());
+  ASSERT_NE(vamana, nullptr);
+  EXPECT_EQ(vamana->Options().max_degree, 7U);
+  EXPECT_EQ(vamana->Options().build_search_width, 11U);
+  EXPECT_EQ(vamana->Options().candidate_pool_size, 13U);
+  EXPECT_FLOAT_EQ(vamana->Options().alpha, 1.4F);
+  EXPECT_EQ(vamana->Options().build_passes, 3U);
+  EXPECT_EQ(vamana->Options().random_seed, 31U);
+  EXPECT_EQ(vamana->Options().search_width, 17U);
+  EXPECT_FALSE(vamana->Options().check_relative_distance);
 
   hypervec::IndexConfig ivf_config("ivf_pq", 12);
   ivf_config.SetInteger("nlist", 7)
@@ -225,12 +255,24 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   EXPECT_EQ(opq_pq->pq.nbits, 4);
 
   hypervec::IndexConfig hnsw_config("hnsw_flat", 12);
-  hnsw_config.SetInteger("m_hnsw", 11);
+  hnsw_config.SetInteger("m_hnsw", 11)
+      .SetInteger("ef_construction", 53)
+      .SetInteger("ef_search", 29)
+      .SetBoolean("check_relative_distance", false)
+      .SetBoolean("bounded_queue", false)
+      .SetBoolean("build_use_visited_hashset", true)
+      .SetBoolean("search_use_visited_hashset", false);
   auto hnsw_base = hypervec::CreateIndex(hnsw_config);
   auto* hnsw = dynamic_cast<hypervec::IndexHNSWFlat*>(hnsw_base.get());
   ASSERT_NE(hnsw, nullptr);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(0), 22);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(1), 11);
+  EXPECT_EQ(hnsw->hnsw.ef_construction, 53);
+  EXPECT_EQ(hnsw->hnsw.ef_search, 29);
+  EXPECT_FALSE(hnsw->hnsw.check_relative_distance);
+  EXPECT_FALSE(hnsw->hnsw.search_bounded_queue);
+  EXPECT_EQ(hnsw->hnsw.use_visited_hashset, true);
+  EXPECT_EQ(hnsw->use_visited_hashset, false);
 
   hypervec::IndexConfig nsw_config("nsw_flat", 12);
   nsw_config.SetInteger("max_degree", 7)
@@ -327,6 +369,13 @@ TEST(IndexRegistry, ResolvesAliasesCaseInsensitively) {
   auto nsg = hypervec::CreateIndex(nsg_config);
   EXPECT_NE(dynamic_cast<hypervec::IndexNSGFlat*>(nsg.get()), nullptr);
 
+  hypervec::IndexConfig vamana_config("InDeXvAmAnAfLaT", 4);
+  vamana_config.SetInteger("max_degree", 4)
+      .SetInteger("build_search_width", 8)
+      .SetInteger("candidate_pool_size", 8);
+  auto vamana = hypervec::CreateIndex(vamana_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexVamanaFlat*>(vamana.get()), nullptr);
+
   hypervec::IndexConfig lsh_config("InDeXlSh", 4,
                                    hypervec::kMetricInnerProduct);
   auto lsh = hypervec::CreateIndex(lsh_config);
@@ -402,6 +451,9 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_degree("hnsw_flat", 4);
   bad_degree.SetInteger("m_hnsw", 1);
   EXPECT_THROW(hypervec::CreateIndex(bad_degree), hypervec::HypervecException);
+  hypervec::IndexConfig bad_hnsw_ef("hnsw_flat", 4);
+  bad_hnsw_ef.SetInteger("ef_construction", 0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_hnsw_ef), hypervec::HypervecException);
 
   hypervec::IndexConfig bad_nsw("nsw_flat", 4);
   bad_nsw.SetInteger("max_degree", 8).SetInteger("ef_construction", 4);
@@ -421,6 +473,14 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   bad_diskann = hypervec::IndexConfig("diskann", 4);
   bad_diskann.SetInteger("cache_capacity_pages", 0);
   EXPECT_THROW(hypervec::CreateIndex(bad_diskann), hypervec::HypervecException);
+
+  EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig(
+                   "vamana", 4, hypervec::kMetricInnerProduct)),
+               hypervec::HypervecException);
+  hypervec::IndexConfig bad_vamana("vamana", 4);
+  bad_vamana.SetInteger("build_search_width", 8)
+      .SetInteger("candidate_pool_size", 4);
+  EXPECT_THROW(hypervec::CreateIndex(bad_vamana), hypervec::HypervecException);
 
   EXPECT_THROW(hypervec::CreateIndex(hypervec::IndexConfig("lsh", 4)),
                hypervec::HypervecException);

@@ -7,19 +7,20 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <persistence/index_io.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -51,16 +52,7 @@ std::vector<float> RandomVectors(hypervec::idx_t n, hypervec::idx_t d,
   return v;
 }
 
-// Cross-platform tmpfile path with cleanup helper.
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 
@@ -92,7 +84,7 @@ TEST(IndexPQ, TrainAddSearchSmoke) {
       EXPECT_LT(id, nb);
       if (j > 0) {
         EXPECT_GE(dists[i * k + j], dists[i * k + j - 1])
-          << "distances not sorted at i=" << i << " j=" << j;
+            << "distances not sorted at i=" << i << " j=" << j;
       }
     }
   }
@@ -144,8 +136,7 @@ TEST(IndexPQ, ReconstructAndSaCodec) {
     idx.SaDecode(1, code.data(), via_codec.data());
     idx.Reconstruct(i, via_recon.data());
     for (hypervec::idx_t j = 0; j < d; j++) {
-      EXPECT_FLOAT_EQ(via_recon[j], via_codec[j])
-        << "i=" << i << " j=" << j;
+      EXPECT_FLOAT_EQ(via_recon[j], via_codec[j]) << "i=" << i << " j=" << j;
     }
   }
 
@@ -158,6 +149,85 @@ TEST(IndexPQ, ReconstructAndSaCodec) {
 TEST(IndexPQ, RejectsNonL2Metric) {
   EXPECT_THROW(hypervec::IndexPQ(8, 4, 8, hypervec::kMetricInnerProduct),
                hypervec::HypervecException);
+}
+
+TEST(IndexPQ, InvalidAddDoesNotMutateCodes) {
+  const auto x = RandomVectors(32, 4, 88);
+  hypervec::IndexPQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  const auto original_codes = index.codes.owned_data;
+
+  EXPECT_THROW(index.Add(-1, x.data()), hypervec::HypervecException);
+  EXPECT_THROW(index.Add(1, nullptr), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 1);
+  EXPECT_EQ(index.codes.owned_data, original_codes);
+
+  std::unique_ptr<hypervec::DistanceComputer> distance(
+      index.GetDistanceComputer());
+  distance->SetQuery(x.data());
+  EXPECT_THROW((*distance)(1), hypervec::HypervecException);
+}
+
+TEST(IndexPQ, MappedStorageRejectsAddWithoutMutation) {
+#if !defined(__linux__) && !defined(__FreeBSD__) && !defined(_WIN32)
+  GTEST_SKIP() << "Memory-mapped persistence is not supported on this OS.";
+#endif
+  const auto x = RandomVectors(32, 4, 90);
+  hypervec::IndexPQ source(4, 2, 2);
+  source.Train(32, x.data());
+  source.Add(1, x.data());
+
+  TempFile file;
+  hypervec::WriteIndex(&source, file.path.c_str());
+  std::unique_ptr<hypervec::Index> loaded =
+      hypervec::ReadIndexUp(file.path.c_str(), hypervec::IO_FLAG_MMAP_IFC);
+  auto* mapped = dynamic_cast<hypervec::IndexPQ*>(loaded.get());
+  ASSERT_NE(mapped, nullptr);
+  ASSERT_FALSE(mapped->codes.is_owned);
+  const std::vector<uint8_t> original_codes(
+      mapped->codes.data(), mapped->codes.data() + mapped->codes.size());
+
+  EXPECT_THROW(mapped->Add(1, x.data()), hypervec::HypervecException);
+  EXPECT_EQ(mapped->n_total, 1);
+  EXPECT_FALSE(mapped->codes.is_owned);
+  EXPECT_EQ(std::vector<uint8_t>(mapped->codes.data(),
+                                 mapped->codes.data() + mapped->codes.size()),
+            original_codes);
+}
+
+TEST(IndexPQ, SearchAndReconstructValidateInputsAndStorage) {
+  const auto x = RandomVectors(32, 4, 89);
+  hypervec::IndexPQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+
+  EXPECT_THROW(index.Search(-1, x.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 0, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, nullptr, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, &distance, nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
+  EXPECT_THROW(index.Reconstruct(0, nullptr), hypervec::HypervecException);
+
+  EXPECT_THROW(index.pq.SearchL2(1, x.data(), -1, index.codes.data(), 1,
+                                 &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.pq.SearchL2(1, x.data(), 1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+
+  index.codes.resize(index.codes.size() - 1);
+  EXPECT_THROW(index.Search(0, nullptr, 1, nullptr, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(0, &distance), hypervec::HypervecException);
+  EXPECT_THROW(index.GetDistanceComputer(), hypervec::HypervecException);
 }
 
 TEST(IndexPQ, IDSelectorParamThrows) {
@@ -191,8 +261,7 @@ TEST(IndexPQ, PersistenceRoundtrip) {
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
 
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexPQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);

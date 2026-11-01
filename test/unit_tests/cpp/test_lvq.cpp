@@ -7,20 +7,29 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/hnsw/index_hnsw_lvq.h>
+#include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/lvq.h>
+#include <utils/algo/kmeans/kmeans.h>
+#include <utils/common/range_search_result.h>
+#include <utils/distances/distance_computer.h>
+#include <utils/distances/distances.h>
 #include <utils/log/exception.h>
+#include <utils/selector/id_selector.h>
 #include <utils/structures/random.h>
 
+#include <algorithm>
 #include <cmath>
-#include <cstdio>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "test_utils/temp_file.h"
 
 namespace {
 
@@ -49,15 +58,7 @@ void ExpectSortedValid(const std::vector<float>& distances,
   }
 }
 
-struct TempFile {
-  std::string path;
-  TempFile() {
-    char buf[L_tmpnam];
-    std::tmpnam(buf);
-    path = buf;
-  }
-  ~TempFile() { std::remove(path.c_str()); }
-};
+using TempFile = hypervec::test::ScopedTempFile;
 
 }  // namespace
 
@@ -79,6 +80,95 @@ TEST(LocalVectorQuantizer, TrainEncodeDecodeSmoke) {
   for (float v : decoded) {
     EXPECT_TRUE(std::isfinite(v));
   }
+}
+
+TEST(LocalVectorQuantizer, BatchCodesMatchSingleVectorEncoding) {
+  constexpr hypervec::idx_t dimension = 8;
+  constexpr hypervec::idx_t count = 400;
+  const auto vectors = RandomVectors(count, dimension, 121, 5.0F);
+  hypervec::LocalVectorQuantizer lvq(dimension, 8, 4);
+  lvq.Train(count, vectors.data());
+
+  std::vector<uint8_t> batch(static_cast<size_t>(count) * lvq.code_size);
+  std::vector<uint8_t> individual(batch.size());
+  lvq.ComputeCodes(count, vectors.data(), batch.data());
+  for (hypervec::idx_t row = 0; row < count; ++row) {
+    lvq.ComputeCode(
+        vectors.data() + row * dimension,
+        individual.data() + static_cast<size_t>(row) * lvq.code_size);
+  }
+  EXPECT_EQ(batch, individual);
+}
+
+TEST(LocalVectorQuantizer, BoundedTrainingMatchesExplicitSample) {
+  constexpr hypervec::idx_t n = 256;
+  constexpr hypervec::idx_t d = 4;
+  const auto vectors = RandomVectors(n, d, 81);
+  hypervec::LVQParameters params;
+  params.max_points_per_codeword = 2;
+
+  hypervec::LocalVectorQuantizer bounded(d, 2, 2);
+  bounded.Train(n, vectors.data(), params);
+  const hypervec::idx_t training_count =
+      hypervec::LVQTrainingCount(n, bounded.nlocal, bounded.ksub, params);
+  ASSERT_EQ(training_count, 16);
+  const auto rows =
+      hypervec::SampleKMeansTrainingRows(n, training_count, params.seed);
+  std::vector<float> sampled(static_cast<size_t>(training_count) * d);
+  for (hypervec::idx_t i = 0; i < training_count; ++i) {
+    std::copy_n(vectors.data() + rows[static_cast<size_t>(i)] * d, d,
+                sampled.data() + i * d);
+  }
+  hypervec::LocalVectorQuantizer explicit_sample(d, 2, 2);
+  params.max_points_per_codeword = 0;
+  explicit_sample.Train(training_count, sampled.data(), params);
+  EXPECT_EQ(bounded.local_centroids, explicit_sample.local_centroids);
+  EXPECT_EQ(bounded.residual_codebooks, explicit_sample.residual_codebooks);
+
+  params.max_points_per_codeword = -1;
+  EXPECT_THROW(bounded.Train(n, vectors.data(), params),
+               hypervec::HypervecException);
+}
+
+TEST(IndexIVFLVQ, ResidualTrainingMatchesExplicitSample) {
+  constexpr hypervec::idx_t n = 512;
+  constexpr hypervec::idx_t d = 4;
+  const auto vectors = RandomVectors(n, d, 91);
+
+  hypervec::IndexIVFLVQ index(d, 2, 2, 2);
+  index.Train(n, vectors.data());
+  const hypervec::LVQParameters params;
+  const hypervec::idx_t training_count =
+      hypervec::LVQTrainingCount(n, index.lvq.nlocal, index.lvq.ksub, params);
+  ASSERT_LT(training_count, n);
+  const auto rows =
+      hypervec::SampleKMeansTrainingRows(n, training_count, params.seed);
+  std::vector<float> residuals(static_cast<size_t>(training_count) * d);
+  for (hypervec::idx_t i = 0; i < training_count; ++i) {
+    const float* x = vectors.data() + rows[static_cast<size_t>(i)] * d;
+    hypervec::idx_t nearest = 0;
+    float best_distance = (std::numeric_limits<float>::infinity)();
+    for (hypervec::idx_t cell = 0; cell < index.nlist; ++cell) {
+      const float distance = hypervec::fvec_L2sqr(
+          x, index.centroids.data() + cell * d, static_cast<size_t>(d));
+      if (distance < best_distance) {
+        best_distance = distance;
+        nearest = cell;
+      }
+    }
+    for (hypervec::idx_t j = 0; j < d; ++j) {
+      residuals[static_cast<size_t>(i * d + j)] =
+          x[j] - index.centroids[static_cast<size_t>(nearest * d + j)];
+    }
+  }
+
+  hypervec::LocalVectorQuantizer expected(d, 2, 2);
+  expected.Train(training_count, residuals.data());
+  EXPECT_EQ(index.lvq.local_centroids, expected.local_centroids);
+  EXPECT_EQ(index.lvq.residual_codebooks, expected.residual_codebooks);
+
+  index.Add(n, vectors.data());
+  EXPECT_EQ(index.n_total, n);
 }
 
 TEST(IndexLVQ, TrainAddSearchSmoke) {
@@ -103,6 +193,86 @@ TEST(IndexLVQ, TrainAddSearchSmoke) {
   }
 }
 
+TEST(IndexLVQ, InvalidAddDoesNotMutateCodes) {
+  const auto x = RandomVectors(32, 4, 23);
+  hypervec::IndexLVQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  const auto original_codes = index.codes.owned_data;
+
+  EXPECT_THROW(index.Add(-1, x.data()), hypervec::HypervecException);
+  EXPECT_THROW(index.Add(1, nullptr), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 1);
+  EXPECT_EQ(index.codes.owned_data, original_codes);
+
+  std::unique_ptr<hypervec::DistanceComputer> distance(
+      index.GetDistanceComputer());
+  distance->SetQuery(x.data());
+  EXPECT_THROW((*distance)(1), hypervec::HypervecException);
+}
+
+TEST(IndexLVQ, MappedStorageRejectsAddWithoutMutation) {
+#if !defined(__linux__) && !defined(__FreeBSD__) && !defined(_WIN32)
+  GTEST_SKIP() << "Memory-mapped persistence is not supported on this OS.";
+#endif
+  const auto x = RandomVectors(32, 4, 25);
+  hypervec::IndexLVQ source(4, 2, 2);
+  source.Train(32, x.data());
+  source.Add(1, x.data());
+
+  TempFile file;
+  hypervec::WriteIndex(&source, file.path.c_str());
+  std::unique_ptr<hypervec::Index> loaded =
+      hypervec::ReadIndexUp(file.path.c_str(), hypervec::IO_FLAG_MMAP_IFC);
+  auto* mapped = dynamic_cast<hypervec::IndexLVQ*>(loaded.get());
+  ASSERT_NE(mapped, nullptr);
+  ASSERT_FALSE(mapped->codes.is_owned);
+  const std::vector<uint8_t> original_codes(
+      mapped->codes.data(), mapped->codes.data() + mapped->codes.size());
+
+  EXPECT_THROW(mapped->Add(1, x.data()), hypervec::HypervecException);
+  EXPECT_EQ(mapped->n_total, 1);
+  EXPECT_FALSE(mapped->codes.is_owned);
+  EXPECT_EQ(std::vector<uint8_t>(mapped->codes.data(),
+                                 mapped->codes.data() + mapped->codes.size()),
+            original_codes);
+}
+
+TEST(IndexLVQ, SearchAndReconstructValidateInputsAndStorage) {
+  const auto x = RandomVectors(32, 4, 24);
+  hypervec::IndexLVQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  float distance = 0.0F;
+  hypervec::idx_t label = -1;
+
+  EXPECT_THROW(index.Search(-1, x.data(), 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 0, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, nullptr, 1, &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, nullptr, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Search(1, x.data(), 1, &distance, nullptr),
+               hypervec::HypervecException);
+  EXPECT_NO_THROW(index.Search(0, nullptr, 1, nullptr, nullptr));
+  EXPECT_THROW(index.Reconstruct(0, nullptr), hypervec::HypervecException);
+
+  EXPECT_THROW(index.lvq.SearchL2(1, x.data(), -1, index.codes.data(), 1,
+                                  &distance, &label),
+               hypervec::HypervecException);
+  EXPECT_THROW(
+      index.lvq.SearchL2(1, x.data(), 1, nullptr, 1, &distance, &label),
+      hypervec::HypervecException);
+
+  index.codes.resize(index.codes.size() - 1);
+  EXPECT_THROW(index.Search(0, nullptr, 1, nullptr, nullptr),
+               hypervec::HypervecException);
+  EXPECT_THROW(index.Reconstruct(0, &distance), hypervec::HypervecException);
+  EXPECT_THROW(index.GetDistanceComputer(), hypervec::HypervecException);
+}
+
 TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   const hypervec::idx_t d = 12, nb = 1000, nq = 20, k = 5;
   const auto base = RandomVectors(nb, d, 31, 4.0f);
@@ -118,6 +288,127 @@ TEST(IndexIVFLVQ, TrainAddSearchSmoke) {
   std::vector<hypervec::idx_t> labels(static_cast<size_t>(nq) * k);
   idx.Search(nq, query.data(), k, distances.data(), labels.data());
   ExpectSortedValid(distances, labels, nq, k, nb);
+}
+
+TEST(IndexIVFLVQ, ResidualBatchesMatchSingleCodesAndStoredLists) {
+  constexpr hypervec::idx_t dimension = 4;
+  constexpr hypervec::idx_t count = 8193;
+  const auto vectors = RandomVectors(count, dimension, 832, 4.0F);
+  hypervec::IndexIVFLVQ index(dimension, 2, 2, 2);
+  index.Train(count, vectors.data());
+
+  const size_t code_size = index.lvq.code_size;
+  std::vector<uint8_t> batch(static_cast<size_t>(count) * code_size);
+  index.EncodeVectors(count, vectors.data(), batch.data());
+  for (hypervec::idx_t row :
+       {hypervec::idx_t{0}, hypervec::idx_t{8191}, hypervec::idx_t{8192}}) {
+    const float* vector = vectors.data() + row * dimension;
+    float coarse_distance = 0.0F;
+    hypervec::idx_t centroid_id = -1;
+    index.FindNearestCentroids(1, vector, 1, &coarse_distance, &centroid_id);
+    std::vector<float> residual(static_cast<size_t>(dimension));
+    const float* centroid = index.centroids.data() + centroid_id * dimension;
+    for (hypervec::idx_t column = 0; column < dimension; ++column) {
+      residual[static_cast<size_t>(column)] = vector[column] - centroid[column];
+    }
+    std::vector<uint8_t> individual(code_size);
+    index.lvq.ComputeCode(residual.data(), individual.data());
+    EXPECT_EQ(std::memcmp(batch.data() + static_cast<size_t>(row) * code_size,
+                          individual.data(), code_size),
+              0);
+  }
+
+  index.Add(count, vectors.data());
+  for (hypervec::idx_t list = 0; list < index.nlist; ++list) {
+    hypervec::InvertedLists::ScopedCodes codes(index.invlists, list);
+    hypervec::InvertedLists::ScopedIds ids(index.invlists, list);
+    for (size_t offset = 0; offset < index.invlists->list_size(list);
+         ++offset) {
+      const auto row = static_cast<size_t>(ids.get()[offset]);
+      EXPECT_EQ(std::memcmp(codes.get() + offset * code_size,
+                            batch.data() + row * code_size, code_size),
+                0);
+    }
+  }
+}
+
+TEST(IndexIVFLVQ, ScannerRangeSearchSupportsResidualAndRawCodes) {
+  constexpr hypervec::idx_t kDimension = 4;
+  constexpr hypervec::idx_t kCount = 32;
+  constexpr hypervec::idx_t kTarget = 7;
+  const auto base = RandomVectors(kCount, kDimension, 35, 4.0F);
+  std::vector<hypervec::idx_t> ids(static_cast<size_t>(kCount));
+  for (hypervec::idx_t i = 0; i < kCount; ++i) {
+    ids[static_cast<size_t>(i)] = 1000 + i;
+  }
+
+  for (const bool by_residual : {true, false}) {
+    hypervec::IndexIVFLVQ index(kDimension, 2, 2, 2);
+    index.by_residual = by_residual;
+    index.Train(kCount, base.data());
+    index.AddWithIds(kCount, base.data(), ids.data());
+
+    hypervec::IDSelectorRange selector(ids[kTarget], ids[kTarget] + 1);
+    hypervec::IVFSearchParameters params;
+    params.nprobe = 2;
+    params.sel = &selector;
+    hypervec::RangeSearchResult result(1);
+    const float* query = base.data() + kTarget * kDimension;
+    index.RangeSearch(1, query, (std::numeric_limits<float>::infinity)(),
+                      &result, &params);
+
+    ASSERT_EQ(result.lims[1] - result.lims[0], 1U) << by_residual;
+    EXPECT_EQ(result.labels[0], ids[kTarget]) << by_residual;
+
+    std::vector<float> distances(static_cast<size_t>(kCount));
+    std::vector<hypervec::idx_t> labels(static_cast<size_t>(kCount));
+    params.sel = nullptr;
+    index.Search(1, query, kCount, distances.data(), labels.data(), &params);
+    bool found = false;
+    for (hypervec::idx_t i = 0; i < kCount; ++i) {
+      if (labels[static_cast<size_t>(i)] == ids[kTarget]) {
+        EXPECT_FLOAT_EQ(result.distances[0], distances[static_cast<size_t>(i)])
+            << by_residual;
+        found = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found) << by_residual;
+  }
+}
+
+TEST(IndexIVFLVQ, PersistenceRoundtripUsesScanner) {
+  constexpr hypervec::idx_t kDimension = 8;
+  constexpr hypervec::idx_t kBaseCount = 256;
+  constexpr hypervec::idx_t kQueryCount = 6;
+  constexpr hypervec::idx_t kNeighbors = 4;
+  const auto base = RandomVectors(kBaseCount, kDimension, 36, 4.0F);
+  const auto queries = RandomVectors(kQueryCount, kDimension, 37, 4.0F);
+
+  hypervec::IndexIVFLVQ source(kDimension, 8, 4, 3);
+  source.nprobe = 3;
+  source.Train(kBaseCount, base.data());
+  source.Add(kBaseCount, base.data());
+
+  TempFile file;
+  hypervec::WriteIndex(&source, file.path.c_str());
+  std::unique_ptr<hypervec::Index> loaded(
+      hypervec::ReadIndex(file.path.c_str()));
+  auto* restored = dynamic_cast<hypervec::IndexIVFLVQ*>(loaded.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->GetCapabilities().supports_range_search);
+
+  std::vector<float> source_distances(
+      static_cast<size_t>(kQueryCount * kNeighbors));
+  std::vector<float> restored_distances(source_distances.size());
+  std::vector<hypervec::idx_t> source_labels(source_distances.size());
+  std::vector<hypervec::idx_t> restored_labels(source_distances.size());
+  source.Search(kQueryCount, queries.data(), kNeighbors,
+                source_distances.data(), source_labels.data());
+  restored->Search(kQueryCount, queries.data(), kNeighbors,
+                   restored_distances.data(), restored_labels.data());
+  EXPECT_EQ(restored_distances, source_distances);
+  EXPECT_EQ(restored_labels, source_labels);
 }
 
 TEST(IndexHNSWLVQ, TrainAddSearchSmoke) {
@@ -136,6 +427,12 @@ TEST(IndexHNSWLVQ, TrainAddSearchSmoke) {
   idx.Search(nq, query.data(), k, distances.data(), labels.data());
   ExpectSortedValid(distances, labels, nq, k, nb);
 
+  hypervec::RangeSearchResult range(1);
+  idx.RangeSearch(1, query.data(), (std::numeric_limits<float>::infinity)(),
+                  &range);
+  EXPECT_GT(range.lims[1], 0U);
+  EXPECT_LE(range.lims[1], static_cast<size_t>(idx.hnsw.ef_search));
+
   idx.Freeze();
   EXPECT_THROW(idx.Add(1, base.data()), hypervec::HypervecException);
 }
@@ -151,8 +448,7 @@ TEST(IndexLVQ, PersistenceRoundtrip) {
 
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexLVQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);

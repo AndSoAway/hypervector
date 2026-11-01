@@ -6,59 +6,214 @@
  * source tree.
  */
 
-#include <quantization/lvq/index_ivflvq.h>
-
+#include <index/ivf/inverted_list_scanner.h>
 #include <invlists/inverted_lists.h>
-#include <persistence/index_write_utils.h>
+#include <quantization/lvq/index_ivflvq.h>
+#include <quantization/lvq/lvq_quantizer_adapter.h>
+#include <utils/algo/kmeans/kmeans.h>
 #include <utils/log/assert.h>
-#include <utils/selector/id_selector.h>
-#include <utils/structures/heap.h>
 
+#include <algorithm>
 #include <cinttypes>
+#include <cstring>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace hypervec {
+namespace {
+
+void EncodeResidualBatches(const LocalVectorQuantizerAdapter& quantizer,
+                           const std::vector<float>& centroids,
+                           const idx_t* centroid_ids, idx_t count,
+                           const float* vectors, uint8_t* codes) {
+  constexpr idx_t kBatchSize = 8192;
+  const idx_t dimension = quantizer.Dimension();
+  const idx_t capacity = std::min(count, kBatchSize);
+  std::vector<float> residuals(mul_no_overflow(static_cast<size_t>(capacity),
+                                               static_cast<size_t>(dimension),
+                                               "IndexIVFLVQ residual batch"));
+  for (idx_t begin = 0; begin < count; begin += kBatchSize) {
+    const idx_t batch_count = std::min(kBatchSize, count - begin);
+    for (idx_t local = 0; local < batch_count; ++local) {
+      const idx_t row = begin + local;
+      const float* centroid =
+          centroids.data() + centroid_ids[static_cast<size_t>(row)] * dimension;
+      const float* vector = vectors + row * dimension;
+      float* residual = residuals.data() + local * dimension;
+      for (idx_t column = 0; column < dimension; ++column) {
+        residual[column] = vector[column] - centroid[column];
+      }
+    }
+    quantizer.Encode(batch_count, residuals.data(),
+                     codes + static_cast<size_t>(begin) * quantizer.CodeSize());
+  }
+}
+
+class LVQInvertedListScanner final : public InvertedListScanner {
+ public:
+  LVQInvertedListScanner(const LocalVectorQuantizer& lvq,
+                         const std::vector<float>& coarse_centroids,
+                         idx_t dimension, idx_t list_count, bool by_residual)
+      : InvertedListScanner(kMetricL2, lvq.code_size),
+        lvq_(lvq),
+        coarse_centroids_(coarse_centroids),
+        dimension_(dimension),
+        list_count_(list_count),
+        by_residual_(by_residual) {
+    HYPERVEC_THROW_IF_NOT_MSG(lvq.is_trained,
+                              "LVQ scanner requires a trained quantizer");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        dimension > 0 && lvq.d == dimension,
+        "LVQ scanner dimension does not match the quantizer");
+    HYPERVEC_THROW_IF_NOT_MSG(list_count > 0 && lvq.nlocal > 0 && lvq.ksub > 0,
+                              "LVQ scanner model sizes must be positive");
+    const size_t expected_centroid_count = mul_no_overflow(
+        static_cast<size_t>(list_count), static_cast<size_t>(dimension),
+        "LVQ scanner coarse centroid count");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        coarse_centroids.size() == expected_centroid_count,
+        "LVQ scanner coarse centroid table has an invalid size");
+    residual_query_.resize(static_cast<size_t>(dimension));
+    distance_table_.resize(mul_no_overflow(static_cast<size_t>(lvq.nlocal),
+                                           static_cast<size_t>(lvq.ksub),
+                                           "LVQ scanner distance table size"));
+  }
+
+  void SetQuery(const float* query) override {
+    HYPERVEC_THROW_IF_NOT_MSG(query != nullptr,
+                              "LVQ scanner query must not be null");
+    query_ = query;
+    table_ready_ = false;
+    if (!by_residual_) {
+      lvq_.ComputeDistanceTable(query_, distance_table_.data());
+      table_ready_ = true;
+    }
+  }
+
+  void SetList(idx_t list_no, float /*coarse_distance*/) override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        query_ != nullptr,
+        "LVQ scanner SetQuery must be called before SetList");
+    if (!by_residual_) {
+      return;
+    }
+
+    HYPERVEC_THROW_IF_NOT_MSG(
+        list_no >= 0 && list_no < list_count_,
+        "LVQ scanner list id is outside the coarse centroid table");
+    const size_t centroid_offset =
+        static_cast<size_t>(list_no) * static_cast<size_t>(dimension_);
+    const float* centroid = coarse_centroids_.data() + centroid_offset;
+    for (idx_t i = 0; i < dimension_; ++i) {
+      residual_query_[static_cast<size_t>(i)] = query_[i] - centroid[i];
+    }
+    lvq_.ComputeDistanceTable(residual_query_.data(), distance_table_.data());
+    table_ready_ = true;
+  }
+
+  float DistanceToCode(const uint8_t* code) const override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        table_ready_,
+        "LVQ scanner SetQuery and SetList must be called before scanning");
+    HYPERVEC_THROW_IF_NOT_MSG(code != nullptr,
+                              "LVQ scanner code must not be null");
+    return lvq_.ApplyDistanceTable(distance_table_.data(), code);
+  }
+
+ private:
+  const LocalVectorQuantizer& lvq_;
+  const std::vector<float>& coarse_centroids_;
+  idx_t dimension_;
+  idx_t list_count_;
+  bool by_residual_;
+  const float* query_ = nullptr;
+  std::vector<float> residual_query_;
+  std::vector<float> distance_table_;
+  bool table_ready_ = false;
+};
+
+}  // namespace
 
 IndexIVFLVQ::IndexIVFLVQ() : IndexIVF(0, 0, 0, kMetricL2) {}
 
 IndexIVFLVQ::IndexIVFLVQ(idx_t d, idx_t nlist, idx_t nlocal, int nbits,
                          MetricType metric)
-  : IndexIVF(d, nlist, 0, metric)
-  , lvq(d, nlocal, nbits) {
+    : IndexIVF(d, nlist, 0, metric), lvq(d, nlocal, nbits) {
   HYPERVEC_THROW_IF_NOT_FMT(
-    metric == kMetricL2, "IndexIVFLVQ: supports kMetricL2 only, got metric=%d",
-    static_cast<int>(metric));
+      metric == kMetricL2,
+      "IndexIVFLVQ: supports kMetricL2 only, got metric=%d",
+      static_cast<int>(metric));
   delete invlists;
   invlists = new ArrayInvertedLists(static_cast<size_t>(nlist), lvq.code_size);
   own_invlists = true;
 }
 
-void IndexIVFLVQ::Train(idx_t n, const float* x) {
-  IndexIVF::Train(n, x);
-  if (by_residual) {
-    std::vector<float> coarse_dis(static_cast<size_t>(n));
-    std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
-    FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
+IndexCapabilities IndexIVFLVQ::GetCapabilities() const {
+  IndexCapabilities capabilities = IndexIVF::GetCapabilities();
+  capabilities.supports_range_search = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
 
-    std::vector<float> residuals(static_cast<size_t>(n) * d);
-    for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() + centroid_ids[i] * d;
-      const float* xi = x + i * d;
+void IndexIVFLVQ::Train(idx_t n, const float* x) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n_total == 0,
+      "IndexIVFLVQ::Train: reset the index before replacing trained state");
+
+  std::vector<float> trained_centroids = TrainCoarseCentroids(n, x);
+  LocalVectorQuantizer trained_lvq(lvq.d, lvq.nlocal, lvq.nbits);
+  LocalVectorQuantizerAdapter trained_quantizer(trained_lvq);
+  if (by_residual) {
+    const LVQParameters params;
+    const idx_t training_count =
+        LVQTrainingCount(n, trained_lvq.nlocal, trained_lvq.ksub, params);
+    std::vector<float> sampled_vectors;
+    const float* training_vectors = x;
+    if (training_count < n) {
+      const auto rows =
+          SampleKMeansTrainingRows(n, training_count, params.seed);
+      sampled_vectors.resize(mul_no_overflow(
+          static_cast<size_t>(training_count), static_cast<size_t>(d),
+          "IndexIVFLVQ::Train sampled vectors"));
+      for (idx_t i = 0; i < training_count; ++i) {
+        std::memcpy(sampled_vectors.data() + i * d,
+                    x + rows[static_cast<size_t>(i)] * d,
+                    static_cast<size_t>(d) * sizeof(float));
+      }
+      training_vectors = sampled_vectors.data();
+    }
+    std::vector<float> coarse_dis(static_cast<size_t>(training_count));
+    std::vector<idx_t> centroid_ids(static_cast<size_t>(training_count));
+    FindNearestCentroidsIn(trained_centroids, training_count, training_vectors,
+                           1, coarse_dis.data(), centroid_ids.data());
+
+    const size_t residual_count = mul_no_overflow(
+        static_cast<size_t>(training_count), static_cast<size_t>(d),
+        "IndexIVFLVQ::Train residual count");
+    std::vector<float> residuals(residual_count);
+    for (idx_t i = 0; i < training_count; i++) {
+      const float* c = trained_centroids.data() + centroid_ids[i] * d;
+      const float* xi = training_vectors + i * d;
       float* ri = residuals.data() + i * d;
       for (idx_t j = 0; j < d; j++) {
         ri[j] = xi[j] - c[j];
       }
     }
-    lvq.Train(n, residuals.data());
+    trained_quantizer.Train(training_count, residuals.data());
   } else {
-    lvq.Train(n, x);
+    trained_quantizer.Train(n, x);
   }
+
+  centroids = std::move(trained_centroids);
+  lvq = std::move(trained_lvq);
+  is_trained = lvq.is_trained;
 }
 
-void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
-                                uint8_t* codes) const {
+void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x, uint8_t* codes) const {
+  const LocalVectorQuantizerAdapter quantizer(lvq);
   if (!by_residual) {
-    lvq.ComputeCodes(n, x, codes);
+    quantizer.Encode(n, x, codes);
     return;
   }
 
@@ -66,123 +221,42 @@ void IndexIVFLVQ::EncodeVectors(idx_t n, const float* x,
   std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
   FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
 
-  std::vector<float> residuals(static_cast<size_t>(n) * d);
-  for (idx_t i = 0; i < n; i++) {
-    const float* c = centroids.data() + centroid_ids[i] * d;
-    const float* xi = x + i * d;
-    float* ri = residuals.data() + i * d;
-    for (idx_t j = 0; j < d; j++) {
-      ri[j] = xi[j] - c[j];
-    }
-  }
-  lvq.ComputeCodes(n, residuals.data(), codes);
+  EncodeResidualBatches(quantizer, centroids, centroid_ids.data(), n, x, codes);
 }
 
 void IndexIVFLVQ::AddWithIds(idx_t n, const float* x, const idx_t* xids) {
-  HYPERVEC_THROW_IF_NOT(is_trained);
+  HYPERVEC_THROW_IF_NOT_MSG(is_trained,
+                            "IndexIVFLVQ::AddWithIds: index is not trained");
+  HYPERVEC_THROW_IF_NOT_MSG(n >= 0,
+                            "IndexIVFLVQ::AddWithIds: n must be non-negative");
   if (n == 0) {
     return;
   }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr,
+      "IndexIVFLVQ::AddWithIds: x must not be null when n is positive");
 
   std::vector<float> coarse_dis(static_cast<size_t>(n));
   std::vector<idx_t> centroid_ids(static_cast<size_t>(n));
   FindNearestCentroids(n, x, 1, coarse_dis.data(), centroid_ids.data());
 
-  std::vector<uint8_t> codes(static_cast<size_t>(n) * lvq.code_size);
+  const LocalVectorQuantizerAdapter quantizer(lvq);
+  const size_t code_bytes =
+      mul_no_overflow(static_cast<size_t>(n), quantizer.CodeSize(),
+                      "IndexIVFLVQ::AddWithIds code bytes");
+  std::vector<uint8_t> codes(code_bytes);
   if (by_residual) {
-    std::vector<float> residual(static_cast<size_t>(d));
-    for (idx_t i = 0; i < n; i++) {
-      const float* c = centroids.data() + centroid_ids[i] * d;
-      const float* xi = x + i * d;
-      for (idx_t j = 0; j < d; j++) {
-        residual[static_cast<size_t>(j)] = xi[j] - c[j];
-      }
-      lvq.ComputeCode(residual.data(),
-                      codes.data() + static_cast<size_t>(i) * lvq.code_size);
-    }
+    EncodeResidualBatches(quantizer, centroids, centroid_ids.data(), n, x,
+                          codes.data());
   } else {
-    lvq.ComputeCodes(n, x, codes.data());
+    quantizer.Encode(n, x, codes.data());
   }
 
-  for (idx_t i = 0; i < n; i++) {
-    const idx_t id = (xids != nullptr) ? xids[i] : n_total + i;
-    invlists->add_entry(static_cast<size_t>(centroid_ids[i]), id,
-                        codes.data() + static_cast<size_t>(i) * lvq.code_size);
-  }
-  n_total += n;
-}
-
-void IndexIVFLVQ::SearchPreassigned(idx_t n, const float* x, idx_t k,
-                                    const idx_t* list_ids,
-                                    const float* /*centroid_dis*/,
-                                    float* distances, idx_t* labels,
-                                    idx_t nprobe_actual,
-                                    const IDSelector* sel) const {
-  HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT(k > 0);
-
-  const size_t table_sz = static_cast<size_t>(lvq.nlocal) * lvq.ksub;
-#pragma omp parallel
-  {
-    std::vector<float> residual_query(static_cast<size_t>(d));
-    std::vector<float> dis_table(table_sz);
-#pragma omp for
-    for (idx_t qi = 0; qi < n; qi++) {
-      const float* xq = x + qi * d;
-      float* heap_dis = distances + qi * k;
-      idx_t* heap_ids = labels + qi * k;
-      heap_heapify<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-
-      if (!by_residual) {
-        lvq.ComputeDistanceTable(xq, dis_table.data());
-      }
-
-      for (idx_t pi = 0; pi < nprobe_actual; pi++) {
-        const idx_t list_no = list_ids[qi * nprobe_actual + pi];
-        if (list_no < 0) {
-          continue;
-        }
-        const size_t list_sz =
-          invlists->list_size(static_cast<size_t>(list_no));
-        if (list_sz == 0) {
-          continue;
-        }
-
-        if (by_residual) {
-          const float* c = centroids.data() + list_no * d;
-          for (idx_t j = 0; j < d; j++) {
-            residual_query[static_cast<size_t>(j)] = xq[j] - c[j];
-          }
-          lvq.ComputeDistanceTable(residual_query.data(), dis_table.data());
-        }
-
-        InvertedLists::ScopedCodes scoped_codes(invlists,
-                                                static_cast<size_t>(list_no));
-        InvertedLists::ScopedIds scoped_ids(invlists,
-                                            static_cast<size_t>(list_no));
-        const uint8_t* codes_p = scoped_codes.get();
-        const idx_t* ids_p = scoped_ids.get();
-
-        float threshold = heap_dis[0];
-        for (size_t j = 0; j < list_sz; j++) {
-          if (sel && !sel->IsMember(ids_p[j])) {
-            continue;
-          }
-          const float dis = lvq.ApplyDistanceTable(
-            dis_table.data(), codes_p + j * lvq.code_size);
-          if (CMax<float, idx_t>::cmp(threshold, dis)) {
-            heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis,
-                                                 ids_p[j]);
-            threshold = heap_dis[0];
-          }
-        }
-      }
-      heap_reorder<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-    }
-  }
+  AddEncodedVectors(n, centroid_ids.data(), codes.data(), xids);
 }
 
 void IndexIVFLVQ::Reconstruct(idx_t key, float* recons) const {
+  const LocalVectorQuantizerAdapter quantizer(lvq);
   for (size_t list_no = 0; list_no < static_cast<size_t>(nlist); list_no++) {
     const size_t sz = invlists->list_size(list_no);
     if (sz == 0) {
@@ -193,10 +267,9 @@ void IndexIVFLVQ::Reconstruct(idx_t key, float* recons) const {
     for (size_t j = 0; j < sz; j++) {
       if (id_ptr[j] == key) {
         InvertedLists::ScopedCodes codes(invlists, list_no);
-        lvq.Decode(codes.get() + j * lvq.code_size, recons);
+        quantizer.Decode(1, codes.get() + j * quantizer.CodeSize(), recons);
         if (by_residual) {
-          const float* c = centroids.data() +
-                           static_cast<idx_t>(list_no) * d;
+          const float* c = centroids.data() + static_cast<idx_t>(list_no) * d;
           for (idx_t l = 0; l < d; l++) {
             recons[l] += c[l];
           }
@@ -209,29 +282,9 @@ void IndexIVFLVQ::Reconstruct(idx_t key, float* recons) const {
                      key);
 }
 
-uint32_t IndexIVFLVQ::fourcc() const {
-  return hypervec::fourcc("IVLQ");
-}
-
-void IndexIVFLVQ::write_body(IOWriter* f) const {
-  WRITE1(nlist);
-  WRITE1(nprobe);
-  WRITEVECTOR(centroids);
-  int8_t by_residual_i8 = by_residual ? 1 : 0;
-  WRITE1(by_residual_i8);
-  write_lvq(lvq, f);
-
-  for (size_t list_no = 0; list_no < nlist; list_no++) {
-    const size_t sz = invlists->list_size(list_no);
-    WRITE1(sz);
-    if (sz == 0) {
-      continue;
-    }
-    InvertedLists::ScopedIds ids(invlists, list_no);
-    InvertedLists::ScopedCodes codes(invlists, list_no);
-    WRITEANDCHECK(ids.get(), sz);
-    WRITEANDCHECK(codes.get(), sz * lvq.code_size);
-  }
+InvertedListScannerPtr IndexIVFLVQ::CreateInvertedListScanner() const {
+  return std::make_unique<LVQInvertedListScanner>(lvq, centroids, d, nlist,
+                                                  by_residual);
 }
 
 }  // namespace hypervec

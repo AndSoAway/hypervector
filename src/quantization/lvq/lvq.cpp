@@ -7,7 +7,6 @@
  */
 
 #include <quantization/lvq/lvq.h>
-
 #include <utils/algo/kmeans/kmeans.h>
 #include <utils/distances/distances.h>
 #include <utils/log/assert.h>
@@ -17,6 +16,7 @@
 #include <algorithm>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -72,7 +72,40 @@ void EncodePair(const LocalVectorQuantizer& lvq, idx_t local_id,
   }
 }
 
+void ComputeCodeWithScratch(const LocalVectorQuantizer& lvq, const float* x,
+                            uint8_t* code, float* scratch, float* residual) {
+  const idx_t local_id =
+      Nearest(x, lvq.local_centroids.data(), lvq.nlocal, lvq.d, scratch);
+  const float* centroid = lvq.GetLocalCentroid(local_id);
+  for (idx_t j = 0; j < lvq.d; ++j) {
+    residual[j] = x[j] - centroid[j];
+  }
+  const idx_t code_id = Nearest(residual, lvq.GetResidualCodeword(local_id, 0),
+                                lvq.ksub, lvq.d, scratch);
+  EncodePair(lvq, local_id, code_id, code);
+}
+
 }  // namespace
+
+idx_t LVQTrainingCount(idx_t n, idx_t nlocal, idx_t ksub,
+                       const LVQParameters& params) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      params.max_points_per_codeword >= 0,
+      "LVQ: max_points_per_codeword must be non-negative");
+  if (params.max_points_per_codeword == 0) {
+    return n;
+  }
+  const size_t codewords =
+      mul_no_overflow(static_cast<size_t>(nlocal), static_cast<size_t>(ksub),
+                      "LVQ training codeword count");
+  const size_t limit = mul_no_overflow(
+      codewords, static_cast<size_t>(params.max_points_per_codeword),
+      "LVQ training sample limit");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      limit <= static_cast<size_t>((std::numeric_limits<idx_t>::max)()),
+      "LVQ training sample limit exceeds idx_t");
+  return std::min(n, static_cast<idx_t>(limit));
+}
 
 LocalVectorQuantizer::LocalVectorQuantizer(idx_t d, idx_t nlocal, int nbits)
   : d(d), nlocal(nlocal), nbits(nbits) {
@@ -127,12 +160,31 @@ void LocalVectorQuantizer::Train(idx_t n, const float* x,
   HYPERVEC_THROW_IF_NOT_MSG(params.nredo > 0,
                             "LocalVectorQuantizer::Train: nredo must be > 0");
 
+  const idx_t training_count = LVQTrainingCount(n, nlocal, ksub, params);
+  std::vector<float> sampled_vectors;
+  if (training_count < n) {
+    const auto rows = SampleKMeansTrainingRows(n, training_count, params.seed);
+    sampled_vectors.resize(mul_no_overflow(static_cast<size_t>(training_count),
+                                           static_cast<size_t>(d),
+                                           "LVQ sampled training vectors"));
+    for (idx_t i = 0; i < training_count; ++i) {
+      std::memcpy(sampled_vectors.data() + i * d,
+                  x + rows[static_cast<size_t>(i)] * d,
+                  static_cast<size_t>(d) * sizeof(float));
+    }
+    n = training_count;
+    x = sampled_vectors.data();
+  }
+
   KMeansParameters kp;
   kp.niter = params.niter;
   kp.seed = params.seed;
   kp.nredo = params.nredo;
   kp.verbose = params.verbose;
   kp.metric = kMetricL2;
+  if (params.max_points_per_codeword == 0) {
+    kp.max_points_per_centroid = 0;
+  }
   RunKMeans(n, x, d, nlocal, local_centroids.data(), kp);
 
   std::vector<float> assign_dis(static_cast<size_t>(n));
@@ -187,24 +239,30 @@ void LocalVectorQuantizer::Train(idx_t n, const float* x,
 void LocalVectorQuantizer::ComputeCode(const float* x, uint8_t* code) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
   std::vector<float> scratch(static_cast<size_t>(std::max(nlocal, ksub)));
-  const idx_t local_id =
-    Nearest(x, local_centroids.data(), nlocal, d, scratch.data());
   std::vector<float> residual(static_cast<size_t>(d));
-  const float* centroid = GetLocalCentroid(local_id);
-  for (idx_t j = 0; j < d; j++) {
-    residual[static_cast<size_t>(j)] = x[j] - centroid[j];
-  }
-  const idx_t code_id = Nearest(residual.data(), GetResidualCodeword(local_id, 0),
-                                ksub, d, scratch.data());
-  EncodePair(*this, local_id, code_id, code);
+  ComputeCodeWithScratch(*this, x, code, scratch.data(), residual.data());
 }
 
 void LocalVectorQuantizer::ComputeCodes(idx_t n, const float* x,
                                         uint8_t* codes) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-#pragma omp parallel for if (n > 1)
-  for (idx_t i = 0; i < n; i++) {
-    ComputeCode(x + i * d, codes + static_cast<size_t>(i) * code_size);
+  if (n == 0) {
+    return;
+  }
+  if (n == 1) {
+    ComputeCode(x, codes);
+    return;
+  }
+#pragma omp parallel if (n > 1)
+  {
+    std::vector<float> scratch(static_cast<size_t>(std::max(nlocal, ksub)));
+    std::vector<float> residual(static_cast<size_t>(d));
+#pragma omp for
+    for (idx_t i = 0; i < n; i++) {
+      ComputeCodeWithScratch(*this, x + i * d,
+                             codes + static_cast<size_t>(i) * code_size,
+                             scratch.data(), residual.data());
+    }
   }
 }
 
@@ -256,7 +314,34 @@ void LocalVectorQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
                                     const uint8_t* codes, idx_t k,
                                     float* distances, idx_t* labels) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT(k > 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nx >= 0, "LocalVectorQuantizer::SearchL2: nx must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes >= 0,
+      "LocalVectorQuantizer::SearchL2: ncodes must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k > 0, "LocalVectorQuantizer::SearchL2: k must be positive");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(k),
+                        "LocalVectorQuantizer::SearchL2 output size");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(d),
+                        "LocalVectorQuantizer::SearchL2 input size");
+  (void)mul_no_overflow(static_cast<size_t>(ncodes), code_size,
+                        "LocalVectorQuantizer::SearchL2 code size");
+  if (nx == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr, "LocalVectorQuantizer::SearchL2: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      distances != nullptr,
+      "LocalVectorQuantizer::SearchL2: distances must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      labels != nullptr,
+      "LocalVectorQuantizer::SearchL2: labels must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes == 0 || codes != nullptr,
+      "LocalVectorQuantizer::SearchL2: codes must not be null when ncodes is "
+      "positive");
   const size_t table_sz = static_cast<size_t>(nlocal) * ksub;
 
 #pragma omp parallel

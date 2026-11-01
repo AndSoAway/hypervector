@@ -155,6 +155,7 @@ struct HNSW {
   /// use bounded queue during exploration
   bool search_bounded_queue = true;
 
+  /// Reserved for a future Panorama implementation. Search rejects true.
   bool is_panorama = false;
 
   // See impl/VisitedTable.h.

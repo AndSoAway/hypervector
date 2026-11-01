@@ -9,9 +9,12 @@
 #include <index/graph/graph_searcher.h>
 #include <utils/log/assert.h>
 #include <utils/selector/id_selector.h>
+#include <utils/structures/heap.h>
 
 #include <algorithm>
+#include <array>
 #include <queue>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -46,6 +49,102 @@ bool ResultOrder(const GraphSearchResult& lhs,
   return lhs.id < rhs.id;
 }
 
+/** Candidate queue with an optional hard bound on pending graph expansions.
+ *
+ * The bounded representation mirrors HNSW's MinimaxHeap: insertion keeps the
+ * closest max_candidates entries in a max heap, while PopClosest scans the
+ * small fixed-capacity buffer. This preserves the memory contract of HNSW's
+ * default search without coupling the common graph layer to HNSW internals.
+ */
+class CandidateQueue {
+ public:
+  explicit CandidateQueue(size_t capacity)
+      : capacity_(capacity), ids_(capacity), distances_(capacity) {}
+
+  bool Push(const GraphSearchResult& candidate) {
+    if (capacity_ == 0) {
+      unbounded_.push(candidate);
+      return true;
+    }
+    if (size_ == capacity_) {
+      if (candidate.distance >= distances_[0]) {
+        return false;
+      }
+      if (ids_[0] != kInvalidGraphId) {
+        --valid_size_;
+      }
+      heap_pop<HeapOrder>(size_--, distances_.data(), ids_.data());
+    }
+    heap_push<HeapOrder>(++size_, distances_.data(), ids_.data(),
+                         candidate.distance, candidate.id);
+    ++valid_size_;
+    return true;
+  }
+
+  bool Empty() const noexcept {
+    return capacity_ == 0 ? unbounded_.empty() : valid_size_ == 0;
+  }
+
+  size_t Size() const noexcept {
+    return capacity_ == 0 ? unbounded_.size() : valid_size_;
+  }
+
+  GraphSearchResult PopClosest() {
+    if (capacity_ == 0) {
+      const GraphSearchResult closest = unbounded_.top();
+      unbounded_.pop();
+      return closest;
+    }
+
+    size_t closest = size_;
+    for (size_t index = 0; index < size_; ++index) {
+      if (ids_[index] == kInvalidGraphId) {
+        continue;
+      }
+      const GraphSearchResult candidate{ids_[index], distances_[index]};
+      if (closest == size_ ||
+          ResultOrder(candidate,
+                      GraphSearchResult{ids_[closest], distances_[closest]})) {
+        closest = index;
+      }
+    }
+    const GraphSearchResult result{ids_[closest], distances_[closest]};
+    ids_[closest] = kInvalidGraphId;
+    --valid_size_;
+    return result;
+  }
+
+ private:
+  using HeapOrder = CMax<float, GraphId>;
+
+  size_t capacity_;
+  size_t size_ = 0;
+  size_t valid_size_ = 0;
+  std::vector<GraphId> ids_;
+  std::vector<float> distances_;
+  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
+                      CloserFirst>
+      unbounded_;
+};
+
+void ValidateSearchRequest(const GraphStorage& graph,
+                           const GraphSearchOptions& options,
+                           const VisitedTable* visited) {
+  HYPERVEC_THROW_IF_NOT_MSG(options.ef_search > 0,
+                            "GraphSearcher: ef_search must be positive");
+  HYPERVEC_THROW_IF_NOT_MSG(visited != nullptr,
+                            "GraphSearcher: visited table must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      visited->Size() == graph.NodeCount(),
+      "GraphSearcher: visited table size does not match graph");
+}
+
+void ValidateEntry(const GraphStorage& graph, GraphId entry) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      entry >= 0 && static_cast<size_t>(entry) < graph.NodeCount(),
+      "GraphSearcher: entry point is outside the graph");
+}
+
 }  // namespace
 
 void GraphSearchStats::Reset() noexcept { *this = {}; }
@@ -57,35 +156,78 @@ void GraphSearchStats::Combine(const GraphSearchStats& other) noexcept {
   visited_nodes += other.visited_nodes;
   expanded_nodes += other.expanded_nodes;
   traversed_edges += other.traversed_edges;
+  peak_candidates = std::max(peak_candidates, other.peak_candidates);
 }
 
 std::vector<GraphSearchResult> GraphSearcher::Search(
     DistanceComputer& distance, std::span<const GraphId> entry_points,
     const GraphSearchOptions& options, VisitedTable* visited,
     GraphSearchStats* stats) const {
-  HYPERVEC_THROW_IF_NOT_MSG(options.ef_search > 0,
-                            "GraphSearcher: ef_search must be positive");
-  HYPERVEC_THROW_IF_NOT_MSG(visited != nullptr,
-                            "GraphSearcher: visited table must not be null");
-  HYPERVEC_THROW_IF_NOT_MSG(
-      visited->Size() == graph_.NodeCount(),
-      "GraphSearcher: visited table size does not match graph");
+  ValidateSearchRequest(graph_, options, visited);
   for (GraphId entry : entry_points) {
-    HYPERVEC_THROW_IF_NOT_MSG(
-        entry >= 0 && static_cast<size_t>(entry) < graph_.NodeCount(),
-        "GraphSearcher: entry point is outside the graph");
+    ValidateEntry(graph_, entry);
   }
 
+  std::vector<GraphSearchSeed> seeds;
+  seeds.reserve(entry_points.size());
+  std::unordered_set<GraphId> unique_entries;
+  unique_entries.reserve(entry_points.size());
+  for (GraphId entry : entry_points) {
+    if (unique_entries.insert(entry).second) {
+      seeds.push_back({entry, distance(entry)});
+    }
+  }
+  return SearchPrepared(distance, seeds, seeds.size(), options, visited, stats);
+}
+
+std::vector<GraphSearchResult> GraphSearcher::Search(
+    DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+    const GraphSearchOptions& options, VisitedTable* visited,
+    GraphSearchStats* stats) const {
+  ValidateSearchRequest(graph_, options, visited);
+  for (const GraphSearchSeed& seed : seeds) {
+    ValidateEntry(graph_, seed.id);
+  }
+
+  std::vector<GraphSearchSeed> unique_seeds;
+  unique_seeds.reserve(seeds.size());
+  std::unordered_set<GraphId> unique_entries;
+  unique_entries.reserve(seeds.size());
+  for (const GraphSearchSeed& seed : seeds) {
+    if (unique_entries.insert(seed.id).second) {
+      unique_seeds.push_back(seed);
+    }
+  }
+  return SearchPrepared(distance, unique_seeds, 0, options, visited, stats);
+}
+
+std::vector<GraphSearchResult> GraphSearcher::SearchPrepared(
+    DistanceComputer& distance, std::span<const GraphSearchSeed> seeds,
+    size_t seed_distance_computations, const GraphSearchOptions& options,
+    VisitedTable* visited, GraphSearchStats* stats) const {
   GraphSearchStats local_stats;
   local_stats.queries = 1;
-  visited->advance();
+  local_stats.distance_computations = seed_distance_computations;
+  if (options.advance_visited) {
+    visited->advance();
+  }
 
-  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
-                      CloserFirst>
-      candidates;
+  const size_t relative_distance_limit =
+      options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound &&
+              options.relative_distance_limit != 0
+          ? options.relative_distance_limit
+          : options.ef_search;
+  const size_t navigation_bound_limit = options.check_relative_distance
+                                            ? relative_distance_limit
+                                            : options.ef_search;
+
+  CandidateQueue candidates(options.max_candidates);
   std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
                       FartherFirst>
       results;
+  std::priority_queue<GraphSearchResult, std::vector<GraphSearchResult>,
+                      FartherFirst>
+      navigation_bound;
 
   const auto add_result = [&](const GraphSearchResult& candidate) {
     if (options.selector != nullptr &&
@@ -98,55 +240,114 @@ std::vector<GraphSearchResult> GraphSearcher::Search(
     }
   };
 
-  for (GraphId entry : entry_points) {
-    if (!visited->set(static_cast<size_t>(entry))) {
-      continue;
+  const auto add_candidate = [&](GraphId id, float candidate_distance) {
+    const GraphSearchResult candidate{id, candidate_distance};
+    const bool independent_navigation =
+        options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound;
+    if (!independent_navigation) {
+      const bool within_frontier = results.size() < options.ef_search ||
+                                   candidate.distance <= results.top().distance;
+      if (!within_frontier) {
+        return;
+      }
+      add_result(candidate);
+      if (!candidates.Push(candidate)) {
+        return;
+      }
+      local_stats.peak_candidates =
+          std::max(local_stats.peak_candidates, candidates.Size());
+      graph_.Prefetch(id);
+      return;
     }
-    const GraphSearchResult seed{entry, distance(entry)};
-    ++local_stats.distance_computations;
+
+    add_result(candidate);
+    const bool within_frontier =
+        navigation_bound.size() < navigation_bound_limit ||
+        candidate.distance < navigation_bound.top().distance;
+    if (!within_frontier) {
+      return;
+    }
+    if (!candidates.Push(candidate)) {
+      return;
+    }
+    local_stats.peak_candidates =
+        std::max(local_stats.peak_candidates, candidates.Size());
+    navigation_bound.push(candidate);
+    if (navigation_bound.size() > navigation_bound_limit) {
+      navigation_bound.pop();
+    }
+    graph_.Prefetch(id);
+  };
+
+  for (const GraphSearchSeed& seed : seeds) {
+    visited->set(static_cast<size_t>(seed.id));
     ++local_stats.visited_nodes;
-    candidates.push(seed);
-    add_result(seed);
-    graph_.Prefetch(entry);
+    if (options.frontier_policy ==
+        GraphSearchFrontierPolicy::kNavigationBound) {
+      add_candidate(seed.id, seed.distance);
+    } else {
+      const GraphSearchResult candidate{seed.id, seed.distance};
+      candidates.Push(candidate);
+      local_stats.peak_candidates =
+          std::max(local_stats.peak_candidates, candidates.Size());
+      add_result(candidate);
+      graph_.Prefetch(seed.id);
+    }
   }
 
   bool stopped_early = false;
-  while (!candidates.empty()) {
-    const GraphSearchResult current = candidates.top();
-    if (options.check_relative_distance &&
-        results.size() >= options.ef_search &&
-        current.distance > results.top().distance) {
+  while (!candidates.Empty()) {
+    if (options.max_expansions > 0 &&
+        local_stats.expanded_nodes >= options.max_expansions) {
       stopped_early = true;
       break;
     }
-    candidates.pop();
-
+    const GraphSearchResult current = candidates.PopClosest();
+    const auto& frontier =
+        options.frontier_policy == GraphSearchFrontierPolicy::kNavigationBound
+            ? navigation_bound
+            : results;
+    if (options.check_relative_distance &&
+        frontier.size() >= relative_distance_limit &&
+        current.distance > frontier.top().distance) {
+      stopped_early = true;
+      break;
+    }
     const GraphNeighborList neighbors = graph_.Neighbors(current.id);
     ++local_stats.expanded_nodes;
     local_stats.traversed_edges += neighbors.size();
     for (GraphId neighbor : neighbors) {
       visited->prefetch(static_cast<size_t>(neighbor));
     }
+    std::array<GraphId, 4> distance_batch;
+    size_t batch_size = 0;
     for (GraphId neighbor : neighbors) {
       if (!visited->set(static_cast<size_t>(neighbor))) {
         continue;
       }
-      const GraphSearchResult candidate{neighbor, distance(neighbor)};
+      distance_batch[batch_size++] = neighbor;
+      if (batch_size == distance_batch.size()) {
+        std::array<float, 4> distances;
+        distance.distances_batch_4(distance_batch[0], distance_batch[1],
+                                   distance_batch[2], distance_batch[3],
+                                   distances[0], distances[1], distances[2],
+                                   distances[3]);
+        local_stats.distance_computations += distance_batch.size();
+        local_stats.visited_nodes += distance_batch.size();
+        for (size_t index = 0; index < distance_batch.size(); ++index) {
+          add_candidate(distance_batch[index], distances[index]);
+        }
+        batch_size = 0;
+      }
+    }
+    for (size_t index = 0; index < batch_size; ++index) {
+      add_candidate(distance_batch[index], distance(distance_batch[index]));
       ++local_stats.distance_computations;
       ++local_stats.visited_nodes;
-
-      const bool within_frontier = results.size() < options.ef_search ||
-                                   candidate.distance <= results.top().distance;
-      if (!within_frontier) {
-        continue;
-      }
-      candidates.push(candidate);
-      add_result(candidate);
-      graph_.Prefetch(neighbor);
     }
   }
 
-  if (!stopped_early && candidates.empty()) {
+  if (!stopped_early && candidates.Empty()) {
     local_stats.exhausted_queries = 1;
   }
 

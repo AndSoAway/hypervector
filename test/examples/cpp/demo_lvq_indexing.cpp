@@ -26,13 +26,11 @@ int main() {
   const int d = 128;
   const int nb = 100000;
   const int nq = 1000;
-  const int nlocal = 256;  // local centroids
-  const int nbits = 12;    // ksub = 4096
+  const int nbits = 8;  // per-vector, per-component scalar quantization
   const int k = 10;
 
-  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq
-            << " nlocal=" << nlocal << " nbits=" << nbits
-            << " (ksub=" << (1 << nbits) << ")" << std::endl;
+  std::cout << "d=" << d << " nb=" << nb << " nq=" << nq << " nbits=" << nbits
+            << std::endl;
 
   std::cout << "Generating random vectors..." << std::endl;
   std::vector<float> database(nb * d);
@@ -48,7 +46,7 @@ int main() {
   gt_index.Search(nq, query.data(), k, gt_distances.data(), gt_labels.data());
 
   std::cout << "\nBuilding IndexLVQ (brute-force scan)..." << std::endl;
-  IndexLVQ idx(d, nlocal, nbits);
+  IndexLVQ idx(d, nbits);
 
   auto t0 = std::chrono::high_resolution_clock::now();
   idx.Train(nb, database.data());

@@ -19,6 +19,10 @@ jobs:
     if: ${{ vars.HYPERVECTOR_CI_ENABLED != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        opt: [generic, dd]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +46,7 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DHYPERVEC_ENABLE_PYTHON=ON \
             -DHYPERVEC_ENABLE_EXTRAS=OFF \
-            -DHYPERVEC_OPT_LEVEL=generic \
+            -DHYPERVEC_OPT_LEVEL=${{ matrix.opt }} \
             -DPython_EXECUTABLE=/tmp/hv-venv/bin/python
           /tmp/hv-venv/bin/cmake --build build-wheel \
             --target swighypervec hypervec_example_external_module

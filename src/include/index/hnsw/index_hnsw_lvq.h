@@ -17,8 +17,7 @@ struct IndexHNSWLVQ : IndexHNSW {
   Index* raw_storage = nullptr;
 
   IndexHNSWLVQ();
-  IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
-               MetricType metric = kMetricL2);
+  IndexHNSWLVQ(int d, int nbits, int M_hnsw, MetricType metric = kMetricL2);
   ~IndexHNSWLVQ() override;
 
   void Train(idx_t n, const float* x) override;

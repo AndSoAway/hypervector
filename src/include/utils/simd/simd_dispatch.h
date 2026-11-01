@@ -74,7 +74,7 @@ namespace hypervec {
 
 // DD mode: runtime dispatch based on SIMDConfig::level
 #define DISPATCH_SIMDLevel(f, ...)                   \
-  switch (SIMDConfig::level) {                       \
+  switch (SIMDConfig::get_level()) {                 \
     case SIMDLevel::NONE:                            \
       return f<SIMDLevel::NONE>(__VA_ARGS__);        \
       DISPATCH_SIMDLevel_AVX2(f, __VA_ARGS__);       \

@@ -74,11 +74,85 @@ static void write_pq(const ProductQuantizer& pq, IOWriter* f) {
 }
 
 static void write_lvq(const LocalVectorQuantizer& lvq, IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      lvq.d >= 0 && lvq.mean.size() == static_cast<size_t>(lvq.d),
+      "LVQ serialize: mean size does not match dimension");
+  const uint32_t marker = fourcc("LvQ2");
+  WRITE1(marker);
   WRITE1(lvq.d);
-  WRITE1(lvq.nlocal);
   WRITE1(lvq.nbits);
-  WRITEVECTOR(lvq.local_centroids);
-  WRITEVECTOR(lvq.residual_codebooks);
+  WRITEVECTOR(lvq.mean);
+}
+
+static void write_linear_transform(const LinearTransform& transform,
+                                   IOWriter* f) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.is_trained,
+      "LinearTransform serialize: transform must be trained");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.d_in > 0 && transform.d_out > 0,
+      "LinearTransform serialize: dimensions must be positive");
+  const size_t matrix_size = mul_no_overflow(
+      static_cast<size_t>(transform.d_in), static_cast<size_t>(transform.d_out),
+      "LinearTransform matrix");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.matrix.size() == matrix_size,
+      "LinearTransform serialize: matrix size does not match dimensions");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      transform.bias.empty() ||
+          transform.bias.size() == static_cast<size_t>(transform.d_out),
+      "LinearTransform serialize: bias size does not match output dimension");
+  LinearTransform validated(transform.d_in, transform.d_out);
+  validated.SetTransform(transform.matrix, transform.bias,
+                         transform.is_orthonormal);
+
+  WRITE1(transform.d_in);
+  WRITE1(transform.d_out);
+  const uint8_t is_orthonormal = transform.is_orthonormal;
+  const uint8_t has_bias = !transform.bias.empty();
+  WRITE1(is_orthonormal);
+  WRITE1(has_bias);
+  WRITEVECTOR(transform.matrix);
+  if (has_bias) {
+    WRITEVECTOR(transform.bias);
+  }
+}
+
+static void write_transform(const VectorTransform& transform, IOWriter* f) {
+  const auto* opq = dynamic_cast<const OPQMatrix*>(&transform);
+  if (opq) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->parameters.iterations > 0 &&
+            opq->parameters.pq_parameters.niter > 0 &&
+            opq->parameters.pq_parameters.nredo > 0,
+        "OPQMatrix serialize: training parameters must be positive");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        opq->d_in == opq->d_out && opq->is_orthonormal && opq->bias.empty(),
+        "OPQMatrix serialize: transform must be an unbiased orthogonal "
+        "rotation");
+    uint32_t h = fourcc("OPQt");
+    WRITE1(h);
+    WRITE1(opq->subquantizer_count);
+    WRITE1(opq->nbits);
+    WRITE1(opq->parameters.iterations);
+    WRITE1(opq->parameters.pq_parameters.niter);
+    WRITE1(opq->parameters.pq_parameters.seed);
+    WRITE1(opq->parameters.pq_parameters.nredo);
+    const uint8_t verbose = opq->parameters.pq_parameters.verbose;
+    WRITE1(verbose);
+    write_linear_transform(*opq, f);
+    return;
+  }
+
+  const auto* linear = dynamic_cast<const LinearTransform*>(&transform);
+  if (linear) {
+    uint32_t h = fourcc("LiTr");
+    WRITE1(h);
+    write_linear_transform(*linear, f);
+    return;
+  }
+
+  HYPERVEC_THROW_MSG("unsupported vector transform type for writing");
 }
 
 static void write_linear_transform(const LinearTransform& transform,

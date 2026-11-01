@@ -199,10 +199,8 @@ TEST(LocalVectorQuantizerAdapter, MatchesExistingCodecAndAdc) {
   constexpr hypervec::idx_t kCount = 32;
   const std::vector<float> vectors = TrainingVectors(kCount, kDimension);
 
-  hypervec::LocalVectorQuantizer model(kDimension, 2, 2);
-  hypervec::LVQParameters parameters;
-  parameters.niter = 5;
-  hypervec::LocalVectorQuantizerAdapter quantizer(model, parameters);
+  hypervec::LocalVectorQuantizer model(kDimension, 2);
+  hypervec::LocalVectorQuantizerAdapter quantizer(model);
   quantizer.Train(kCount, vectors.data());
 
   EXPECT_TRUE(model.is_trained);
@@ -227,7 +225,7 @@ TEST(LocalVectorQuantizerAdapter, MatchesExistingCodecAndAdc) {
   auto distance = quantizer.CreateDistanceComputer(view);
   distance->SetQuery(vectors.data() + 3 * kDimension);
 
-  std::vector<float> table(static_cast<size_t>(model.nlocal * model.ksub));
+  std::vector<float> table(static_cast<size_t>(model.d));
   model.ComputeDistanceTable(vectors.data() + 3 * kDimension, table.data());
   for (hypervec::idx_t i = 0; i < kCount; ++i) {
     const float expected = model.ApplyDistanceTable(

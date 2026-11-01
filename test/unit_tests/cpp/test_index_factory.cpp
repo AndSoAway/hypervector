@@ -44,7 +44,6 @@ void ExpectBuiltIn(std::string name,
   hypervec::IndexConfig config(std::move(name), 4, metric);
   config.SetInteger("nlist", 2)
       .SetInteger("m_pq", 2)
-      .SetInteger("nlocal", 2)
       .SetInteger("nbits", 2)
       .SetInteger("opq_iterations", 2)
       .SetInteger("rotation_rounds", 2)
@@ -455,6 +454,11 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig unknown_parameter("flat", 4);
   unknown_parameter.SetInteger("typo", 1);
   EXPECT_THROW(hypervec::CreateIndex(unknown_parameter),
+               hypervec::HypervecException);
+
+  hypervec::IndexConfig old_lvq_parameter("lvq", 4);
+  old_lvq_parameter.SetInteger("nlocal", 16);
+  EXPECT_THROW(hypervec::CreateIndex(old_lvq_parameter),
                hypervec::HypervecException);
 
   hypervec::IndexConfig wrong_type("hnsw_flat", 4);

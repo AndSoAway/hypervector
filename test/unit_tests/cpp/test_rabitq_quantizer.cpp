@@ -10,6 +10,7 @@
 #include <quantization/rabitq/rabitq_quantizer.h>
 #include <utils/log/exception.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -151,7 +152,9 @@ TEST(RaBitQQuantizer, PreservesNearestNeighborOnSeparatedFixture) {
 }
 
 TEST(RaBitQQuantizer, PreparedLookupMatchesScalarEstimates) {
-  for (hypervec::idx_t dimension : {1, 5, 16, 65, 300}) {
+  for (hypervec::idx_t dimension :
+       {1,  2,  3,  4,   5,   7,   8,   9,   15,  16,  17,  31,  32,  33,
+        63, 64, 65, 127, 128, 129, 255, 256, 257, 300, 511, 512, 513, 1024}) {
     hypervec::RaBitQQuantizer quantizer(dimension, 2026, 3);
     const std::vector<float> vectors = MakeVectors(17, dimension);
     std::vector<uint8_t> codes(17 * quantizer.CodeSize());
@@ -173,6 +176,73 @@ TEST(RaBitQQuantizer, PreparedLookupMatchesScalarEstimates) {
       }
     }
   }
+}
+
+TEST(RaBitQQuantizer, LookupMatchesSequentialSumWithUnalignedCodes) {
+  for (hypervec::idx_t dimension : {1, 9, 17, 33, 65, 129, 300, 513}) {
+    hypervec::RaBitQQuantizer quantizer(dimension);
+    std::vector<float> rotated(quantizer.RotatedDimension());
+    for (size_t i = 0; i < rotated.size(); ++i) {
+      // Large opposing terms plus a small term exercise cancellation.
+      rotated[i] = i % 3 == 0 ? 1024.0F : (i % 3 == 1 ? -1024.0F : 0.03125F);
+    }
+    hypervec::RaBitQQuantizer::DistanceLut lut;
+    quantizer.PrepareDistanceLut(rotated.data(), &lut);
+    for (size_t offset : {size_t{1}, size_t{3}}) {
+      auto storage = std::make_unique<uint8_t[]>(offset + quantizer.CodeSize());
+      uint8_t* code = storage.get() + offset;
+      const float norm = 2.0F, scale = 0.25F, query_norm = 2048.0F;
+      std::memcpy(code + quantizer.BitBytes(), &norm, sizeof(norm));
+      std::memcpy(code + quantizer.BitBytes() + sizeof(float), &scale,
+                  sizeof(scale));
+      for (uint8_t pattern : {0x00, 0xff, 0x55, 0xaa, 0x1b}) {
+        std::fill(code, code + quantizer.BitBytes(), pattern);
+        double sum = 0;
+        for (size_t byte = 0; byte < quantizer.BitBytes(); ++byte) {
+          sum += lut[byte * 2][code[byte] & 15U];
+          sum += lut[byte * 2 + 1][code[byte] >> 4];
+        }
+        const float expected = static_cast<float>(
+            std::max(0.0, query_norm + norm - 2.0 * scale * sum));
+        EXPECT_FLOAT_EQ(
+            quantizer.EstimateSquaredDistanceWithLut(query_norm, code, lut),
+            expected)
+            << "dimension=" << dimension << " pattern=" << int(pattern);
+      }
+    }
+  }
+}
+
+TEST(RaBitQQuantizer, LookupKeepsInputAndFactorValidation) {
+  hypervec::RaBitQQuantizer quantizer(300);
+  std::vector<float> zero(quantizer.RotatedDimension(), 0.0F);
+  std::vector<uint8_t> code(quantizer.CodeSize());
+  quantizer.Encode(1, zero.data(), code.data());
+  hypervec::RaBitQQuantizer::DistanceLut lut;
+  quantizer.PrepareDistanceLut(zero.data(), &lut);
+  EXPECT_FLOAT_EQ(quantizer.EstimateSquaredDistanceWithLut(0, code.data(), lut),
+                  0);
+  EXPECT_THROW(quantizer.EstimateSquaredDistanceWithLut(0, nullptr, lut),
+               hypervec::HypervecException);
+  EXPECT_THROW(quantizer.EstimateSquaredDistanceWithLut(0, code.data(), {}),
+               hypervec::HypervecException);
+  for (float invalid : {-1.0F, std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN()}) {
+    EXPECT_THROW(
+        quantizer.EstimateSquaredDistanceWithLut(invalid, code.data(), lut),
+        hypervec::HypervecException);
+    for (size_t offset : {size_t{0}, sizeof(float)}) {
+      auto invalid_code = code;
+      std::memcpy(invalid_code.data() + quantizer.BitBytes() + offset, &invalid,
+                  sizeof(invalid));
+      EXPECT_THROW(
+          quantizer.EstimateSquaredDistanceWithLut(0, invalid_code.data(), lut),
+          hypervec::HypervecException);
+    }
+  }
+  lut[0].fill(std::numeric_limits<double>::quiet_NaN());
+  EXPECT_THROW(quantizer.EstimateSquaredDistanceWithLut(0, code.data(), lut),
+               hypervec::HypervecException);
 }
 
 TEST(RaBitQQuantizer, DistanceComputerMatchesScalarAcrossQueries) {

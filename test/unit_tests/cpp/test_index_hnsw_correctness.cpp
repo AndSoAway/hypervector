@@ -883,7 +883,7 @@ TEST(IndexHNSWCorrectness, RepeatedAddLVQKeepsGraphAligned) {
   constexpr hypervec::idx_t batch = 32;
   const auto data = RandomVectors(batch * 2, d, 1003);
 
-  hypervec::IndexHNSWLVQ index(d, 4, 3, 8);
+  hypervec::IndexHNSWLVQ index(d, 3, 8);
   index.build_threads = 4;
   index.Train(batch * 2, data.data());
   index.Add(batch, data.data());
@@ -1641,7 +1641,7 @@ TEST(IndexHNSWCorrectness, PermuteEntriesKeepsBuildScaffoldsAligned) {
   ExpectCompressedPermutation(&pq, pq.raw_storage, data, initial_count,
                               extra_count);
 
-  hypervec::IndexHNSWLVQ lvq(d, 4, 3, 8);
+  hypervec::IndexHNSWLVQ lvq(d, 3, 8);
   lvq.Train(initial_count, data.data());
   lvq.Add(initial_count, data.data());
   ExpectCompressedPermutation(&lvq, lvq.raw_storage, data, initial_count,

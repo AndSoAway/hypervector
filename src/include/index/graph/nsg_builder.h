@@ -14,6 +14,8 @@
 #include <utils/distances/distance_computer.h>
 
 #include <cstddef>
+#include <functional>
+#include <memory>
 
 namespace hypervec {
 
@@ -22,6 +24,7 @@ struct NSGBuildOptions {
   size_t search_width = 40;
   size_t candidate_pool_size = 200;
   bool check_relative_distance = true;
+  size_t build_threads = 1;
 };
 
 struct NSGBuildStats {
@@ -52,12 +55,19 @@ struct NSGBuildStats {
  */
 class NSGBuilder {
  public:
+  using DistanceFactory = std::function<std::unique_ptr<DistanceComputer>()>;
+
   explicit NSGBuilder(NSGBuildOptions options = {});
 
   MutableBoundedGraph Build(const GraphStorage& candidate_graph,
                             DistanceComputer& distance,
                             GraphId navigation_point,
                             NSGBuildStats* stats = nullptr) const;
+
+  MutableBoundedGraph Build(const GraphStorage& candidate_graph,
+                            DistanceComputer& distance,
+                            GraphId navigation_point, NSGBuildStats* stats,
+                            const DistanceFactory& distance_factory) const;
 
   const NSGBuildOptions& Options() const noexcept { return options_; }
 

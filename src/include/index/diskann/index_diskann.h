@@ -43,6 +43,8 @@ struct DiskAnnIndexOptions {
   size_t page_size = 4096;
   size_t cache_capacity_pages = 1024;
   std::string node_data_path;
+  /** Build-time scheduling hint; persisted indexes do not need to store it. */
+  size_t build_threads = 1;
 };
 
 /** Static DiskANN index composed from Vamana, paged storage, and reranking.

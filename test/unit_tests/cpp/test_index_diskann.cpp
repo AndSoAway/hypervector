@@ -109,6 +109,26 @@ TEST(IndexDiskANN, BuildsPagedVamanaAndMatchesExhaustiveSearch) {
   EXPECT_GT(index.CacheStats().pages_loaded, 0U);
 }
 
+TEST(IndexDiskANN, ParallelBuildUsesSharedGraphBuilder) {
+  constexpr size_t count = 1056;
+  std::vector<float> database(count);
+  for (size_t node = 0; node < count; ++node) {
+    database[node] = static_cast<float>((node * 73) % count);
+  }
+  auto options = ExhaustiveOptions();
+  options.build_threads = 4;
+  hypervec::IndexDiskANNFlat index(1, hypervec::kMetricL2, options);
+  index.Build(count, database.data());
+  EXPECT_EQ(index.BuildStats().nodes_processed, count * options.build_passes);
+  ASSERT_NE(index.Graph(), nullptr);
+  EXPECT_EQ(index.Graph()->NodeCount(), count);
+  float distance = -1.0F;
+  hypervec::idx_t label = -1;
+  index.Search(1, database.data() + 1030, 1, &distance, &label);
+  EXPECT_EQ(label, 1030);
+  EXPECT_FLOAT_EQ(distance, 0.0F);
+}
+
 TEST(IndexDiskANN, RuntimeParametersFilterWithoutBlockingNavigation) {
   const std::vector<float> database = {0.0F, 2.0F, 5.0F, 9.0F, 14.0F, 20.0F};
   hypervec::IndexDiskANNFlat index(1, hypervec::kMetricL2, ExhaustiveOptions());

@@ -543,6 +543,56 @@ message(STATUS "  enable LTO          : ${HYPERVEC_USE_LTO}")
 # project-wide meaning. It is OFF by default to keep a core build offline.
 include(CTest)
 
+# FindBLAS otherwise tries every installed provider and may combine HyperVec's
+# OpenMP runtime with an incompatible threaded BLAS runtime. Keep the default
+# deterministic while still allowing an explicit -DBLA_VENDOR=... override.
+if(NOT DEFINED BLA_VENDOR AND "$ENV{BLA_VENDOR}" STREQUAL "")
+  set(BLA_VENDOR "Generic" CACHE STRING "BLAS/LAPACK provider")
+endif()
+
+if(NOT HYPERVEC_OPT_LEVEL STREQUAL "generic")
+  message(FATAL_ERROR
+    "HYPERVEC_OPT_LEVEL='${HYPERVEC_OPT_LEVEL}' is unavailable. The current "
+    "CMake build only provides the portable 'generic' library target.")
+endif()
+
+if(HYPERVEC_ENABLE_MKL)
+  message(FATAL_ERROR
+    "HYPERVEC_ENABLE_MKL is not implemented. Leave it OFF and let CMake "
+    "select an available BLAS/LAPACK provider.")
+endif()
+
+if(HYPERVEC_ENABLE_C_API)
+  message(FATAL_ERROR
+    "HYPERVEC_ENABLE_C_API is not implemented by the current CMake build.")
+endif()
+
+if(HYPERVEC_USE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT HYPERVEC_LTO_SUPPORTED
+                      OUTPUT HYPERVEC_LTO_ERROR
+                      LANGUAGES CXX)
+  if(NOT HYPERVEC_LTO_SUPPORTED)
+    message(FATAL_ERROR
+      "HYPERVEC_USE_LTO=ON was requested, but IPO/LTO is unavailable: "
+      "${HYPERVEC_LTO_ERROR}")
+  endif()
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
+message(STATUS "HyperVec configuration:")
+message(STATUS "  optimization level : ${HYPERVEC_OPT_LEVEL}")
+message(STATUS "  build tests         : ${BUILD_TESTING}")
+message(STATUS "  fetch dependencies  : ${HYPERVEC_FETCH_DEPS}")
+message(STATUS "  build Python        : ${HYPERVEC_ENABLE_PYTHON}")
+message(STATUS "  build examples      : ${HYPERVEC_ENABLE_EXTRAS}")
+message(STATUS "  build eval tool     : ${HYPERVEC_ENABLE_EVAL}")
+message(STATUS "  enable LTO          : ${HYPERVEC_USE_LTO}")
+
+# CTest is included before test subdirectories so BUILD_TESTING has one clear,
+# project-wide meaning. It is OFF by default to keep a core build offline.
+include(CTest)
+
 add_subdirectory(src)
 
 if(HYPERVEC_ENABLE_PYTHON)

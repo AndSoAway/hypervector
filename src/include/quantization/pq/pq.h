@@ -33,6 +33,11 @@ namespace hypervec {
 /// the conservative default of 1 matches the rest of the framework.
 #define HYPERVEC_PQ_DEFAULT_NREDO 1
 
+/// Default upper bound on training rows per centroid. This matches the
+/// conventional 256-sample clustering budget used by mature ANN libraries
+/// and keeps training cost independent of the full collection size.
+#define HYPERVEC_PQ_DEFAULT_MAX_POINTS_PER_CENTROID 256
+
 /// Hard upper bound on nbits. ksub = 1 << nbits, so nbits=16 caps each
 /// subquantizer at 65 536 centroids — enough for all common configurations
 /// while keeping the bit-packing register width well under 64 bits.
@@ -53,6 +58,10 @@ struct PQParameters {
   /// Number of independent random restarts per subquantizer; the run with
   /// the lowest objective is kept.
   int nredo = HYPERVEC_PQ_DEFAULT_NREDO;
+
+  /// Maximum sampled training rows per centroid. Set to 0 to train on every
+  /// input row. Sampling is deterministic for a fixed seed.
+  int max_points_per_centroid = HYPERVEC_PQ_DEFAULT_MAX_POINTS_PER_CENTROID;
 
   /// Print per-subquantizer progress to stderr.
   bool verbose = false;

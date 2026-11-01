@@ -35,6 +35,8 @@ struct VamanaIndexOptions {
   uint64_t random_seed = 0x9E3779B97F4A7C15ULL;
   size_t search_width = 64;
   bool check_relative_distance = true;
+  /** Build-time scheduling hint; persisted indexes do not need to store it. */
+  size_t build_threads = 1;
 };
 
 /** Static in-memory Vamana index used to validate graph quality.

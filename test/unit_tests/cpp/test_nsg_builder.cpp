@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -106,6 +107,19 @@ hypervec::MutableBoundedGraph MakeCompleteGraph(size_t node_count) {
   return graph;
 }
 
+hypervec::MutableBoundedGraph MakeDisconnectedPairGraph(size_t node_count) {
+  hypervec::MutableBoundedGraph graph(node_count, 1);
+  for (size_t node = 0; node < node_count; node += 2) {
+    const std::array<hypervec::GraphId, 1> forward = {
+        static_cast<hypervec::GraphId>(node + 1)};
+    const std::array<hypervec::GraphId, 1> reverse = {
+        static_cast<hypervec::GraphId>(node)};
+    graph.SetNeighbors(static_cast<hypervec::GraphId>(node), forward);
+    graph.SetNeighbors(static_cast<hypervec::GraphId>(node + 1), reverse);
+  }
+  return graph;
+}
+
 }  // namespace
 
 TEST(NSGBuilder, RepairsDirectedConnectivityDeterministically) {
@@ -139,6 +153,74 @@ TEST(NSGBuilder, RepairsDirectedConnectivityDeterministically) {
   }
 }
 
+TEST(NSGBuilder, ParallelPruningRetainsConnectivityAndDirectedWork) {
+  const std::vector<float> values = {0, 1, 2, 3, 100, 101, 102, 103};
+  const auto candidates = MakeDisconnectedCandidateGraph();
+  hypervec::NSGBuildOptions options{1, 4, 6, true};
+  ScalarDistanceComputer serial_distance(values);
+  hypervec::NSGBuildStats baseline_stats;
+  const auto baseline = hypervec::NSGBuilder(options).Build(
+      candidates, serial_distance, 0, &baseline_stats);
+
+  for (size_t threads : {size_t{4}, size_t{32}}) {
+    options.build_threads = threads;
+    ScalarDistanceComputer distance(values);
+    hypervec::NSGBuildStats stats;
+    const auto graph = hypervec::NSGBuilder(options).Build(
+        candidates, distance, 0, &stats,
+        [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+    EXPECT_EQ(stats.pruned_nodes, baseline_stats.pruned_nodes);
+    EXPECT_EQ(stats.search.distance_computations,
+              baseline_stats.search.distance_computations);
+    const auto report = hypervec::ValidateGraph(graph, 0);
+    EXPECT_TRUE(report.IsStructurallyValid());
+    EXPECT_EQ(report.reachable_nodes, values.size());
+    EXPECT_EQ(graph.NodeCount(), baseline.NodeCount());
+  }
+}
+
+TEST(NSGBuilder, ParallelReciprocalPruningPreservesReachableGraph) {
+  constexpr size_t kCount = 32;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>(node);
+  }
+  const auto candidates = MakeCompleteGraph(kCount);
+  hypervec::NSGBuildOptions options{1, 8, kCount, true};
+  options.build_threads = 8;
+  ScalarDistanceComputer distance(values);
+  hypervec::NSGBuildStats stats;
+  const auto graph = hypervec::NSGBuilder(options).Build(
+      candidates, distance, 16, &stats,
+      [&values] { return std::make_unique<ScalarDistanceComputer>(values); });
+
+  const auto report = hypervec::ValidateGraph(graph, 16);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, kCount);
+  EXPECT_EQ(stats.pruned_nodes, kCount);
+  EXPECT_LE(graph.MaxDegree(), options.max_degree + 1);
+  EXPECT_GT(stats.reciprocal_edges_added + stats.reciprocal_edges_rejected, 0U);
+}
+
+TEST(NSGBuilder, ParallelFailuresDoNotPublishStats) {
+  const std::vector<float> values = {0, 1, 2, 3, 100, 101, 102, 103};
+  const auto candidates = MakeDisconnectedCandidateGraph();
+  hypervec::NSGBuildOptions options{1, 4, 6, true};
+  options.build_threads = 4;
+  hypervec::NSGBuilder builder(options);
+  ScalarDistanceComputer distance(values);
+  hypervec::NSGBuildStats stats;
+  stats.pruned_nodes = 9;
+  EXPECT_THROW(builder.Build(candidates, distance, 0, &stats),
+               hypervec::HypervecException);
+  EXPECT_EQ(stats.pruned_nodes, 9U);
+  EXPECT_THROW(
+      builder.Build(candidates, distance, 0, &stats,
+                    [] { return std::make_unique<NaNDistanceComputer>(); }),
+      hypervec::HypervecException);
+  EXPECT_EQ(stats.pruned_nodes, 9U);
+}
+
 TEST(NSGBuilder, PrunesDenseCandidatesAndBoundsReciprocalEdges) {
   const std::vector<float> values = {0.0F, 1.0F, 2.0F, 10.0F, 11.0F, 12.0F};
   const hypervec::MutableBoundedGraph candidates =
@@ -156,6 +238,28 @@ TEST(NSGBuilder, PrunesDenseCandidatesAndBoundsReciprocalEdges) {
   EXPECT_LE(report.edge_count, values.size() * graph.MaxDegree());
   EXPECT_GT(stats.pruning.rejected, 0U);
   EXPECT_GT(stats.pruning.candidates_examined, 0U);
+}
+
+TEST(NSGBuilder, BoundsConnectivityRepairSearchWork) {
+  constexpr size_t kCount = 100;
+  std::vector<float> values(kCount);
+  for (size_t node = 0; node < kCount; ++node) {
+    values[node] = static_cast<float>(node);
+  }
+  const hypervec::MutableBoundedGraph candidates =
+      MakeDisconnectedPairGraph(kCount);
+  ScalarDistanceComputer distance(values);
+  const hypervec::NSGBuilder builder(hypervec::NSGBuildOptions{1, 2, 2, true});
+  hypervec::NSGBuildStats stats;
+
+  const hypervec::MutableBoundedGraph graph =
+      builder.Build(candidates, distance, 0, &stats);
+
+  const auto report = hypervec::ValidateGraph(graph, 0);
+  EXPECT_TRUE(report.IsStructurallyValid());
+  EXPECT_EQ(report.reachable_nodes, kCount);
+  EXPECT_LT(stats.connectivity_distance_computations, kCount * 10);
+  EXPECT_LE(stats.connectivity_edges_added, kCount / 2);
 }
 
 TEST(NSGBuilder, ComposesWithNNDescentCandidateGraph) {

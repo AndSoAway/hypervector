@@ -12,12 +12,15 @@
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/visited_table.h>
 #include <omp.h>
+#include <quantization/lvq/index_lvq.h>
+#include <quantization/pq/index_pq.h>
 #include <utils/common/range_search_result.h>
 #include <utils/common/result_handler.h>
 #include <utils/log/assert.h>
 #include <utils/structures/random.h>
 #include <utils/structures/sorting.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -25,8 +28,12 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <random>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "index/hnsw/hnsw_build_utils.h"
 
@@ -51,6 +58,339 @@ DistanceComputer* storage_distance_computer(const Index* storage) {
     return storage->GetDistanceComputer();
   }
 }
+
+std::vector<idx_t> ValidatePermutation(const idx_t* perm, idx_t count) {
+  HYPERVEC_THROW_IF_NOT_MSG(count >= 0,
+                            "IndexHNSW::PermuteEntries: negative vector count");
+  std::vector<idx_t> inverse(static_cast<size_t>(count));
+  if (count == 0) {
+    return inverse;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      perm != nullptr,
+      "IndexHNSW::PermuteEntries: permutation must not be null");
+  std::vector<uint8_t> seen(static_cast<size_t>(count), 0);
+  for (idx_t new_id = 0; new_id < count; ++new_id) {
+    const idx_t old_id = perm[new_id];
+    HYPERVEC_THROW_IF_NOT_FMT(old_id >= 0 && old_id < count,
+                              "IndexHNSW::PermuteEntries: entry %" PRId64
+                              " is outside [0, %" PRId64 ")",
+                              static_cast<int64_t>(old_id),
+                              static_cast<int64_t>(count));
+    HYPERVEC_THROW_IF_NOT_FMT(
+        seen[static_cast<size_t>(old_id)] == 0,
+        "IndexHNSW::PermuteEntries: duplicate old id %" PRId64,
+        static_cast<int64_t>(old_id));
+    seen[static_cast<size_t>(old_id)] = 1;
+    inverse[static_cast<size_t>(old_id)] = new_id;
+  }
+  return inverse;
+}
+
+struct PreparedStoragePermutation {
+  MaybeOwnedVector<uint8_t>* storage_codes = nullptr;
+  MaybeOwnedVector<uint8_t> codes;
+  IndexFlatL2* flat_l2 = nullptr;
+  IndexFlat1D* flat_1d = nullptr;
+  bool replace_flat_1d_permutation = false;
+  std::vector<idx_t> flat_1d_permutation;
+};
+
+PreparedStoragePermutation PrepareStoragePermutation(
+    Index* storage, const idx_t* perm, idx_t count,
+    const std::vector<idx_t>& inverse) {
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW::PermuteEntries: storage must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage->n_total == count,
+      "IndexHNSW::PermuteEntries: storage and graph counts differ");
+  size_t code_size = 0;
+  MaybeOwnedVector<uint8_t>* storage_codes = nullptr;
+  if (auto* flat_codes = dynamic_cast<IndexFlatCodes*>(storage)) {
+    code_size = flat_codes->code_size;
+    storage_codes = &flat_codes->codes;
+  } else if (auto* pq = dynamic_cast<IndexPQ*>(storage)) {
+    code_size = pq->pq.code_size;
+    storage_codes = &pq->codes;
+  } else if (auto* lvq = dynamic_cast<IndexLVQ*>(storage)) {
+    code_size = lvq->lvq.code_size;
+    storage_codes = &lvq->codes;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage_codes != nullptr,
+      "IndexHNSW::PermuteEntries: storage does not support code reordering");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      code_size > 0 || count == 0,
+      "IndexHNSW::PermuteEntries: storage code size is invalid");
+  const size_t expected_bytes = mul_no_overflow(
+      static_cast<size_t>(count), code_size, "IndexHNSW permutation storage");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage_codes->size() == expected_bytes,
+      "IndexHNSW::PermuteEntries: encoded storage size is inconsistent");
+
+  PreparedStoragePermutation prepared;
+  prepared.storage_codes = storage_codes;
+  prepared.codes.resize(expected_bytes);
+  for (idx_t new_id = 0; new_id < count; ++new_id) {
+    std::memcpy(
+        prepared.codes.data() + static_cast<size_t>(new_id) * code_size,
+        storage_codes->data() + static_cast<size_t>(perm[new_id]) * code_size,
+        code_size);
+  }
+
+  prepared.flat_l2 = dynamic_cast<IndexFlatL2*>(storage);
+  prepared.flat_1d = dynamic_cast<IndexFlat1D*>(storage);
+  if (prepared.flat_1d != nullptr && !prepared.flat_1d->perm.empty()) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        prepared.flat_1d->perm.size() == static_cast<size_t>(count),
+        "IndexHNSW::PermuteEntries: IndexFlat1D permutation is inconsistent");
+    prepared.replace_flat_1d_permutation = true;
+    prepared.flat_1d_permutation.resize(static_cast<size_t>(count));
+    for (idx_t rank = 0; rank < count; ++rank) {
+      const idx_t old_id = prepared.flat_1d->perm[static_cast<size_t>(rank)];
+      HYPERVEC_THROW_IF_NOT_MSG(
+          old_id >= 0 && old_id < count,
+          "IndexHNSW::PermuteEntries: IndexFlat1D contains an invalid id");
+      prepared.flat_1d_permutation[static_cast<size_t>(rank)] =
+          inverse[static_cast<size_t>(old_id)];
+    }
+  }
+  return prepared;
+}
+
+void CommitStoragePermutation(PreparedStoragePermutation* prepared) {
+  using std::swap;
+  swap(*prepared->storage_codes, prepared->codes);
+  if (prepared->flat_l2 != nullptr) {
+    prepared->flat_l2->cached_l2norms.clear();
+  }
+  if (prepared->replace_flat_1d_permutation) {
+    prepared->flat_1d->perm.swap(prepared->flat_1d_permutation);
+  }
+}
+
+void ValidateSearchState(const IndexHNSW& index) {
+  HYPERVEC_THROW_IF_NOT_MSG(index.storage != nullptr,
+                            "IndexHNSW::Search: storage must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total >= 0,
+      "IndexHNSW::Search: vector count must not be negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->n_total == index.n_total,
+      "IndexHNSW::Search: storage and index counts differ");
+
+  const size_t count = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.levels.size() == count &&
+          index.hnsw.offsets.size() == count + 1 &&
+          index.hnsw.offsets.front() == 0 &&
+          index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
+      "IndexHNSW::Search: graph storage is inconsistent");
+  if (count == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
+        "IndexHNSW::Search: empty graph has an entry point or level");
+    return;
+  }
+
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.entry_point >= 0 &&
+          static_cast<size_t>(index.hnsw.entry_point) < count,
+      "IndexHNSW::Search: entry point is outside the index");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.max_level >= 0 &&
+          index.hnsw.levels[static_cast<size_t>(index.hnsw.entry_point)] >
+              index.hnsw.max_level,
+      "IndexHNSW::Search: entry-point level is inconsistent");
+}
+
+void ValidateAppendState(const IndexHNSW& index, idx_t n, const float* x,
+                         const Index* secondary_storage) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::Add: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  if (n == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(
+      x != nullptr, "IndexHNSW::Add: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(index.n_total >= 0,
+                            "IndexHNSW::Add: vector count is negative");
+  const idx_t capacity =
+      static_cast<idx_t>((std::numeric_limits<storage_idx_t>::max)());
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.n_total <= capacity && n <= capacity - index.n_total,
+      "IndexHNSW::Add: vector count exceeds graph ID capacity");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.storage->n_total == index.n_total,
+      "IndexHNSW::Add: storage and graph counts are inconsistent");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      secondary_storage == nullptr || secondary_storage != index.storage,
+      "IndexHNSW::Add: secondary storage aliases primary storage");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      secondary_storage == nullptr ||
+          secondary_storage->n_total == index.n_total,
+      "IndexHNSW::Add: secondary storage count is inconsistent");
+
+  const size_t count = static_cast<size_t>(index.n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.neighbors.is_owned,
+      "IndexHNSW::Add: memory-mapped graph storage is read-only");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      index.hnsw.levels.size() == count &&
+          index.hnsw.offsets.size() == count + 1 &&
+          index.hnsw.offsets.front() == 0 &&
+          index.hnsw.offsets.back() == index.hnsw.neighbors.size(),
+      "IndexHNSW::Add: graph storage is inconsistent");
+  if (count == 0) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point == -1 && index.hnsw.max_level == -1,
+        "IndexHNSW::Add: empty graph has an entry point or level");
+  } else {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        index.hnsw.entry_point >= 0 &&
+            static_cast<size_t>(index.hnsw.entry_point) < count &&
+            index.hnsw.max_level >= 0 &&
+            index.hnsw.levels[index.hnsw.entry_point] > index.hnsw.max_level,
+        "IndexHNSW::Add: graph entry point is inconsistent");
+  }
+}
+
+class CodeStorageAppendGuard {
+ public:
+  explicit CodeStorageAppendGuard(Index* storage)
+      : storage_(storage), old_total_(storage->n_total) {
+    size_t code_size = 0;
+    if (auto* flat = dynamic_cast<IndexFlatCodes*>(storage)) {
+      codes_ = &flat->codes;
+      code_size = flat->code_size;
+      flat_l2_ = dynamic_cast<IndexFlatL2*>(storage);
+      flat_1d_ = dynamic_cast<IndexFlat1D*>(storage);
+    } else if (auto* pq = dynamic_cast<IndexPQ*>(storage)) {
+      codes_ = &pq->codes;
+      code_size = pq->pq.code_size;
+    } else if (auto* lvq = dynamic_cast<IndexLVQ*>(storage)) {
+      codes_ = &lvq->codes;
+      code_size = lvq->lvq.code_size;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_ != nullptr,
+        "IndexHNSW::Add: storage does not support transactional append");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_->is_owned,
+        "IndexHNSW::Add: memory-mapped vector storage is read-only");
+    old_code_size_ = mul_no_overflow(static_cast<size_t>(old_total_), code_size,
+                                     "IndexHNSW::Add existing storage size");
+    HYPERVEC_THROW_IF_NOT_MSG(
+        codes_->size() == old_code_size_,
+        "IndexHNSW::Add: vector storage size is inconsistent");
+    if (flat_l2_ != nullptr) {
+      old_norms_ = flat_l2_->cached_l2norms;
+    }
+    if (flat_1d_ != nullptr) {
+      old_permutation_ = flat_1d_->perm;
+    }
+  }
+
+  CodeStorageAppendGuard(const CodeStorageAppendGuard&) = delete;
+  CodeStorageAppendGuard& operator=(const CodeStorageAppendGuard&) = delete;
+
+  ~CodeStorageAppendGuard() {
+    if (committed_) {
+      return;
+    }
+    codes_->resize(old_code_size_);
+    storage_->n_total = old_total_;
+    if (flat_l2_ != nullptr) {
+      flat_l2_->cached_l2norms.swap(old_norms_);
+    }
+    if (flat_1d_ != nullptr) {
+      flat_1d_->perm.swap(old_permutation_);
+    }
+  }
+
+  void Commit() noexcept { committed_ = true; }
+
+ private:
+  Index* storage_;
+  idx_t old_total_;
+  MaybeOwnedVector<uint8_t>* codes_ = nullptr;
+  size_t old_code_size_ = 0;
+  IndexFlatL2* flat_l2_ = nullptr;
+  IndexFlat1D* flat_1d_ = nullptr;
+  std::vector<float> old_norms_;
+  std::vector<idx_t> old_permutation_;
+  bool committed_ = false;
+};
+
+class GraphAppendGuard {
+ public:
+  GraphAppendGuard(HNSW* graph, size_t old_count)
+      : graph_(graph),
+        old_count_(old_count),
+        old_neighbor_size_(graph->neighbors.size()),
+        old_entry_point_(graph->entry_point),
+        old_max_level_(graph->max_level),
+        old_ef_construction_(graph->ef_construction),
+        old_rng_(graph->rng.mt) {}
+
+  GraphAppendGuard(const GraphAppendGuard&) = delete;
+  GraphAppendGuard& operator=(const GraphAppendGuard&) = delete;
+
+  ~GraphAppendGuard() {
+    if (committed_) {
+      return;
+    }
+    for (const NodeSnapshot& snapshot : snapshots_) {
+      std::copy(snapshot.neighbors.begin(), snapshot.neighbors.end(),
+                graph_->neighbors.data() + snapshot.begin);
+    }
+    graph_->neighbors.resize(old_neighbor_size_);
+    graph_->levels.resize(old_count_);
+    graph_->offsets.resize(old_count_ + 1);
+    graph_->entry_point = old_entry_point_;
+    graph_->max_level = old_max_level_;
+    graph_->ef_construction = old_ef_construction_;
+    graph_->rng.mt = old_rng_;
+  }
+
+  void CaptureNode(storage_idx_t node) {
+    if (node < 0 || static_cast<size_t>(node) >= old_count_) {
+      return;
+    }
+    const size_t index = static_cast<size_t>(node);
+    if (!captured_.insert(index).second) {
+      return;
+    }
+    const size_t begin = graph_->offsets[index];
+    const size_t end = graph_->offsets[index + 1];
+    NodeSnapshot snapshot;
+    snapshot.begin = begin;
+    snapshot.neighbors.assign(graph_->neighbors.data() + begin,
+                              graph_->neighbors.data() + end);
+    snapshots_.push_back(std::move(snapshot));
+  }
+
+  void Commit() noexcept { committed_ = true; }
+
+ private:
+  struct NodeSnapshot {
+    size_t begin = 0;
+    std::vector<storage_idx_t> neighbors;
+  };
+
+  HNSW* graph_;
+  size_t old_count_;
+  size_t old_neighbor_size_;
+  storage_idx_t old_entry_point_;
+  int old_max_level_;
+  int old_ef_construction_;
+  std::mt19937 old_rng_;
+  std::unordered_set<size_t> captured_;
+  std::vector<NodeSnapshot> snapshots_;
+  bool committed_ = false;
+};
 
 }  // namespace
 
@@ -98,48 +438,59 @@ void IndexHNSW::Add(idx_t n, const float* x) {
                             "IndexHNSW::Add: storage is null");
   HYPERVEC_THROW_IF_NOT_MSG(is_trained,
                             "IndexHNSW::Add: call Train before Add");
-  HYPERVEC_THROW_IF_NOT_MSG(n >= 0, "IndexHNSW::Add: n must be non-negative");
+  AddImpl(n, x, storage, nullptr);
+}
+
+void IndexHNSW::AddImpl(idx_t n, const float* x, Index* construction_storage,
+                        Index* secondary_storage) {
+  const idx_t n0 = n_total;
+  ValidateAppendState(*this, n, x, secondary_storage);
   if (n == 0) {
     return;
   }
-
-  const idx_t n0 = n_total;
   HYPERVEC_THROW_IF_NOT_MSG(
-      storage->n_total == n0,
-      "IndexHNSW::Add: storage and graph counts are inconsistent");
+      construction_storage == storage ||
+          construction_storage == secondary_storage,
+      "IndexHNSW::Add: construction storage is not managed by this index");
+  const idx_t new_total = n0 + n;
+  GraphAppendGuard graph_guard(&hnsw, static_cast<size_t>(n0));
+  CodeStorageAppendGuard storage_guard(storage);
+  std::optional<CodeStorageAppendGuard> secondary_guard;
+  if (secondary_storage != nullptr) {
+    secondary_guard.emplace(secondary_storage);
+    secondary_storage->Add(n, x);
+  }
 
-  // Add vectors to storage
   storage->Add(n, x);
   HYPERVEC_THROW_IF_NOT_MSG(
-      storage->n_total == n0 + n,
+      storage->n_total == new_total &&
+          (secondary_storage == nullptr ||
+           secondary_storage->n_total == new_total),
       "IndexHNSW::Add: storage did not add the requested number of vectors");
-  n_total = storage->n_total;
 
-  // Build HNSW graph structure
-  // Initialize HNSW parameters if first Add
   if (hnsw.ef_construction == 0) {
     hnsw.ef_construction = 40;
   }
-
-  // PrepareLevelTab appends graph metadata, so only pass this batch's size.
   hnsw.PrepareLevelTab(static_cast<size_t>(n), false);
-
-  // Create distance computer for building.
-  // Must go through storage_distance_computer() so similarity metrics (IP,
-  // Jaccard) are negated — HNSW graph traversal assumes "smaller is better".
-  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
-
-  // For single-threaded building, Add vectors one by one
-  OmpLockArray lock_array(static_cast<size_t>(n_total) + 1);
-
-  VisitedTable vt(n_total);
-
-  // Add each new vector to the HNSW graph
-  for (idx_t i = n0; i < n_total; i++) {
+  std::unique_ptr<DistanceComputer> dis(
+      storage_distance_computer(construction_storage));
+  OmpLockArray lock_array(static_cast<size_t>(new_total) + 1);
+  VisitedTable vt(new_total);
+  const std::function<void(storage_idx_t)> before_node_mutation =
+      [&graph_guard](storage_idx_t node) { graph_guard.CaptureNode(node); };
+  for (idx_t i = n0; i < new_total; i++) {
     int pt_level = hnsw.levels[i] - 1;  // levels store level+1 (1-based)
     dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, i, lock_array.Get(), vt, false);
+    hnsw.AddWithLocks(*dis, pt_level, static_cast<int>(i), lock_array.Get(), vt,
+                      false, before_node_mutation);
   }
+
+  n_total = new_total;
+  storage_guard.Commit();
+  if (secondary_guard.has_value()) {
+    secondary_guard->Commit();
+  }
+  graph_guard.Commit();
 }
 
 void IndexHNSW::Reset() {
@@ -150,11 +501,45 @@ void IndexHNSW::Reset() {
 
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      n >= 0, "IndexHNSW::Search: n must be non-negative, got %" PRId64,
+      static_cast<int64_t>(n));
+  HYPERVEC_THROW_IF_NOT_FMT(
+      k > 0, "IndexHNSW::Search: k must be positive, got %" PRId64,
+      static_cast<int64_t>(k));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      k <= (std::numeric_limits<int>::max)(),
+      "IndexHNSW::Search: k exceeds the supported graph-search range");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || x != nullptr,
+      "IndexHNSW::Search: x must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || distances != nullptr,
+      "IndexHNSW::Search: distances must not be null when n is positive");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      n == 0 || labels != nullptr,
+      "IndexHNSW::Search: labels must not be null when n is positive");
+  ValidateSearchState(*this);
+  if (n == 0) {
+    return;
+  }
+  (void)mul_no_overflow(static_cast<size_t>(n), static_cast<size_t>(k),
+                        "IndexHNSW::Search output size");
+  if (n_total > 0) {
+    int ef_search = hnsw.ef_search;
+    if (const auto* hnsw_params =
+            dynamic_cast<const SearchParametersHNSW*>(params)) {
+      ef_search = hnsw_params->ef_search;
+    }
+    HYPERVEC_THROW_IF_NOT_MSG(ef_search > 0,
+                              "IndexHNSW::Search: ef_search must be positive");
+  }
+
   // Use HNSW graph-based Search
   // Get distance computer from storage.
   // Must go through storage_distance_computer() so similarity metrics are
   // negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
+  std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
 
   // Do not mutate the process-global OpenMP thread count here. Concurrent
   // Python callers may run Search() after the SWIG layer releases the GIL, so
@@ -168,6 +553,7 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
 
   // Create visited table
   VisitedTable vt(n_total);
+  const bool similarity = IsSimilarityMetric(metric_type);
 
   // Search each query
   for (idx_t i = 0; i < n; i++) {
@@ -175,10 +561,15 @@ void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
     res.begin(i);
     hnsw.Search(*dis, this, res, vt, params);
     res.end();
+    if (similarity) {
+      const size_t output_offset =
+          static_cast<size_t>(i) * static_cast<size_t>(k);
+      for (idx_t result = 0; result < k; ++result) {
+        distances[output_offset + static_cast<size_t>(result)] =
+            -distances[output_offset + static_cast<size_t>(result)];
+      }
+    }
   }
-
-  // Cleanup
-  delete dis;
 }
 
 void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,
@@ -193,7 +584,34 @@ void IndexHNSW::Search1(const float* x, ResultHandler& handler,
 }
 
 void IndexHNSW::PermuteEntries(const idx_t* perm) {
-  // Not implemented in minimal HNSW build
+  PermuteEntriesImpl(perm, nullptr);
+}
+
+void IndexHNSW::PermuteEntriesImpl(const idx_t* perm,
+                                   Index* secondary_storage) {
+  const std::vector<idx_t> inverse = ValidatePermutation(perm, n_total);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      hnsw.levels.size() == static_cast<size_t>(n_total),
+      "IndexHNSW::PermuteEntries: graph and index counts differ");
+
+  PreparedStoragePermutation primary =
+      PrepareStoragePermutation(storage, perm, n_total, inverse);
+  std::optional<PreparedStoragePermutation> secondary;
+  if (secondary_storage != nullptr) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        secondary_storage != storage,
+        "IndexHNSW::PermuteEntries: secondary storage aliases storage");
+    secondary.emplace(
+        PrepareStoragePermutation(secondary_storage, perm, n_total, inverse));
+  }
+
+  // HNSW validates and stages its replacement arrays before swapping them.
+  // Once it succeeds, the prepared code-buffer swaps below cannot allocate.
+  hnsw.PermuteEntries(perm);
+  CommitStoragePermutation(&primary);
+  if (secondary.has_value()) {
+    CommitStoragePermutation(&secondary.value());
+  }
 }
 
 void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
@@ -201,7 +619,10 @@ void IndexHNSW::Reconstruct(idx_t key, float* recons) const {
 }
 
 DistanceComputer* IndexHNSW::GetDistanceComputer() const {
-  return storage_distance_computer(storage);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      storage != nullptr,
+      "IndexHNSW::GetDistanceComputer: storage must not be null");
+  return storage->GetDistanceComputer();
 }
 
 /**************************************************************

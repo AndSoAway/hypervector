@@ -81,6 +81,49 @@ void ValidateElementCount(size_t count, const char* context) {
 }
 
 template <typename Vector>
+void ReadElements(Vector& values, size_t count, IOReader* f,
+                  const char* context) {
+  (void)context;
+  values.resize(count);
+  READANDCHECK(values.data(), count);
+}
+
+template <typename T>
+void ReadElements(MaybeOwnedVector<T>& values, size_t count, IOReader* f,
+                  const char* context) {
+  auto* mapped_reader = dynamic_cast<MappedFileIOReader*>(f);
+  if (mapped_reader == nullptr || count == 0) {
+    values.resize(count);
+    READANDCHECK(values.data(), count);
+    return;
+  }
+
+  void* address = nullptr;
+  const size_t mapped_count = mapped_reader->mmap(&address, sizeof(T), count);
+  HYPERVEC_THROW_IF_NOT_FMT(mapped_count == count,
+                            "read error for %s in %s: %zu != %zu", context,
+                            f->name.c_str(), mapped_count, count);
+
+  if (reinterpret_cast<uintptr_t>(address) % alignof(T) == 0) {
+    values = MaybeOwnedVector<T>::create_view(address, count,
+                                              mapped_reader->mmap_owner);
+    return;
+  }
+
+  values.resize(count);
+  std::memcpy(values.data(), address, count * sizeof(T));
+}
+
+template <typename Vector>
+void ReadVector(Vector& values, IOReader* f, const char* context) {
+  size_t serialized_size;
+  READANDCHECK(&serialized_size, 1);
+  using value_type = typename Vector::value_type;
+  ValidateElementCount<value_type>(serialized_size, context);
+  ReadElements(values, serialized_size, f, context);
+}
+
+template <typename Vector>
 void ReadVectorExact(Vector& values, size_t expected_size, IOReader* f,
                      const char* context) {
   size_t serialized_size;
@@ -91,8 +134,7 @@ void ReadVectorExact(Vector& values, size_t expected_size, IOReader* f,
       expected_size, serialized_size);
   using value_type = typename Vector::value_type;
   ValidateElementCount<value_type>(serialized_size, context);
-  values.resize(serialized_size);
-  READANDCHECK(values.data(), serialized_size);
+  ReadElements(values, serialized_size, f, context);
 }
 
 size_t ValidatePqMetadata(const ProductQuantizer& pq) {
@@ -187,12 +229,12 @@ void ReadInvertedLists(IndexIVF& index, size_t code_size, IOReader* f) {
     const size_t code_count =
         mul_no_overflow(list_size, code_size, "IndexIVF list codes");
     ValidateElementCount<uint8_t>(code_count, "IndexIVF list codes");
-    std::vector<idx_t> ids(list_size);
-    std::vector<uint8_t> codes(code_count);
-    READANDCHECK(ids.data(), list_size);
-    READANDCHECK(codes.data(), code_count);
-    loaded->ids[list_no] = MaybeOwnedVector<idx_t>(std::move(ids));
-    loaded->codes[list_no] = MaybeOwnedVector<uint8_t>(std::move(codes));
+    MaybeOwnedVector<idx_t> ids;
+    MaybeOwnedVector<uint8_t> codes;
+    ReadElements(ids, list_size, f, "IndexIVF list ids");
+    ReadElements(codes, code_count, f, "IndexIVF list codes");
+    loaded->ids[list_no] = std::move(ids);
+    loaded->codes[list_no] = std::move(codes);
   }
 
   HYPERVEC_THROW_IF_NOT_FMT(
@@ -477,10 +519,11 @@ static void read_HNSW(HNSW& hnsw, const Index& index, IOReader* f) {
   READ1(hnsw.entry_point);
   int serialized_last_level;
   READ1(serialized_last_level);
-  READVECTOR(hnsw.cum_nneighbor_per_level);
+  ReadVector(hnsw.cum_nneighbor_per_level, f,
+             "IndexHNSW neighbor-capacity table");
   ReadVectorExact(hnsw.levels, static_cast<size_t>(index.n_total), f,
                   "IndexHNSW levels");
-  READVECTOR(hnsw.neighbors);
+  ReadVector(hnsw.neighbors, f, "IndexHNSW neighbors");
   const size_t offset_count = add_no_overflow(
       static_cast<size_t>(index.n_total), 1, "IndexHNSW offsets");
   ReadVectorExact(hnsw.offsets, offset_count, f, "IndexHNSW offsets");
@@ -859,7 +902,28 @@ static std::unique_ptr<IndexLSH> read_lsh(const IndexHeaderData& header,
 }
 
 Index* ReadIndex(IOReader* f, int io_flags) {
-  (void)io_flags;
+  HYPERVEC_THROW_IF_NOT_FMT((io_flags & ~IO_FLAG_MMAP_IFC) == 0,
+                            "ReadIndex: unsupported I/O flags 0x%x", io_flags);
+  if ((io_flags & IO_FLAG_MMAP_IFC) != 0 &&
+      dynamic_cast<MappedFileIOReader*>(f) == nullptr) {
+    auto* file_reader = dynamic_cast<FileIOReader*>(f);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        file_reader != nullptr,
+        "ReadIndex: IO_FLAG_MMAP_IFC requires a file-backed reader");
+    const auto position = std::ftell(file_reader->f);
+    HYPERVEC_THROW_IF_NOT_MSG(
+        position >= 0,
+        "ReadIndex: could not determine the file position for mmap");
+    auto owner = std::make_shared<MmappedFileMappingOwner>(file_reader->f);
+    HYPERVEC_THROW_IF_NOT_FMT(
+        static_cast<size_t>(position) <= owner->size(),
+        "ReadIndex: file position %ld exceeds mapped size %zu", position,
+        owner->size());
+    MappedFileIOReader mapped_reader(owner);
+    mapped_reader.name = f->name;
+    mapped_reader.pos = static_cast<size_t>(position);
+    return ReadIndex(&mapped_reader, io_flags & ~IO_FLAG_MMAP_IFC);
+  }
 
   uint32_t h;
   READ1(h);

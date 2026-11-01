@@ -14,8 +14,11 @@
 #include <utils/log/assert.h>
 
 #include <cinttypes>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace hypervec {
 namespace {
@@ -26,7 +29,12 @@ class FlatInvertedListScanner final : public InvertedListScanner {
   FlatInvertedListScanner(MetricType metric, size_t code_size,
                           VectorDistanceType distance)
       : InvertedListScanner(metric, code_size),
-        distance_(std::move(distance)) {}
+        distance_(std::move(distance)),
+        decoded_(code_size / sizeof(float)) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        code_size % sizeof(float) == 0,
+        "FlatInvertedListScanner: code size must contain complete floats");
+  }
 
   void SetQuery(const float* query) override {
     HYPERVEC_THROW_IF_NOT_MSG(
@@ -40,11 +48,16 @@ class FlatInvertedListScanner final : public InvertedListScanner {
     HYPERVEC_THROW_IF_NOT_MSG(
         query_ != nullptr,
         "FlatInvertedListScanner: SetQuery must be called before scanning");
-    return distance_(query_, reinterpret_cast<const float*>(code));
+    if (reinterpret_cast<uintptr_t>(code) % alignof(float) == 0) {
+      return distance_(query_, reinterpret_cast<const float*>(code));
+    }
+    std::memcpy(decoded_.data(), code, CodeSize());
+    return distance_(query_, decoded_.data());
   }
 
  private:
   VectorDistanceType distance_;
+  mutable std::vector<float> decoded_;
   const float* query_ = nullptr;
 };
 

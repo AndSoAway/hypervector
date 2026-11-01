@@ -301,7 +301,32 @@ void ProductQuantizer::SearchL2(idx_t nx, const float* x, idx_t ncodes,
                                 const uint8_t* codes, idx_t k,
                                 float* distances, idx_t* labels) const {
   HYPERVEC_THROW_IF_NOT(is_trained);
-  HYPERVEC_THROW_IF_NOT(k > 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      nx >= 0, "ProductQuantizer::SearchL2: nx must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes >= 0, "ProductQuantizer::SearchL2: ncodes must be non-negative");
+  HYPERVEC_THROW_IF_NOT_MSG(k > 0,
+                            "ProductQuantizer::SearchL2: k must be positive");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(k),
+                        "ProductQuantizer::SearchL2 output size");
+  (void)mul_no_overflow(static_cast<size_t>(nx), static_cast<size_t>(d),
+                        "ProductQuantizer::SearchL2 input size");
+  (void)mul_no_overflow(static_cast<size_t>(ncodes), code_size,
+                        "ProductQuantizer::SearchL2 code size");
+  if (nx == 0) {
+    return;
+  }
+  HYPERVEC_THROW_IF_NOT_MSG(x != nullptr,
+                            "ProductQuantizer::SearchL2: x must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      distances != nullptr,
+      "ProductQuantizer::SearchL2: distances must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      labels != nullptr, "ProductQuantizer::SearchL2: labels must not be null");
+  HYPERVEC_THROW_IF_NOT_MSG(
+      ncodes == 0 || codes != nullptr,
+      "ProductQuantizer::SearchL2: codes must not be null when ncodes is "
+      "positive");
 
   const size_t table_sz = static_cast<size_t>(M) * ksub;
 

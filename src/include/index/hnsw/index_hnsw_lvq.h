@@ -25,6 +25,7 @@ struct IndexHNSWLVQ : IndexHNSW {
   void Add(idx_t n, const float* x) override;
   void Reset() override;
   void Freeze();
+  void PermuteEntries(const idx_t* perm) override;
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;

@@ -34,6 +34,8 @@
 #include <utils/structures/sparse_row.h>
 #include <utils/structures/term_dictionary.h>
 
+#include <utils/selector/id_selector.h>
+
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -422,6 +424,11 @@ enum MetricType {
   kMetricJaccard,
   kMetricNaNEuclidean,
   kMetricGower,
+};
+
+struct IDSelector {
+  virtual bool IsMember(idx_t id) const = 0;
+  virtual ~IDSelector();
 };
 
 %nodefaultctor Index;

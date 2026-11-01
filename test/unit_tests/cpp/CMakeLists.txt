@@ -3,8 +3,6 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the "License") found in the
 # LICENSE file in the root directory of this source tree.
 
-# HNSW-only test configuration
-
 set(HYPERVEC_TEST_SRC
   test_bm25.cpp
   test_text_to_sparse.cpp
@@ -12,10 +10,43 @@ set(HYPERVEC_TEST_SRC
   test_sparse_row.cpp
   test_term_dictionary.cpp
   test_sparse_inverted_index.cpp
+
+
+  test_diskann_searcher.cpp
+  test_diskann_storage.cpp
+  test_index_diskann.cpp
+  test_graph_pruning_validation.cpp
+  test_graph_searcher.cpp
+  test_graph_storage.cpp
+  test_nn_descent_builder.cpp
+  test_nsg_builder.cpp
+  test_index_nsg.cpp
+  test_nsw_builder.cpp
+  test_paged_graph_storage.cpp
+  test_vamana_builder.cpp
+  test_index_vamana.cpp
+  test_index_nsw.cpp
   test_hnsw.cpp
+  test_inverted_list_scanner.cpp
+  test_index_build.cpp
+  test_index_capabilities.cpp
+  test_index_factory.cpp
+
+  test_index_clone.cpp
+  test_index_factory.cpp
+  test_search_parameters_factory.cpp
+  test_search_evaluator.cpp
+  test_vector_dataset.cpp
+  test_index_lsh.cpp
+  test_index_pre_transform.cpp
+  test_index_hnsw_correctness.cpp
+  test_index_id_map_correctness.cpp
+  test_persistence_validation.cpp
   test_callback.cpp
   test_utils.cpp
   test_mmap.cpp
+  test_page_cache.cpp
+  test_random_access_io.cpp
   test_factory_tools.cpp
   test_distances_simd.cpp
   test_omp_threads.cpp
@@ -24,8 +55,14 @@ set(HYPERVEC_TEST_SRC
   test_simdlib.cpp
   test_kmeans.cpp
   test_pq.cpp
+  test_quantizer_protocol.cpp
+  test_rabitq_quantizer.cpp
+  test_index_ivf_rabitq.cpp
+  test_opq_matrix.cpp
+  test_vector_transform.cpp
   test_index_pq.cpp
   test_index_ivf_flat.cpp
+  test_index_ivf_correctness.cpp
   test_index_ivfpq.cpp
   test_index_hnsw_pq.cpp
   test_lvq.cpp
@@ -41,36 +78,35 @@ include(${CMAKE_SOURCE_DIR}/cmake/link_to_hypervec_lib.cmake)
 
 link_to_hypervec_lib(hypervec_test)
 
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG 58d77fa8070e8cec2dc1ed015d66b454c8d78850 # release-1.12.1
-  OVERRIDE_FIND_PACKAGE)
-set(BUILD_GMOCK CACHE BOOL OFF)
-set(INSTALL_GTEST CACHE BOOL OFF)
-FetchContent_MakeAvailable(googletest)
-
-if(NOT EXISTS ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/gtest-config.cmake
-   AND NOT EXISTS ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/GTestConfig.cmake)
-  file(
-    WRITE ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/gtest-config.cmake
-    [=[
-include(CMakeFindDependencyMacro)
-find_dependency(googletest)
-if(NOT TARGET GTest::GTest)
-  add_library(GTest::GTest INTERFACE IMPORTED)
-  target_link_libraries(GTest::GTest INTERFACE GTest::gtest)
-endif()
-if(NOT TARGET GTest::Main)
-  add_library(GTest::Main INTERFACE IMPORTED)
-  target_link_libraries(GTest::Main INTERFACE GTest::gtest_main)
-endif()
-]=])
+find_package(GTest CONFIG QUIET)
+if(NOT TARGET GTest::gtest_main AND NOT TARGET GTest::Main)
+  find_package(GTest QUIET)
 endif()
 
-find_package(OpenMP REQUIRED)
-find_package(GTest CONFIG REQUIRED)
+if(NOT TARGET GTest::gtest_main AND
+   NOT TARGET GTest::Main AND
+   HYPERVEC_FETCH_DEPS)
+  message(STATUS "GoogleTest was not found locally; fetching release-1.12.1")
+  include(FetchContent)
+  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG 58d77fa8070e8cec2dc1ed015d66b454c8d78850)
+  FetchContent_MakeAvailable(googletest)
+endif()
+
+if(TARGET GTest::gtest_main)
+  set(HYPERVEC_GTEST_MAIN_TARGET GTest::gtest_main)
+elseif(TARGET GTest::Main)
+  set(HYPERVEC_GTEST_MAIN_TARGET GTest::Main)
+else()
+  message(FATAL_ERROR
+    "GoogleTest was not found. Install its CMake package or explicitly allow "
+    "the pinned download with -DHYPERVEC_FETCH_DEPS=ON.")
+endif()
 
 set(OMP_LIB "")
 if(MINGW)
@@ -78,9 +114,8 @@ if(MINGW)
 endif()
 
 target_link_libraries(hypervec_test PRIVATE
-  OpenMP::OpenMP_CXX
   ${OMP_LIB}
-  GTest::gtest_main
+  ${HYPERVEC_GTEST_MAIN_TARGET}
 )
 
 if(WIN32)
@@ -88,4 +123,5 @@ if(WIN32)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(hypervec_test)
+gtest_discover_tests(hypervec_test
+  PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=1")

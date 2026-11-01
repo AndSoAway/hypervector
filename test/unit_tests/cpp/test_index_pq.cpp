@@ -7,11 +7,11 @@
  */
 
 #include <gtest/gtest.h>
-
 #include <index/flat/index_flat.h>
 #include <persistence/index_io.h>
 #include <quantization/pq/index_pq.h>
 #include <quantization/pq/pq.h>
+#include <utils/distances/distance_computer.h>
 #include <utils/log/exception.h>
 #include <utils/structures/random.h>
 
@@ -92,7 +92,7 @@ TEST(IndexPQ, TrainAddSearchSmoke) {
       EXPECT_LT(id, nb);
       if (j > 0) {
         EXPECT_GE(dists[i * k + j], dists[i * k + j - 1])
-          << "distances not sorted at i=" << i << " j=" << j;
+            << "distances not sorted at i=" << i << " j=" << j;
       }
     }
   }
@@ -144,8 +144,7 @@ TEST(IndexPQ, ReconstructAndSaCodec) {
     idx.SaDecode(1, code.data(), via_codec.data());
     idx.Reconstruct(i, via_recon.data());
     for (hypervec::idx_t j = 0; j < d; j++) {
-      EXPECT_FLOAT_EQ(via_recon[j], via_codec[j])
-        << "i=" << i << " j=" << j;
+      EXPECT_FLOAT_EQ(via_recon[j], via_codec[j]) << "i=" << i << " j=" << j;
     }
   }
 
@@ -158,6 +157,24 @@ TEST(IndexPQ, ReconstructAndSaCodec) {
 TEST(IndexPQ, RejectsNonL2Metric) {
   EXPECT_THROW(hypervec::IndexPQ(8, 4, 8, hypervec::kMetricInnerProduct),
                hypervec::HypervecException);
+}
+
+TEST(IndexPQ, InvalidAddDoesNotMutateCodes) {
+  const auto x = RandomVectors(32, 4, 88);
+  hypervec::IndexPQ index(4, 2, 2);
+  index.Train(32, x.data());
+  index.Add(1, x.data());
+  const auto original_codes = index.codes.owned_data;
+
+  EXPECT_THROW(index.Add(-1, x.data()), hypervec::HypervecException);
+  EXPECT_THROW(index.Add(1, nullptr), hypervec::HypervecException);
+  EXPECT_EQ(index.n_total, 1);
+  EXPECT_EQ(index.codes.owned_data, original_codes);
+
+  std::unique_ptr<hypervec::DistanceComputer> distance(
+      index.GetDistanceComputer());
+  distance->SetQuery(x.data());
+  EXPECT_THROW((*distance)(1), hypervec::HypervecException);
 }
 
 TEST(IndexPQ, IDSelectorParamThrows) {
@@ -191,8 +208,7 @@ TEST(IndexPQ, PersistenceRoundtrip) {
   TempFile tf;
   hypervec::WriteIndex(&src, tf.path.c_str());
 
-  std::unique_ptr<hypervec::Index> loaded(
-    hypervec::ReadIndex(tf.path.c_str()));
+  std::unique_ptr<hypervec::Index> loaded(hypervec::ReadIndex(tf.path.c_str()));
   auto* dst = dynamic_cast<hypervec::IndexPQ*>(loaded.get());
   ASSERT_NE(dst, nullptr);
   EXPECT_EQ(dst->d, src.d);

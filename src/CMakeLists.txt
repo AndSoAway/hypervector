@@ -28,6 +28,11 @@ set(HYPERVEC_SRC
   index/idmap/index_id_map.cpp
   index/nsg/index_nsg.cpp
   index/nsw/index_nsw.cpp
+
+  index/lsh/index_lsh.cpp
+  index/nsg/index_nsg.cpp
+  index/nsw/index_nsw.cpp
+  index/pretransform/index_pre_transform.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
   utils/common/interrupt_callback.cpp
@@ -59,6 +64,12 @@ set(HYPERVEC_SRC
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
   quantization/quantizer.cpp
+
+  quantization/rabitq/rabitq_quantizer.cpp
+  quantization/rabitq/index_ivf_rabitq.cpp
+  quantization/quantizer.cpp
+  transform/opq_matrix.cpp
+  transform/vector_transform.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_fused.cpp

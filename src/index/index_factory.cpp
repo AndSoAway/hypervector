@@ -13,12 +13,16 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+#include <index/pretransform/index_pre_transform.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/pq/index_pq.h>
+#include <quantization/rabitq/index_ivf_rabitq.h>
+#include <transform/opq_matrix.h>
 #include <utils/log/assert.h>
 
 #include <algorithm>
@@ -128,6 +132,18 @@ std::unique_ptr<Index> MakePQ(const IndexConfig& config) {
                                    config.metric_type);
 }
 
+std::unique_ptr<Index> MakeOPQPQ(const IndexConfig& config) {
+  RequireL2(config, "opq_pq");
+  const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
+  const int nbits = PositiveIntParameter(config, "nbits", 8);
+  const int opq_iterations = PositiveIntParameter(config, "opq_iterations", 8);
+  auto opq = std::make_unique<OPQMatrix>(config.dimension, m_pq, nbits);
+  opq->parameters.iterations = opq_iterations;
+  auto pq = std::make_unique<IndexPQ>(config.dimension, m_pq, nbits,
+                                      config.metric_type);
+  return std::make_unique<IndexPreTransform>(std::move(opq), std::move(pq));
+}
+
 std::unique_ptr<Index> MakeLVQ(const IndexConfig& config) {
   RequireL2(config, "lvq");
   const idx_t nlocal = PositiveIndexParameter(config, "nlocal", 16);
@@ -159,6 +175,20 @@ std::unique_ptr<Index> MakeIVFLVQ(const IndexConfig& config) {
   const int nbits = PositiveIntParameter(config, "nbits", 8);
   return std::make_unique<IndexIVFLVQ>(config.dimension, nlist, nlocal, nbits,
                                        config.metric_type);
+}
+
+std::unique_ptr<Index> MakeIVFRaBitQ(const IndexConfig& config) {
+  RequireL2(config, "ivf_rabitq");
+  const idx_t nlist = PositiveIndexParameter(config, "nlist", 1024);
+  const int64_t random_seed = config.GetInteger(
+      "random_seed", static_cast<int64_t>(HYPERVEC_RABITQ_DEFAULT_SEED));
+  HYPERVEC_THROW_IF_NOT_MSG(
+      random_seed >= 0, "index parameter 'random_seed' must be non-negative");
+  const int rotation_rounds = PositiveIntParameter(
+      config, "rotation_rounds", HYPERVEC_RABITQ_DEFAULT_ROTATION_ROUNDS);
+  return std::make_unique<IndexIVFRaBitQ>(config.dimension, nlist,
+                                          static_cast<uint64_t>(random_seed),
+                                          rotation_rounds, config.metric_type);
 }
 
 std::unique_ptr<Index> MakeHNSWFlat(const IndexConfig& config) {
@@ -213,6 +243,34 @@ std::unique_ptr<Index> MakeNSGFlat(const IndexConfig& config) {
                                         options, config.metric_arg);
 }
 
+std::unique_ptr<Index> MakeLSH(const IndexConfig& config) {
+  HYPERVEC_THROW_IF_NOT_MSG(config.metric_type == kMetricInnerProduct,
+                            "lsh supports kMetricInnerProduct only");
+  LSHIndexOptions options;
+  options.table_count =
+      static_cast<size_t>(PositiveIntParameter(config, "table_count", 8));
+  options.bits_per_table =
+      static_cast<size_t>(PositiveIntParameter(config, "bits_per_table", 16));
+  options.probe_count =
+      static_cast<size_t>(PositiveIntParameter(config, "probe_count", 4));
+  const int64_t candidate_limit = config.GetInteger("candidate_limit", 0);
+  HYPERVEC_THROW_IF_NOT_MSG(
+      candidate_limit >= 0 && static_cast<uint64_t>(candidate_limit) <=
+                                  std::numeric_limits<size_t>::max(),
+      "index parameter 'candidate_limit' must be non-negative and fit in "
+      "size_t");
+  options.candidate_limit = static_cast<size_t>(candidate_limit);
+  if (config.HasParameter("random_seed")) {
+    const int64_t random_seed = config.GetInteger("random_seed", 0);
+    HYPERVEC_THROW_IF_NOT_MSG(random_seed >= 0,
+                              "index parameter 'random_seed' must be "
+                              "non-negative");
+    options.random_seed = static_cast<uint64_t>(random_seed);
+  }
+  return std::make_unique<IndexLSH>(config.dimension, config.metric_type,
+                                    options);
+}
+
 std::unique_ptr<Index> MakeHNSWPQ(const IndexConfig& config) {
   RequireL2(config, "hnsw_pq");
   const idx_t m_pq = PositiveIndexParameter(config, "m_pq", 8);
@@ -242,6 +300,9 @@ std::unique_ptr<Index> MakeHNSWLVQ(const IndexConfig& config) {
 void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register({"flat", {"IndexFlat"}, {}}, MakeFlat);
   registry->Register({"pq", {"IndexPQ"}, {"m_pq", "nbits"}}, MakePQ);
+  registry->Register(
+      {"opq_pq", {"opqpq", "IndexOPQPQ"}, {"m_pq", "nbits", "opq_iterations"}},
+      MakeOPQPQ);
   registry->Register({"lvq", {"IndexLVQ"}, {"nlocal", "nbits"}}, MakeLVQ);
   registry->Register(
       {"ivf_flat", {"ivf", "ivfflat", "IndexIVFFlat"}, {"nlist"}}, MakeIVFFlat);
@@ -251,6 +312,10 @@ void RegisterBuiltins(IndexRegistry* registry) {
   registry->Register(
       {"ivf_lvq", {"ivflvq", "IndexIVFLVQ"}, {"nlist", "nlocal", "nbits"}},
       MakeIVFLVQ);
+  registry->Register({"ivf_rabitq",
+                      {"ivfrabitq", "IndexIVFRaBitQ"},
+                      {"nlist", "random_seed", "rotation_rounds"}},
+                     MakeIVFRaBitQ);
   registry->Register({"hnsw_flat",
                       {"hnsw", "hnswflat", "IndexHNSWFlat", "autoindex"},
                       {"m_hnsw"}},
@@ -274,6 +339,11 @@ void RegisterBuiltins(IndexRegistry* registry) {
         "build_search_width", "candidate_pool_size", "ef_search",
         "check_relative_distance"}},
       MakeNSGFlat);
+  registry->Register({"lsh",
+                      {"IndexLSH"},
+                      {"table_count", "bits_per_table", "probe_count",
+                       "candidate_limit", "random_seed"}},
+                     MakeLSH);
 }
 
 }  // namespace

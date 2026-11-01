@@ -44,6 +44,8 @@ struct IndexPQ : Index {
    *  @param metric  distance metric; T1 requires kMetricL2 */
   IndexPQ(idx_t d, idx_t M, int nbits, MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Train the underlying ProductQuantizer on the given vectors. */
   void Train(idx_t n, const float* x) override;
 
@@ -70,9 +72,6 @@ struct IndexPQ : Index {
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

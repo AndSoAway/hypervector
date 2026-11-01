@@ -9,12 +9,20 @@
 
 %{
 #include <Python.h>
+
+#include <cstdint>
+
 #include <index/index.h>
+#include <index/index_factory.h>
 #include <index/flat/index_flat.h>
 #include <index/hnsw/index_hnsw.h>
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
+#include <index/idmap/index_id_map.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/lsh/index_lsh.h>
+#include <index/nsg/index_nsg.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -24,6 +32,7 @@
 #include <utils/structures/term_dictionary.h>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -102,6 +111,113 @@ void index_add(hypervec::Index* index, PyObject* obj) {
     throw;
   }
   PyBuffer_Release(&view);
+}
+
+void index_build(hypervec::Index* index, PyObject* obj) {
+  const float* data = nullptr;
+  hypervec::idx_t n = 0;
+  hypervec::idx_t d = 0;
+  Py_buffer view;
+  read_float32_matrix(obj, index->d, &data, &n, &d, &view);
+  try {
+    call_without_python_gil([&] { index->Build(n, data); });
+  } catch (...) {
+    PyBuffer_Release(&view);
+    throw;
+  }
+  PyBuffer_Release(&view);
+}
+
+const hypervec::Index* index_parameter_target(const hypervec::Index* index) {
+  const auto* mapped = dynamic_cast<const hypervec::IndexIDMap*>(index);
+  return mapped != nullptr && mapped->index != nullptr ? mapped->index : index;
+}
+
+std::string read_python_string(PyObject* value, const char* context) {
+  const char* text = PyUnicode_AsUTF8(value);
+  if (text == nullptr) {
+    PyErr_Clear();
+    throw std::runtime_error(std::string(context) + " must be a string");
+  }
+  return text;
+}
+
+size_t read_positive_size(PyObject* value, const char* context) {
+  if (!PyLong_Check(value) || PyBool_Check(value)) {
+    throw std::runtime_error(std::string(context) + " must be an integer");
+  }
+  const unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+  if (PyErr_Occurred()) {
+    PyErr_Clear();
+    throw std::runtime_error(std::string(context) +
+                             " must be a positive integer");
+  }
+  if (parsed == 0 || parsed > std::numeric_limits<size_t>::max()) {
+    throw std::runtime_error(std::string(context) +
+                             " must be a positive integer");
+  }
+  return static_cast<size_t>(parsed);
+}
+
+size_t read_nonnegative_size(PyObject* value, const char* context) {
+  if (!PyLong_Check(value) || PyBool_Check(value)) {
+    throw std::runtime_error(std::string(context) + " must be an integer");
+  }
+  const unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+  if (PyErr_Occurred()) {
+    PyErr_Clear();
+    throw std::runtime_error(std::string(context) +
+                             " must be a non-negative integer");
+  }
+  if (parsed > std::numeric_limits<size_t>::max()) {
+    throw std::runtime_error(std::string(context) +
+                             " must be a non-negative integer");
+  }
+  return static_cast<size_t>(parsed);
+}
+
+bool read_python_bool(PyObject* value, const char* context) {
+  if (!PyBool_Check(value)) {
+    throw std::runtime_error(std::string(context) + " must be a bool");
+  }
+  return value == Py_True;
+}
+
+void set_index_parameters(hypervec::IndexConfig* config, PyObject* params) {
+  if (!PyDict_Check(params)) {
+    throw std::runtime_error("index parameters must be a dict");
+  }
+
+  PyObject* key = nullptr;
+  PyObject* value = nullptr;
+  Py_ssize_t position = 0;
+  while (PyDict_Next(params, &position, &key, &value)) {
+    const std::string name = read_python_string(key, "index parameter name");
+    if (PyBool_Check(value)) {
+      config->SetBoolean(name, value == Py_True);
+    } else if (PyLong_Check(value)) {
+      const int64_t integer = static_cast<int64_t>(PyLong_AsLongLong(value));
+      if (integer == -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::runtime_error("integer index parameter is out of range: " +
+                                 name);
+      }
+      config->SetInteger(name, integer);
+    } else if (PyFloat_Check(value)) {
+      const double floating = PyFloat_AsDouble(value);
+      if (floating == -1.0 && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::runtime_error("invalid floating index parameter: " + name);
+      }
+      config->SetDouble(name, floating);
+    } else if (PyUnicode_Check(value)) {
+      config->SetString(name, read_python_string(value, "index parameter"));
+    } else {
+      throw std::runtime_error(
+          "index parameter values must be bool, int, float, or string: " +
+          name);
+    }
+  }
 }
 
 PyObject* index_search_with_params(const hypervec::Index* index, PyObject* obj,
@@ -232,6 +348,24 @@ PyObject* term_dictionary_serialize(const hypervec::TermDictionary* dict) {
 }
 
 }  // namespace
+
+namespace hypervec {
+
+Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
+                             MetricType metric_type, PyObject* params,
+                             bool use_id_map = false,
+                             float metric_arg = 0.0F) {
+  if (index_type == nullptr) {
+    throw std::runtime_error("index type must not be null");
+  }
+  IndexConfig config(index_type, dimension, metric_type);
+  config.use_id_map = use_id_map;
+  config.metric_arg = metric_arg;
+  set_index_parameters(&config, params);
+  return CreateIndex(config).release();
+}
+
+}  // namespace hypervec
 %}
 
 %exception {
@@ -418,6 +552,12 @@ struct TermDictionary {
   }
 }
 
+%newobject CreateIndexFromConfig;
+Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
+                             MetricType metric_type, PyObject* params,
+                             bool use_id_map = false,
+                             float metric_arg = 0.0f);
+
 %extend Index {
   void train(PyObject* x) {
     index_train($self, x);
@@ -425,6 +565,10 @@ struct TermDictionary {
 
   void add(PyObject* x) {
     index_add($self, x);
+  }
+
+  void build(PyObject* x) {
+    index_build($self, x);
   }
 
   PyObject* search(PyObject* x, hypervec::idx_t k) {
@@ -435,7 +579,9 @@ struct TermDictionary {
     if (!PyDict_Check(py_params)) {
       throw std::runtime_error("search_with_params: params must be a dict");
     }
-    if (const auto* hnsw = dynamic_cast<const hypervec::IndexHNSW*>($self)) {
+    const hypervec::Index* parameter_target = index_parameter_target($self);
+    if (const auto* hnsw =
+            dynamic_cast<const hypervec::IndexHNSW*>(parameter_target)) {
       (void)hnsw;
       hypervec::SearchParametersHNSW params;
       PyObject* val = PyDict_GetItemString(py_params, "ef_search");
@@ -443,7 +589,55 @@ struct TermDictionary {
       if (val) params.ef_search = static_cast<int>(PyLong_AsLong(val));
       return index_search_with_params($self, x, k, &params);
     }
+    if (const auto* nsw = dynamic_cast<const hypervec::IndexNSW*>($self)) {
+
+    if (const auto* nsw =
+            dynamic_cast<const hypervec::IndexNSW*>(parameter_target)) {
+      (void)nsw;
+      hypervec::SearchParametersNSW params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = read_positive_size(val, "ef_search");
+      val = PyDict_GetItemString(py_params, "check_relative_distance");
+      if (val) {
+        params.check_relative_distance =
+            read_python_bool(val, "check_relative_distance");
+      }
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* nsg = dynamic_cast<const hypervec::IndexNSG*>($self)) {
+
+    if (const auto* nsg =
+            dynamic_cast<const hypervec::IndexNSG*>(parameter_target)) {
+      (void)nsg;
+      hypervec::SearchParametersNSG params;
+      PyObject* val = PyDict_GetItemString(py_params, "ef_search");
+      if (!val) val = PyDict_GetItemString(py_params, "ef");
+      if (val) params.ef_search = read_positive_size(val, "ef_search");
+      val = PyDict_GetItemString(py_params, "check_relative_distance");
+      if (val) {
+        params.check_relative_distance =
+            read_python_bool(val, "check_relative_distance");
+      }
+      return index_search_with_params($self, x, k, &params);
+    }
     if (const auto* ivf = dynamic_cast<const hypervec::IndexIVF*>($self)) {
+
+    if (const auto* lsh =
+            dynamic_cast<const hypervec::IndexLSH*>(parameter_target)) {
+      (void)lsh;
+      hypervec::SearchParametersLSH params;
+      PyObject* val = PyDict_GetItemString(py_params, "probe_count");
+      if (val) params.probe_count = read_positive_size(val, "probe_count");
+      val = PyDict_GetItemString(py_params, "candidate_limit");
+      if (val) {
+        params.candidate_limit =
+            read_nonnegative_size(val, "candidate_limit");
+      }
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* ivf =
+            dynamic_cast<const hypervec::IndexIVF*>(parameter_target)) {
       (void)ivf;
       hypervec::IVFSearchParameters params;
       PyObject* val = PyDict_GetItemString(py_params, "nprobe");
@@ -459,4 +653,5 @@ struct TermDictionary {
 %pythoncode %{
 read_index = ReadIndex
 write_index = WriteIndex
+create_index = CreateIndexFromConfig
 %}

@@ -9,7 +9,11 @@
 #include <index/diskann/index_diskann.h>
 #include <index/hnsw/hnsw.h>
 #include <index/idmap/index_id_map.h>
+#include <index/ivf/index_ivf.h>
 #include <index/lsh/index_lsh.h>
+#include <index/nsg/index_nsg.h>
+#include <index/nsw/index_nsw.h>
+#include <index/vamana/index_vamana.h>
 #include <utils/common/range_search_result.h>
 #include <utils/log/assert.h>
 
@@ -63,6 +67,30 @@ std::unique_ptr<SearchParameters> TranslateSearchParameters(
   if (typeid(params) == typeid(SearchParametersDiskANN)) {
     auto translated = std::make_unique<SearchParametersDiskANN>(
         static_cast<const SearchParametersDiskANN&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
+  if (typeid(params) == typeid(SearchParametersNSW)) {
+    auto translated = std::make_unique<SearchParametersNSW>(
+        static_cast<const SearchParametersNSW&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
+  if (typeid(params) == typeid(SearchParametersNSG)) {
+    auto translated = std::make_unique<SearchParametersNSG>(
+        static_cast<const SearchParametersNSG&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
+  if (typeid(params) == typeid(SearchParametersVamana)) {
+    auto translated = std::make_unique<SearchParametersVamana>(
+        static_cast<const SearchParametersVamana&>(params));
+    translated->sel = translated_selector;
+    return translated;
+  }
+  if (typeid(params) == typeid(IVFSearchParameters)) {
+    auto translated = std::make_unique<IVFSearchParameters>(
+        static_cast<const IVFSearchParameters&>(params));
     translated->sel = translated_selector;
     return translated;
   }

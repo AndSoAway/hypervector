@@ -24,6 +24,8 @@
 #include <index/lsh/index_lsh.h>
 #include <index/nsg/index_nsg.h>
 #include <index/nsw/index_nsw.h>
+
+#include <index/search_parameters_factory.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -217,6 +219,33 @@ void set_index_parameters(hypervec::IndexConfig* config, PyObject* params) {
       throw std::runtime_error(
           "index parameter values must be bool, int, float, or string: " +
           name);
+    }
+  }
+}
+
+void set_search_parameters(hypervec::SearchConfig* config, PyObject* params) {
+  if (!PyDict_Check(params)) {
+    throw std::runtime_error("search parameters must be a dict");
+  }
+
+  PyObject* key = nullptr;
+  PyObject* value = nullptr;
+  Py_ssize_t position = 0;
+  while (PyDict_Next(params, &position, &key, &value)) {
+    const std::string name = read_python_string(key, "search parameter name");
+    if (PyBool_Check(value)) {
+      config->SetBoolean(name, value == Py_True);
+    } else if (PyLong_Check(value)) {
+      const int64_t integer = static_cast<int64_t>(PyLong_AsLongLong(value));
+      if (integer == -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::runtime_error("integer search parameter is out of range: " +
+                                 name);
+      }
+      config->SetInteger(name, integer);
+    } else {
+      throw std::runtime_error(
+          "search parameter values must be bool or int: " + name);
     }
   }
 }
@@ -659,6 +688,12 @@ Index* CreateIndexFromConfig(const char* index_type, idx_t dimension,
       return index_search_with_params($self, x, k, &params);
     }
     return index_search_with_params($self, x, k, nullptr);
+
+    hypervec::SearchConfig config;
+    set_search_parameters(&config, py_params);
+    std::unique_ptr<hypervec::SearchParameters> params =
+        hypervec::CreateSearchParameters(*$self, config);
+    return index_search_with_params($self, x, k, params.get());
   }
 }
 

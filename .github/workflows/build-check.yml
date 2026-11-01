@@ -75,6 +75,7 @@ jobs:
             -DHYPERVEC_UNIT_TESTS_ONLY=ON \
             -DHYPERVEC_FETCH_DEPS=OFF \
             -DHYPERVEC_ENABLE_EXTRAS=ON \
+            -DHYPERVEC_ENABLE_EVAL=ON \
             -DHYPERVEC_OPT_LEVEL=generic
           cmake --build build/development --parallel 2
 

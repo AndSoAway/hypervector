@@ -7,107 +7,96 @@
  */
 
 #include <index/ivf/index_ivf_flat.h>
-
+#include <index/ivf/inverted_list_scanner.h>
 #include <invlists/inverted_lists.h>
-#include <persistence/index_write_utils.h>
-#include <utils/distances/distances.h>
-#include <utils/distances/metric_type.h>
+#include <quantization/quantizer.h>
+#include <utils/distances/extra_distances.h>
 #include <utils/log/assert.h>
-#include <utils/selector/id_selector.h>
-#include <utils/structures/heap.h>
 
 #include <cinttypes>
+#include <cstdint>
 #include <cstring>
-#include <limits>
+#include <memory>
+#include <utility>
+#include <vector>
 
 namespace hypervec {
+namespace {
+
+template <typename VectorDistanceType>
+class FlatInvertedListScanner final : public InvertedListScanner {
+ public:
+  FlatInvertedListScanner(MetricType metric, size_t code_size,
+                          VectorDistanceType distance)
+      : InvertedListScanner(metric, code_size),
+        distance_(std::move(distance)),
+        decoded_(code_size / sizeof(float)) {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        code_size % sizeof(float) == 0,
+        "FlatInvertedListScanner: code size must contain complete floats");
+  }
+
+  void SetQuery(const float* query) override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        query != nullptr, "FlatInvertedListScanner: query must not be null");
+    query_ = query;
+  }
+
+  void SetList(idx_t /*list_no*/, float /*coarse_distance*/) override {}
+
+  float DistanceToCode(const uint8_t* code) const override {
+    HYPERVEC_THROW_IF_NOT_MSG(
+        query_ != nullptr,
+        "FlatInvertedListScanner: SetQuery must be called before scanning");
+    if (reinterpret_cast<uintptr_t>(code) % alignof(float) == 0) {
+      return distance_(query_, reinterpret_cast<const float*>(code));
+    }
+    std::memcpy(decoded_.data(), code, CodeSize());
+    return distance_(query_, decoded_.data());
+  }
+
+ private:
+  VectorDistanceType distance_;
+  mutable std::vector<float> decoded_;
+  const float* query_ = nullptr;
+};
+
+}  // namespace
 
 IndexIVFFlat::IndexIVFFlat(idx_t d, idx_t nlist, MetricType metric)
-  : IndexIVF(d, nlist, (size_t)d * sizeof(float), metric) {}
+    : IndexIVF(d, nlist, static_cast<size_t>(d) * sizeof(float), metric) {
+  HYPERVEC_THROW_IF_NOT_FMT(
+      metric == kMetricL2 || metric == kMetricInnerProduct,
+      "IndexIVFFlat: supports kMetricL2 and kMetricInnerProduct only, got "
+      "metric=%d",
+      static_cast<int>(metric));
+}
+
+IndexCapabilities IndexIVFFlat::GetCapabilities() const {
+  IndexCapabilities capabilities = IndexIVF::GetCapabilities();
+  capabilities.supports_range_search = true;
+  capabilities.supports_reconstruct = true;
+  return capabilities;
+}
 
 void IndexIVFFlat::EncodeVectors(idx_t n, const float* x,
                                  uint8_t* codes) const {
-  if (n > 0) {
-    memcpy(codes, x, (size_t)n * (size_t)d * sizeof(float));
-  }
+  const FlatQuantizer quantizer(d, metric_type, metric_arg);
+  quantizer.Encode(n, x, codes);
 }
 
-void IndexIVFFlat::SearchPreassigned(idx_t n, const float* x, idx_t k,
-                                     const idx_t* list_ids,
-                                     const float* /* centroid_dis */,
-                                     float* distances, idx_t* labels,
-                                     idx_t nprobe_actual,
-                                     const IDSelector* sel) const {
-  const bool sim = IsSimilarityMetric(metric_type);
-  const size_t dim = (size_t)d;
-
-#pragma omp parallel for schedule(dynamic, 1) if (n > 1)
-  for (idx_t qi = 0; qi < n; qi++) {
-    const float* xq = x + qi * dim;
-    float* heap_dis = distances + qi * k;
-    idx_t* heap_ids = labels + qi * k;
-
-    if (sim) {
-      heap_heapify<CMin<float, idx_t>>(k, heap_dis, heap_ids);
-    } else {
-      heap_heapify<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-    }
-
-    for (idx_t pi = 0; pi < nprobe_actual; pi++) {
-      idx_t list_no = list_ids[qi * nprobe_actual + pi];
-      if (list_no < 0) {
-        continue;
-      }
-      size_t list_sz = invlists->list_size((size_t)list_no);
-      if (list_sz == 0) {
-        continue;
-      }
-
-      InvertedLists::ScopedCodes codes(invlists, (size_t)list_no);
-      InvertedLists::ScopedIds ids(invlists, (size_t)list_no);
-      const float* vecs = (const float*)codes.get();
-      const idx_t* id_ptr = ids.get();
-
-      if (sim) {
-        float threshold = heap_dis[0];
-        for (size_t j = 0; j < list_sz; j++) {
-          if (sel && !sel->IsMember(id_ptr[j])) {
-            continue;
-          }
-          float dis = fvec_inner_product(xq, vecs + j * dim, dim);
-          if (CMin<float, idx_t>::cmp(threshold, dis)) {
-            heap_replace_top<CMin<float, idx_t>>(k, heap_dis, heap_ids, dis,
-                                                 id_ptr[j]);
-            threshold = heap_dis[0];
-          }
-        }
-      } else {
-        float threshold = heap_dis[0];
-        for (size_t j = 0; j < list_sz; j++) {
-          if (sel && !sel->IsMember(id_ptr[j])) {
-            continue;
-          }
-          float dis = fvec_L2sqr(xq, vecs + j * dim, dim);
-          if (CMax<float, idx_t>::cmp(threshold, dis)) {
-            heap_replace_top<CMax<float, idx_t>>(k, heap_dis, heap_ids, dis,
-                                                 id_ptr[j]);
-            threshold = heap_dis[0];
-          }
-        }
-      }
-    }
-
-    if (sim) {
-      heap_reorder<CMin<float, idx_t>>(k, heap_dis, heap_ids);
-    } else {
-      heap_reorder<CMax<float, idx_t>>(k, heap_dis, heap_ids);
-    }
-  }
+InvertedListScannerPtr IndexIVFFlat::CreateInvertedListScanner() const {
+  return with_VectorDistance(
+      static_cast<size_t>(d), metric_type, metric_arg,
+      [this](auto distance) -> InvertedListScannerPtr {
+        using DistanceType = decltype(distance);
+        return std::make_unique<FlatInvertedListScanner<DistanceType>>(
+            metric_type, invlists->code_size, std::move(distance));
+      });
 }
 
 void IndexIVFFlat::Reconstruct(idx_t key, float* recons) const {
-  const size_t dim = (size_t)d;
-  for (size_t list_no = 0; list_no < (size_t)nlist; list_no++) {
+  for (size_t list_no = 0; list_no < static_cast<size_t>(nlist); list_no++) {
     size_t list_sz = invlists->list_size(list_no);
     if (list_sz == 0) {
       continue;
@@ -117,37 +106,14 @@ void IndexIVFFlat::Reconstruct(idx_t key, float* recons) const {
     for (size_t j = 0; j < list_sz; j++) {
       if (id_ptr[j] == key) {
         InvertedLists::ScopedCodes codes(invlists, list_no);
-        memcpy(recons, (const float*)codes.get() + j * dim,
-               dim * sizeof(float));
+        const FlatQuantizer quantizer(d, metric_type, metric_arg);
+        quantizer.Decode(1, codes.get() + j * quantizer.CodeSize(), recons);
         return;
       }
     }
   }
   HYPERVEC_THROW_FMT("IndexIVFFlat::Reconstruct: key %" PRId64 " not found",
                      key);
-}
-
-uint32_t IndexIVFFlat::fourcc() const {
-  return hypervec::fourcc("IVFf");
-}
-
-void IndexIVFFlat::write_body(IOWriter* f) const {
-  WRITE1(nlist);
-  WRITE1(nprobe);
-  WRITEVECTOR(centroids);
-
-  const size_t code_size = static_cast<size_t>(d) * sizeof(float);
-  for (size_t list_no = 0; list_no < nlist; list_no++) {
-    const size_t sz = invlists->list_size(list_no);
-    WRITE1(sz);
-    if (sz == 0) {
-      continue;
-    }
-    InvertedLists::ScopedIds ids(invlists, list_no);
-    InvertedLists::ScopedCodes codes(invlists, list_no);
-    WRITEANDCHECK(ids.get(), sz);
-    WRITEANDCHECK(codes.get(), sz * code_size);
-  }
 }
 
 }  // namespace hypervec

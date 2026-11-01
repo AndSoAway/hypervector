@@ -76,21 +76,19 @@ struct IndexHNSWPQ : IndexHNSW {
   /// calling on an already-frozen index is a no-op.
   void Freeze();
 
+  void PermuteEntries(const idx_t* perm) override;
+
   /// Forwarders to storage(=IndexPQ) for the standalone codec interface.
   size_t SaCodeSize() const override;
   void SaEncode(idx_t n, const float* x, uint8_t* bytes) const override;
   void SaDecode(idx_t n, const uint8_t* bytes, float* x) const override;
 
-  /// Not supported on IndexHNSWPQ. Throws with a clear message — IndexPQ
-  /// does not implement these and silent forwarding would surprise.
+  /// Run custom-handler and range queries through the HNSW graph using PQ ADC.
   void Search1(const float* x, ResultHandler& handler,
                SearchParameters* params = nullptr) const override;
   void RangeSearch(idx_t n, const float* x, float radius,
-                    RangeSearchResult* result,
-                    const SearchParameters* params = nullptr) const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
 };
 
 }  // namespace hypervec

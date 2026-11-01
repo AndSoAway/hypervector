@@ -56,6 +56,8 @@ struct IndexHNSW : Index {
 
   ~IndexHNSW() override;
 
+  IndexCapabilities GetCapabilities() const override;
+
   void Add(idx_t n, const float* x) override;
 
   /// Trains the storage if needed
@@ -106,9 +108,6 @@ struct IndexHNSW : Index {
   virtual void PermuteEntries(const idx_t* perm);
 
   DistanceComputer* GetDistanceComputer() const override;
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 /** Flat index topped with with a HNSW structure to access elements
@@ -118,9 +117,6 @@ struct IndexHNSW : Index {
 struct IndexHNSWFlat : IndexHNSW {
   IndexHNSWFlat();
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

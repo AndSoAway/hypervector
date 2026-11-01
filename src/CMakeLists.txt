@@ -3,18 +3,14 @@
 # This source code is licensed under the Mulan Permissive Software License v2 (the "License") found in the
 # LICENSE file in the root directory of this source tree.
 
-cmake_minimum_required(VERSION 3.10)
-
-project(hypervec VERSION 1.0.0)
-
-# =============================================================================
-# Minimal HNSW-only HyperVec Build Configuration
-# =============================================================================
+# CPU core sources: indexes, quantizers, persistence, and shared utilities.
 
 set(HYPERVEC_SRC
   index/index.cpp
+  index/index_factory.cpp
   index/ivf/index_ivf.cpp
   index/ivf/index_ivf_flat.cpp
+  index/ivf/inverted_list_scanner.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
   index/hnsw/index_hnsw.cpp
@@ -45,12 +41,15 @@ set(HYPERVEC_SRC
   utils/algo/bm25/text_to_sparse.cpp
   quantization/pq/pq.cpp
   quantization/pq/pq_distance_computer.cpp
+  quantization/pq/pq_quantizer_adapter.cpp
   quantization/pq/index_pq.cpp
   quantization/pq/index_ivfpq.cpp
   quantization/lvq/lvq.cpp
   quantization/lvq/lvq_distance_computer.cpp
+  quantization/lvq/lvq_quantizer_adapter.cpp
   quantization/lvq/index_lvq.cpp
   quantization/lvq/index_ivflvq.cpp
+  quantization/quantizer.cpp
   utils/utils.cpp
   utils/distances/distances.cpp
   utils/distances/distances_fused.cpp
@@ -60,59 +59,13 @@ set(HYPERVEC_SRC
   utils/simd/simd_levels.cpp
 )
 
-set(HYPERVEC_HEADERS
-  include/index/index.h
-  include/index/ivf/index_ivf.h
-  include/index/ivf/index_ivf_flat.h
-  include/utils/distances/metric_type.h
-  include/utils/log/assert.h
-  include/utils/log/exception.h
-  include/utils/common/platform_macros.h
-  include/utils/distances/distance_computer.h
-  include/utils/structures/maybe_owned_vector.h
-  include/index/flat/index_flat.h
-  include/index/flat/index_flat_codes.h
-  include/index/hnsw/index_hnsw.h
-  include/index/hnsw/index_hnsw_pq.h
-  include/index/hnsw/index_hnsw_lvq.h
-  include/index/hnsw/hnsw.h
-  include/index/hnsw/visited_table.h
-  include/index/idmap/index_id_map.h
-  include/persistence/index_clone.h
-  include/utils/common/interrupt_callback.h
-  include/utils/common/buffer_list.h
-  include/utils/common/range_search_result.h
-  include/persistence/io.h
-  include/persistence/io_macros.h
-  include/persistence/mapped_io.h
-  include/utils/utils.h
-  include/utils/structures/heap.h
-  include/utils/structures/random.h
-  include/utils/structures/sorting.h
-  include/utils/structures/sparse_row.h
-  include/utils/structures/term_dictionary.h
-  include/utils/algo/kmeans/kmeans.h
-  include/utils/algo/bm25/text_to_sparse.h
-  include/utils/algo/sparse_vector/sparse_inverted_index.h
-  include/utils/algo/bm25/analyzer.h
-  include/utils/algo/bm25/bm25.h
-  include/utils/algo/bm25/inverted_index.h
-  include/quantization/pq/pq.h
-  include/quantization/pq/pq_distance_computer.h
-  include/quantization/pq/index_pq.h
-  include/quantization/pq/index_ivfpq.h
-  include/quantization/lvq/lvq.h
-  include/quantization/lvq/lvq_distance_computer.h
-  include/quantization/lvq/index_lvq.h
-  include/quantization/lvq/index_ivflvq.h
-  include/utils/distances/distances.h
-  include/utils/simd/simd_levels.h
+file(GLOB_RECURSE HYPERVEC_PUBLIC_HEADERS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
 )
-
-# Export HYPERVEC_HEADERS variable to parent scope.
-set(HYPERVEC_HEADERS ${HYPERVEC_HEADERS} PARENT_SCOPE)
+set(HYPERVEC_PUBLIC_HEADERS "${HYPERVEC_PUBLIC_HEADERS}" PARENT_SCOPE)
 
 add_library(hypervec ${HYPERVEC_SRC})
+add_library(hypervec::hypervec ALIAS hypervec)
 
 # ---------------------------------------------------------------------------
 # cppjieba (Chinese segmentation, header-only + dict files)
@@ -124,17 +77,18 @@ add_library(hypervec ${HYPERVEC_SRC})
 if(HYPERVEC_ENABLE_BM25_ANALYZER)
   target_sources(hypervec PRIVATE utils/algo/bm25/analyzer_cn.cpp)
   target_link_libraries(hypervec PRIVATE cppjieba_iface)
-  # HYPERVEC_DEFAULT_DICT_DIR is baked from the install layout; callers can
-  # override it at run time with the HYPERVEC_DICT_DIR environment variable.
   target_compile_definitions(hypervec
     PUBLIC HYPERVEC_ENABLE_BM25_ANALYZER
     PRIVATE HYPERVEC_DEFAULT_DICT_DIR="${HYPERVEC_BM25_DICT_INSTALL_DIR}")
 endif()
 
-target_include_directories(hypervec PUBLIC
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
-target_include_directories(hypervec PRIVATE
-  ${PROJECT_SOURCE_DIR})
+target_include_directories(hypervec
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
 
 set_target_properties(hypervec PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -158,41 +112,56 @@ find_package(OpenMP REQUIRED)
 target_link_libraries(hypervec PUBLIC OpenMP::OpenMP_CXX)
 
 find_package(BLAS REQUIRED)
-target_link_libraries(hypervec PRIVATE ${BLAS_LIBRARIES})
+if(NOT TARGET BLAS::BLAS)
+  add_library(BLAS::BLAS INTERFACE IMPORTED)
+  set_property(TARGET BLAS::BLAS PROPERTY
+    INTERFACE_LINK_LIBRARIES "${BLAS_LIBRARIES}")
+endif()
+target_link_libraries(hypervec PRIVATE BLAS::BLAS)
 
 find_package(LAPACK REQUIRED)
-target_link_libraries(hypervec PRIVATE ${LAPACK_LIBRARIES})
+if(NOT TARGET LAPACK::LAPACK)
+  add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+  set_property(TARGET LAPACK::LAPACK PROPERTY
+    INTERFACE_LINK_LIBRARIES "${LAPACK_LIBRARIES}")
+endif()
+target_link_libraries(hypervec PRIVATE LAPACK::LAPACK)
 
 install(TARGETS hypervec
   EXPORT hypervec-targets
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-foreach(header ${HYPERVEC_HEADERS})
-  get_filename_component(dir ${header} DIRECTORY )
-  install(FILES ${header}
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${dir}
-  )
-endforeach()
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  PATTERN ".gitkeep" EXCLUDE
+)
 
 include(CMakePackageConfigHelpers)
+set(HYPERVEC_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/hypervec")
+
 write_basic_package_version_file(
-  "${PROJECT_BINARY_DIR}/cmake/hypervec-config-version.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/hypervec-config-version.cmake"
   VERSION ${CMAKE_PROJECT_VERSION}
-  COMPATIBILITY AnyNewerVersion
+  COMPATIBILITY SameMajorVersion
 )
 
-configure_file(${CMAKE_SOURCE_DIR}/cmake/hypervec-config.cmake.in
-  ${PROJECT_BINARY_DIR}/cmake/hypervec-config.cmake
-  COPYONLY)
-install(FILES ${PROJECT_BINARY_DIR}/cmake/hypervec-config.cmake
-  ${PROJECT_BINARY_DIR}/cmake/hypervec-config-version.cmake
-  DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypervec
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/hypervec-config.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/hypervec-config.cmake"
+  INSTALL_DESTINATION ${HYPERVEC_INSTALL_CMAKEDIR}
+)
+
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/hypervec-config.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/hypervec-config-version.cmake"
+  DESTINATION ${HYPERVEC_INSTALL_CMAKEDIR}
 )
 
 install(EXPORT hypervec-targets
-  DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypervec
+  FILE hypervec-targets.cmake
+  NAMESPACE hypervec::
+  DESTINATION ${HYPERVEC_INSTALL_CMAKEDIR}
 )

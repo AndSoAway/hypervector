@@ -61,6 +61,8 @@ struct IndexIVFPQ : IndexIVF {
   IndexIVFPQ(idx_t d, idx_t nlist, idx_t M, int nbits,
              MetricType metric = kMetricL2);
 
+  IndexCapabilities GetCapabilities() const override;
+
   /** Train the coarse quantizer on x, then train the PQ on residuals
    *  (if by_residual) or on x directly. If use_precomputed_table is set,
    *  populate the cache as well. */
@@ -84,6 +86,10 @@ struct IndexIVFPQ : IndexIVF {
                          float* distances, idx_t* labels, idx_t nprobe_actual,
                          const IDSelector* sel) const override;
 
+  void RangeSearch(idx_t n, const float* x, float radius,
+                   RangeSearchResult* result,
+                   const SearchParameters* params = nullptr) const override;
+
   /** Reconstruct an indexed vector by id: decode the PQ code and add the
    *  coarse centroid back if by_residual. O(n_total) — scans all lists. */
   void Reconstruct(idx_t key, float* recons) const override;
@@ -92,9 +98,6 @@ struct IndexIVFPQ : IndexIVF {
    *  Called automatically by Train() when use_precomputed_table != 0; can
    *  also be called manually after toggling the flag on a trained index. */
   void PrecomputeTable();
-
-  uint32_t fourcc() const override;
-  void write_body(IOWriter* f) const override;
 };
 
 }  // namespace hypervec

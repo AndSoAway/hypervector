@@ -14,6 +14,8 @@
 #include <index/idmap/index_id_map.h>
 #include <index/index_factory.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/nsg/index_nsg.h>
+#include <index/nsw/index_nsw.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_ivfpq.h>
@@ -35,7 +37,18 @@ void ExpectBuiltIn(std::string name) {
       .SetInteger("m_pq", 2)
       .SetInteger("nlocal", 2)
       .SetInteger("nbits", 2)
-      .SetInteger("m_hnsw", 4);
+      .SetInteger("m_hnsw", 4)
+      .SetInteger("knn_degree", 4)
+      .SetInteger("nn_descent_iterations", 3)
+      .SetDouble("nn_descent_convergence_threshold", 0.01)
+      .SetInteger("random_seed", 7)
+      .SetInteger("max_degree", 4)
+      .SetInteger("build_search_width", 4)
+      .SetInteger("candidate_pool_size", 8)
+      .SetInteger("ef_construction", 8)
+      .SetInteger("ef_search", 4)
+      .SetBoolean("check_relative_distance", true)
+      .SetBoolean("fill_to_max_degree", true);
 
   const auto allowed = hypervec::GetIndexRegistry().List();
   const auto type = std::find_if(allowed.begin(), allowed.end(),
@@ -46,7 +59,14 @@ void ExpectBuiltIn(std::string name) {
 
   hypervec::IndexConfig filtered(config.index_type, config.dimension);
   for (const std::string& parameter : type->parameter_names) {
-    filtered.SetInteger(parameter, config.GetInteger(parameter, 0));
+    if (parameter == "check_relative_distance" ||
+        parameter == "fill_to_max_degree") {
+      filtered.SetBoolean(parameter, config.GetBoolean(parameter, false));
+    } else if (parameter == "nn_descent_convergence_threshold") {
+      filtered.SetDouble(parameter, config.GetDouble(parameter, 0.0));
+    } else {
+      filtered.SetInteger(parameter, config.GetInteger(parameter, 0));
+    }
   }
   std::unique_ptr<hypervec::Index> index = hypervec::CreateIndex(filtered);
   EXPECT_NE(dynamic_cast<IndexType*>(index.get()), nullptr);
@@ -88,9 +108,10 @@ TEST(IndexRegistry, ListsAllBuiltInIndexesDeterministically) {
     names.push_back(descriptor.name);
   }
 
-  EXPECT_EQ(names, (std::vector<std::string>{"flat", "hnsw_flat", "hnsw_lvq",
-                                             "hnsw_pq", "ivf_flat", "ivf_lvq",
-                                             "ivf_pq", "lvq", "pq"}));
+  EXPECT_EQ(names,
+            (std::vector<std::string>{
+                "flat", "hnsw_flat", "hnsw_lvq", "hnsw_pq", "ivf_flat",
+                "ivf_lvq", "ivf_pq", "lvq", "nsg_flat", "nsw_flat", "pq"}));
 }
 
 TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
@@ -103,6 +124,8 @@ TEST(IndexRegistry, CreatesEveryBuiltInIndex) {
   ExpectBuiltIn<hypervec::IndexHNSWFlat>("hnsw_flat");
   ExpectBuiltIn<hypervec::IndexHNSWPQ>("hnsw_pq");
   ExpectBuiltIn<hypervec::IndexHNSWLVQ>("hnsw_lvq");
+  ExpectBuiltIn<hypervec::IndexNSGFlat>("nsg_flat");
+  ExpectBuiltIn<hypervec::IndexNSWFlat>("nsw_flat");
 }
 
 TEST(IndexRegistry, AppliesAlgorithmParameters) {
@@ -124,6 +147,44 @@ TEST(IndexRegistry, AppliesAlgorithmParameters) {
   ASSERT_NE(hnsw, nullptr);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(0), 22);
   EXPECT_EQ(hnsw->hnsw.NbNeighbors(1), 11);
+
+  hypervec::IndexConfig nsw_config("nsw_flat", 12);
+  nsw_config.SetInteger("max_degree", 7)
+      .SetInteger("ef_construction", 15)
+      .SetInteger("ef_search", 9)
+      .SetBoolean("check_relative_distance", false)
+      .SetBoolean("fill_to_max_degree", false);
+  auto nsw_base = hypervec::CreateIndex(nsw_config);
+  auto* nsw = dynamic_cast<hypervec::IndexNSWFlat*>(nsw_base.get());
+  ASSERT_NE(nsw, nullptr);
+  EXPECT_EQ(nsw->Options().max_degree, 7U);
+  EXPECT_EQ(nsw->Options().ef_construction, 15U);
+  EXPECT_EQ(nsw->Options().ef_search, 9U);
+  EXPECT_FALSE(nsw->Options().check_relative_distance);
+  EXPECT_FALSE(nsw->Options().fill_to_max_degree);
+
+  hypervec::IndexConfig nsg_config("nsg_flat", 12);
+  nsg_config.SetInteger("knn_degree", 9)
+      .SetInteger("nn_descent_iterations", 6)
+      .SetDouble("nn_descent_convergence_threshold", 0.02)
+      .SetInteger("random_seed", 17)
+      .SetInteger("max_degree", 7)
+      .SetInteger("build_search_width", 11)
+      .SetInteger("candidate_pool_size", 13)
+      .SetInteger("ef_search", 15)
+      .SetBoolean("check_relative_distance", false);
+  auto nsg_base = hypervec::CreateIndex(nsg_config);
+  auto* nsg = dynamic_cast<hypervec::IndexNSGFlat*>(nsg_base.get());
+  ASSERT_NE(nsg, nullptr);
+  EXPECT_EQ(nsg->Options().knn_degree, 9U);
+  EXPECT_EQ(nsg->Options().nn_descent_iterations, 6U);
+  EXPECT_DOUBLE_EQ(nsg->Options().nn_descent_convergence_threshold, 0.02);
+  EXPECT_EQ(nsg->Options().random_seed, 17U);
+  EXPECT_EQ(nsg->Options().max_degree, 7U);
+  EXPECT_EQ(nsg->Options().build_search_width, 11U);
+  EXPECT_EQ(nsg->Options().candidate_pool_size, 13U);
+  EXPECT_EQ(nsg->Options().ef_search, 15U);
+  EXPECT_FALSE(nsg->Options().check_relative_distance);
 }
 
 TEST(IndexRegistry, AppliesMetricArgumentsToCompositeStorage) {
@@ -150,6 +211,18 @@ TEST(IndexRegistry, ResolvesAliasesCaseInsensitively) {
   hnsw_config.SetInteger("m_hnsw", 4);
   auto hnsw = hypervec::CreateIndex(hnsw_config);
   EXPECT_NE(dynamic_cast<hypervec::IndexHNSWFlat*>(hnsw.get()), nullptr);
+
+  hypervec::IndexConfig nsw_config("InDeXnSwFlAt", 4);
+  nsw_config.SetInteger("max_degree", 4).SetInteger("ef_construction", 8);
+  auto nsw = hypervec::CreateIndex(nsw_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexNSWFlat*>(nsw.get()), nullptr);
+
+  hypervec::IndexConfig nsg_config("NsG", 4);
+  nsg_config.SetInteger("knn_degree", 4)
+      .SetInteger("max_degree", 4)
+      .SetInteger("candidate_pool_size", 8);
+  auto nsg = hypervec::CreateIndex(nsg_config);
+  EXPECT_NE(dynamic_cast<hypervec::IndexNSGFlat*>(nsg.get()), nullptr);
 }
 
 TEST(IndexRegistry, CanComposeAnOwningIdMap) {
@@ -182,6 +255,14 @@ TEST(IndexRegistry, RejectsInvalidBuiltInConfigurations) {
   hypervec::IndexConfig bad_degree("hnsw_flat", 4);
   bad_degree.SetInteger("m_hnsw", 1);
   EXPECT_THROW(hypervec::CreateIndex(bad_degree), hypervec::HypervecException);
+
+  hypervec::IndexConfig bad_nsw("nsw_flat", 4);
+  bad_nsw.SetInteger("max_degree", 8).SetInteger("ef_construction", 4);
+  EXPECT_THROW(hypervec::CreateIndex(bad_nsw), hypervec::HypervecException);
+
+  hypervec::IndexConfig bad_nsg("nsg_flat", 4);
+  bad_nsg.SetDouble("nn_descent_convergence_threshold", 2.0);
+  EXPECT_THROW(hypervec::CreateIndex(bad_nsg), hypervec::HypervecException);
 
   hypervec::IndexConfig bad_pq("pq", 5);
   bad_pq.SetInteger("m_pq", 2);

@@ -62,21 +62,11 @@ TEST(TestMmap, MmapFlatcodes) {
 #ifdef _AIX
     GTEST_SKIP() << "Skipping test on AIX.";
 #endif
-    // NOTE (disabled): this test asserts that an index read with
-    // IO_FLAG_MMAP_IFC is a *live* mmap view of the file, so overwriting the
-    // file's bytes is reflected by a subsequent Search. That contract does not
-    // hold in the current engine: the mmap reader (MappedFileIOReader /
-    // MmappedFileMappingOwner in persistence/mapped_io.cpp) is defined but is
-    // never instantiated by the ReadIndex* path, so IndexFlatCodes always
-    // deserializes its codes into owned heap memory (codes.is_owned == true)
-    // and IO_FLAG_MMAP_IFC is effectively a no-op. As a result the post-
-    // overwrite Search returns the originally-loaded data and the assertion at
-    // the "acts as Index2" step fails on every platform. This was never caught
-    // because CI (wheel-check) built with -DBUILD_TESTING=OFF and never ran the
-    // test target. Skip until the mmap zero-copy read path is actually wired
-    // into deserialization. See issue: mmap zero-copy read not implemented.
-    GTEST_SKIP() << "IO_FLAG_MMAP_IFC zero-copy read is not wired into "
-                    "IndexFlatCodes deserialization; see tracking issue.";
+    // TODO(persistence): remove this skip once ReadIndex honors
+    // IO_FLAG_MMAP_IFC by constructing a MappedFileIOReader.
+    GTEST_SKIP()
+        << "IO_FLAG_MMAP_IFC is declared but the current ReadIndex entry "
+           "point does not create a memory-mapped reader yet.";
 
     // generate data
     const size_t nt = 1000;
@@ -178,7 +168,8 @@ TEST(TestMmap, MmapFlatcodes) {
     ASSERT_EQ(ref_dis_1, cand_dis_3);
 }
 
-// IndexBinaryFlat is not included in the HNSW-only build.
+// IndexBinaryFlat is not included in the current CMake build.
 TEST(TestMmap, MmapBinaryFlatcodes) {
-    GTEST_SKIP() << "IndexBinaryFlat not available in HNSW-only build.";
+  GTEST_SKIP()
+      << "IndexBinaryFlat is not available in the current CMake build.";
 }

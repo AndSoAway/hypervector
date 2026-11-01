@@ -64,19 +64,19 @@ configure_swighypervec(hypervec_example_external_module.swig)
 if(TARGET hypervec)
   # Manually add headers as extra dependencies of swighypervec.
   set(SWIG_MODULE_swighypervec_EXTRA_DEPS)
-  foreach(h ${HYPERVEC_HEADERS})
+  foreach(h ${HYPERVEC_PUBLIC_HEADERS})
     list(APPEND SWIG_MODULE_swighypervec_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
     list(APPEND SWIG_MODULE_swighypervec_avx2_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
     list(APPEND SWIG_MODULE_swighypervec_avx512_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
     list(APPEND SWIG_MODULE_swighypervec_avx512_spr_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
     list(APPEND SWIG_MODULE_swighypervec_sve_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
     list(APPEND SWIG_MODULE_hypervec_example_external_module_EXTRA_DEPS
-      "${hypervec_SOURCE_DIR}/${h}")
+      "${h}")
   endforeach()
 else()
   find_package(hypervec REQUIRED)
@@ -264,7 +264,8 @@ endif()
 # Hack so that python_callbacks.h can be included as
 # `#include <hypervec/python/python_callbacks.h>`.
 target_include_directories(hypervec_python_callbacks PRIVATE ${PROJECT_SOURCE_DIR}/..)
-target_include_directories(hypervec_python_callbacks PRIVATE ${hypervec_SOURCE_DIR}/include)
+target_include_directories(hypervec_python_callbacks PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_include_directories(hypervec_python_callbacks PRIVATE ${Python_INCLUDE_DIRS})
 
 target_link_libraries(swighypervec PRIVATE hypervec_python_callbacks)

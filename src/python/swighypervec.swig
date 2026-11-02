@@ -6,6 +6,7 @@
 
 %include <stdint.i>
 %include <std_string.i>
+%include <std_vector.i>
 
 %{
 #include <Python.h>
@@ -23,6 +24,10 @@
 #include <persistence/io.h>
 #include <utils/structures/sparse_row.h>
 #include <utils/structures/term_dictionary.h>
+#include <utils/algo/sparse_vector/sparse_inverted_index.h>
+#include <utils/algo/bm25/inverted_index.h>
+#include <utils/algo/bm25/text_to_sparse.h>
+#include <utils/algo/bm25/analyzer.h>
 
 #include <cstring>
 #include <memory>
@@ -243,6 +248,10 @@ PyObject* term_dictionary_serialize(const hypervec::TermDictionary* dict) {
   }
 }
 
+// Token lists for the BM25 analyzer cross to Python as a list of str.
+// Must be instantiated at global scope, before `namespace hypervec`.
+%template(StringVector) std::vector<std::string>;
+
 namespace hypervec {
 
 typedef int64_t idx_t;
@@ -421,6 +430,134 @@ struct TermDictionary {
   // Serialize to bytes using the shared cross-language layout.
   PyObject* serialize() const {
     return term_dictionary_serialize($self);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BM25 full-text stack (T1 C++) exposed for the Python server's
+// search_by_full_text path. Token lists cross as a Python list of str.
+// ---------------------------------------------------------------------------
+// Three dict paths for the Chinese analyzer (jieba / hmm / user).
+struct AnalyzerParams {
+  std::string jieba_dict_path;
+  std::string hmm_model_path;
+  std::string user_dict_path;
+};
+
+#if defined(HYPERVEC_ENABLE_BM25_ANALYZER)
+// Resolve default dict paths (HYPERVEC_DICT_DIR env, else baked path).
+hypervec::AnalyzerParams DefaultAnalyzerParams();
+
+// Chinese tokenizer. Move-only in C++, so wrapped as a pointer-owned object:
+// only the ctor-from-params and analyze() are exposed, never copy/move.
+%nodefaultctor CppjiebaAnalyzer;
+struct CppjiebaAnalyzer {
+};
+%extend CppjiebaAnalyzer {
+  CppjiebaAnalyzer(const hypervec::AnalyzerParams* params) {
+    return new hypervec::CppjiebaAnalyzer(*params);
+  }
+
+  // Tokenize `text` into lowercased terms (input order, empties omitted).
+  std::vector<std::string> analyze(const std::string& text) const {
+    return $self->Analyze(text);
+  }
+}
+#endif
+
+// Tokens -> TF (doc side) / IDF (query side) sparse vectors + corpus stats.
+%nodefaultctor TextToSparse;
+struct TextToSparse {
+};
+%extend TextToSparse {
+  TextToSparse() {
+    return new hypervec::TextToSparse();
+  }
+
+  // Doc side: TF SparseRow; updates DF/avgdl/num_docs.
+  hypervec::SparseRow add_document(const std::vector<std::string>& tokens) {
+    return $self->AddDocument(tokens);
+  }
+
+  // Query side: IDF SparseRow; unseen terms dropped.
+  hypervec::SparseRow query_to_sparse(const std::vector<std::string>& tokens) const {
+    return $self->QueryToSparse(tokens);
+  }
+
+  float avgdl() const {
+    return $self->Avgdl();
+  }
+
+  uint64_t num_docs() const {
+    return $self->NumDocs();
+  }
+}
+
+// BM25 inverted index over TF SparseRows; doc ids assigned 0..n-1 by add order.
+%nodefaultctor BM25InvertedIndex;
+struct BM25InvertedIndex {
+};
+%extend BM25InvertedIndex {
+  BM25InvertedIndex() {
+    return new hypervec::BM25InvertedIndex();
+  }
+
+  // Add a Python sequence of SparseRow (TF). Doc ids continue from the
+  // current count, so call order defines doc id -> row mapping.
+  void add(PyObject* rows) {
+    if (!PySequence_Check(rows)) {
+      throw std::runtime_error("BM25InvertedIndex.add: expected a sequence of SparseRow");
+    }
+    Py_ssize_t n = PySequence_Size(rows);
+    std::vector<hypervec::SparseRow> vec;
+    vec.reserve(static_cast<size_t>(n));
+    for (Py_ssize_t i = 0; i < n; ++i) {
+      PyObject* item = PySequence_GetItem(rows, i);
+      void* ptr = nullptr;
+      int res = SWIG_ConvertPtr(item, &ptr, SWIGTYPE_p_hypervec__SparseRow, 0);
+      if (!SWIG_IsOK(res) || ptr == nullptr) {
+        Py_XDECREF(item);
+        throw std::runtime_error("BM25InvertedIndex.add: sequence element is not a SparseRow");
+      }
+      vec.push_back(*reinterpret_cast<hypervec::SparseRow*>(ptr));
+      Py_DECREF(item);
+    }
+    $self->Add(static_cast<hypervec::idx_t>(vec.size()), vec.data(), 0);
+  }
+
+  // BM25 k-NN. Returns (distances, labels) as two Python lists. avgdl must be
+  // the corpus average doc length (use avgdl()); defaulting to 1.0 disables
+  // the b length-normalization and skews scores.
+  PyObject* search(const hypervec::SparseRow* query, int k,
+                   float k1 = 1.2f, float b = 0.75f, float avgdl = 1.0f) const {
+    if (k <= 0) {
+      throw std::runtime_error("BM25InvertedIndex.search: k must be positive");
+    }
+    hypervec::SparseSearchParameters params;
+    params.bm25.k1 = k1;
+    params.bm25.b = b;
+    params.bm25.avgdl = avgdl;
+    std::vector<float> dist(static_cast<size_t>(k));
+    std::vector<hypervec::idx_t> lab(static_cast<size_t>(k));
+    $self->Search(*query, k, dist.data(), lab.data(), &params);
+    PyObject* dlist = PyList_New(k);
+    PyObject* llist = PyList_New(k);
+    for (int i = 0; i < k; ++i) {
+      PyList_SetItem(dlist, i, PyFloat_FromDouble(static_cast<double>(dist[i])));
+      PyList_SetItem(llist, i, PyLong_FromLongLong(static_cast<long long>(lab[i])));
+    }
+    PyObject* tup = PyTuple_New(2);
+    PyTuple_SetItem(tup, 0, dlist);
+    PyTuple_SetItem(tup, 1, llist);
+    return tup;
+  }
+
+  float avgdl() const {
+    return $self->Avgdl();
+  }
+
+  hypervec::idx_t num_docs() const {
+    return $self->NumDocs();
   }
 }
 

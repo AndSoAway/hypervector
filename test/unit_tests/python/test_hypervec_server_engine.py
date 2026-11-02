@@ -564,3 +564,97 @@ def test_search_index_unknown_params_ignored(tmp_path):
     # Unknown param key must not raise; index decides what to do with it
     engine._search_index(spy, query, k=1, search_params={"unknown_param": 99})
     assert spy.last_params == {"unknown_param": 99}
+
+
+def _bm25_module_or_skip():
+    """Return the real SWIG module if it exposes the BM25 stack, else skip.
+
+    The full-text path needs CppjiebaAnalyzer/TextToSparse/BM25InvertedIndex,
+    which only exist once the SWIG bindings are rebuilt with the BM25 classes.
+    CI without that rebuild skips this integration test.
+    """
+    import pytest
+
+    try:
+        import swighypervec as hv
+    except Exception:
+        pytest.skip("swighypervec module not importable")
+    for name in ("CppjiebaAnalyzer", "TextToSparse", "BM25InvertedIndex", "DefaultAnalyzerParams"):
+        if not hasattr(hv, name):
+            pytest.skip(f"swighypervec missing BM25 symbol {name}")
+    try:
+        hv.CppjiebaAnalyzer(hv.DefaultAnalyzerParams())
+    except Exception:
+        pytest.skip("analyzer dicts unavailable (set HYPERVEC_DICT_DIR)")
+    return hv
+
+
+def test_engine_full_text_search_chinese_end_to_end(tmp_path):
+    hv = _bm25_module_or_skip()
+    module = load_engine_module()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=hv)
+
+    schema = {
+        "fields": [
+            {"name": "id", "is_primary": True, "dtype": "VARCHAR"},
+            {"name": "vector", "dtype": "FLOAT_VECTOR", "dim": 1},
+            {"name": "contents", "dtype": "VARCHAR"},
+        ]
+    }
+    engine.create_collection(
+        "docs",
+        schema=schema,
+        index_params={"indexes": [{"field_name": "vector", "index_type": "HNSW", "metric_type": "L2", "params": {}}]},
+    )
+    docs = [
+        ("1", "自然语言处理 是 人工智能 的 重要 分支"),
+        ("2", "机器学习 和 深度学习 推动 人工智能 发展"),
+        ("3", "自然语言处理 技术 用于 机器 翻译 和 文本 分析"),
+        ("4", "数据库 系统 负责 数据 的 存储 和 检索"),
+    ]
+    engine.insert("docs", [{"id": i, "vector": [float(int(i))], "contents": c} for i, c in docs])
+    engine.flush("docs")
+
+    res = engine.search_by_full_text("docs", query="自然语言处理", limit=3)
+    ids = [h["id"] for h in res]
+    assert "1" in ids and "3" in ids          # both contain the query phrase
+    assert "4" not in ids                       # unrelated doc not matched
+    assert res[0]["distance"] >= res[-1]["distance"]  # BM25 descending
+    assert res[0]["entity"]["contents"]         # entity carries the text field
+
+    import pytest
+
+    with pytest.raises(ValueError):             # empty query
+        engine.search_by_full_text("docs", query="   ", limit=3)
+    with pytest.raises(FileNotFoundError):      # missing collection
+        engine.search_by_full_text("missing", query="x", limit=3)
+
+    # Coexists with vector search on the same collection.
+    assert len(engine.search("docs", data=[[1.0]], limit=2)[0]) >= 1
+
+
+def test_engine_full_text_search_not_flushed(tmp_path):
+    hv = _bm25_module_or_skip()
+    module = load_engine_module()
+    engine = module.HypervecServerEngine(str(tmp_path), hypervec_module=hv)
+
+    schema = {
+        "fields": [
+            {"name": "id", "is_primary": True, "dtype": "VARCHAR"},
+            {"name": "vector", "dtype": "FLOAT_VECTOR", "dim": 1},
+            {"name": "contents", "dtype": "VARCHAR"},
+        ]
+    }
+    engine.create_collection(
+        "pending",
+        schema=schema,
+        index_params={"indexes": [{"field_name": "vector", "index_type": "HNSW", "metric_type": "L2", "params": {}}]},
+    )
+    # Inserted but NOT flushed: the index file does not exist yet, so full-text
+    # search must raise FileNotFoundError (same contract as vector search).
+    engine.insert("pending", [{"id": "1", "vector": [1.0], "contents": "未刷新 的 文本"}])
+
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        engine.search_by_full_text("pending", query="文本", limit=3)

@@ -367,3 +367,37 @@ def test_pyhypervec_purge_collection_data_require_exported_false(monkeypatch):
     client.purge_collection_data("demo", require_exported=False)
 
     assert calls[0][2]["require_exported"] is False
+
+
+def test_pyhypervec_client_search_by_full_text_payload(monkeypatch):
+    calls = []
+    client = HypervecClient("http://localhost:8080")
+
+    def fake_request(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"results": [{"id": "a", "distance": 1.5, "entity": {"contents": "文本"}}]}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    res = client.search_by_full_text(
+        collection_name="demo",
+        query="自然语言处理",
+        limit=3,
+        output_fields=["id", "contents"],
+        filter="source == 'manual'",
+        consistency_level="Bounded",
+    )
+
+    assert res[0]["id"] == "a"
+    assert calls == [
+        (
+            "POST",
+            "/collections/demo/search-text",
+            {
+                "query": "自然语言处理",
+                "limit": 3,
+                "output_fields": ["id", "contents"],
+                "filter": "source == 'manual'",
+                "consistency_level": "Bounded",
+            },
+        )
+    ]

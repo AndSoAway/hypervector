@@ -5,7 +5,7 @@ import warnings
 
 from . import hypervec_pb2 as hypervec__pb2
 
-GRPC_GENERATED_VERSION = '1.83.0'
+GRPC_GENERATED_VERSION = '1.85.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -97,6 +97,11 @@ class HyperVecStub:
         self.Search = channel.unary_unary(
                 '/hypervec.HyperVec/Search',
                 request_serializer=hypervec__pb2.SearchRequest.SerializeToString,
+                response_deserializer=hypervec__pb2.SearchResponse.FromString,
+                _registered_method=True)
+        self.FullTextSearch = channel.unary_unary(
+                '/hypervec.HyperVec/FullTextSearch',
+                request_serializer=hypervec__pb2.FullTextSearchRequest.SerializeToString,
                 response_deserializer=hypervec__pb2.SearchResponse.FromString,
                 _registered_method=True)
         self.GetVersion = channel.unary_unary(
@@ -217,6 +222,12 @@ class HyperVecServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def FullTextSearch(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetVersion(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -325,6 +336,11 @@ def add_HyperVecServicer_to_server(servicer, server):
             'Search': grpc.unary_unary_rpc_method_handler(
                     servicer.Search,
                     request_deserializer=hypervec__pb2.SearchRequest.FromString,
+                    response_serializer=hypervec__pb2.SearchResponse.SerializeToString,
+            ),
+            'FullTextSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.FullTextSearch,
+                    request_deserializer=hypervec__pb2.FullTextSearchRequest.FromString,
                     response_serializer=hypervec__pb2.SearchResponse.SerializeToString,
             ),
             'GetVersion': grpc.unary_unary_rpc_method_handler(
@@ -713,6 +729,33 @@ class HyperVec:
             target,
             '/hypervec.HyperVec/Search',
             hypervec__pb2.SearchRequest.SerializeToString,
+            hypervec__pb2.SearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FullTextSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/hypervec.HyperVec/FullTextSearch',
+            hypervec__pb2.FullTextSearchRequest.SerializeToString,
             hypervec__pb2.SearchResponse.FromString,
             options,
             channel_credentials,

@@ -37,6 +37,7 @@ def test_original_grpc_v2_wire_contract_is_preserved():
         "LoadCollection",
         "CloseCollection",
         "Search",
+        "FullTextSearch",
         "GetVersion",
         "SyncCheck",
         "DownloadIndex",
@@ -102,6 +103,13 @@ class FakeEngine:
     def search(self, collection_name, *, data, limit, **kwargs):
         del data, kwargs
         return [[{"id": f"doc-{i}", "distance": float(i), "entity": {}} for i in range(limit)]]
+
+    def search_by_full_text(self, collection_name, *, query, limit, **kwargs):
+        del kwargs
+        return [
+            {"id": f"ft-{i}", "distance": float(limit - i), "entity": {"contents": query}}
+            for i in range(limit)
+        ]
 
     def get_version(self, collection_name):
         return {
@@ -216,6 +224,18 @@ def test_grpc_create_insert_search_and_drop(grpc_client):
     assert grpc_client.drop_collection("new_collection")["existed"]
 
 
+def test_grpc_full_text_search(grpc_client):
+    results = grpc_client.search_by_full_text(
+        collection_name="demo",
+        query="自然语言处理",
+        limit=3,
+    )
+    # Full-text returns a single flat result list (not list-of-lists).
+    assert [hit["id"] for hit in results] == ["ft-0", "ft-1", "ft-2"]
+    # Raw Chinese query round-trips through the proto string field.
+    assert results[0]["entity"]["contents"] == "自然语言处理"
+
+
 def test_grpc_version_sync_and_index_transfer(grpc_client, tmp_path):
     assert grpc_client.get_version("demo")["version"] == 2
     assert grpc_client.sync_check("demo", 1)["needs_sync"]
@@ -282,6 +302,45 @@ def test_dual_protocols_share_one_engine(tmp_path, monkeypatch):
         )
         assert response.status_code == 200
         assert "from_http" in grpc_client.list_collections()
+    finally:
+        grpc_client.close()
+        grpc_server.stop(grace=0).wait()
+
+
+def test_full_text_http_and_grpc_agree(tmp_path, monkeypatch):
+    """HTTP and gRPC full-text paths must return identical results.
+
+    Both transports call the same engine.search_by_full_text, so the same raw
+    Chinese query must produce byte-identical hits through either protocol.
+    """
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    engine = FakeEngine(tmp_path)
+    shared, http_app, grpc_server = create_dual_services(
+        data_root=str(tmp_path), engine=engine, grpc_workers=2
+    )
+    assert shared is engine
+
+    port = bind_server(grpc_server, "127.0.0.1:0")
+    grpc_server.start()
+    grpc_client = HypervecClient(f"grpc://127.0.0.1:{port}")
+    try:
+        http_client = TestClient(http_app)
+        query = "自然语言处理"
+        http_res = http_client.post(
+            "/collections/demo/search-text",
+            json={"query": query, "limit": 3, "output_fields": ["contents"]},
+        ).json()["results"]
+        grpc_res = grpc_client.search_by_full_text(
+            collection_name="demo", query=query, limit=3, output_fields=["contents"]
+        )
+        # Identical hits (ids, scores, and the round-tripped Chinese text) via
+        # both protocols.
+        assert http_res == grpc_res
+        assert [h["id"] for h in http_res] == ["ft-0", "ft-1", "ft-2"]
+        assert http_res[0]["entity"]["contents"] == query
     finally:
         grpc_client.close()
         grpc_server.stop(grace=0).wait()

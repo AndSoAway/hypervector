@@ -215,6 +215,30 @@ class GrpcTransport:
         )
         return list(self._json(response.results_json))
 
+    def search_by_full_text(
+        self,
+        *,
+        collection_name: str,
+        query: str,
+        limit: int,
+        output_fields: list[str] | None = None,
+        filter: str | None = None,
+        consistency_level: str | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        response = self._call(
+            "FullTextSearch",
+            self._pb2.FullTextSearchRequest(
+                collection_name=collection_name,
+                query=query,
+                limit=int(limit),
+                output_fields=list(output_fields or []),
+                filter=filter or "",
+                consistency_level=consistency_level or "",
+            ),
+        )
+        return list(self._json(response.results_json))
+
     def get_version(self, collection_name: str) -> dict[str, Any]:
         response = self._call(
             "GetVersion",

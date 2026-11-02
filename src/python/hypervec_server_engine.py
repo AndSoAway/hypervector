@@ -87,6 +87,13 @@ class HypervecServerEngine:
         self.meta_store = meta_store or MetaStore(self.data_root / "collections.json")
         self.scalar_store = scalar_store or ScalarStore(self.data_root / "scalar.db")
         self._indexes: dict[str, Any] = {}
+        # Per-collection BM25 full-text state, built at flush and lazy-rebuilt on
+        # first full-text search. Shares the vector index's lifecycle: evicted at
+        # every site self._indexes is evicted. Each value is a dict with keys
+        # "index" (BM25InvertedIndex), "t2s" (TextToSparse), "analyzer"
+        # (CppjiebaAnalyzer), "row_ids" (list mapping inverted doc id -> row id),
+        # and "avgdl".
+        self._inverted_indexes: dict[str, dict[str, Any]] = {}
         self._scalar_cache: dict[str, dict[int, dict[str, Any]]] = {}
         self._scalar_cache_max_rows = int(os.getenv("HYPERVEC_SCALAR_CACHE_MAX_ROWS", "1000000"))
         self._locks: dict[str, RWLock] = {}
@@ -445,6 +452,7 @@ class HypervecServerEngine:
         with self._lock_for(collection_name).write_lock():
             existed = self.meta_store.delete(collection_name)
             self._indexes.pop(collection_name, None)
+            self._inverted_indexes.pop(collection_name, None)
             self._scalar_cache.pop(collection_name, None)
             self.scalar_store.drop_table(collection_name)
             collection_dir = self._collection_dir(collection_name)
@@ -509,6 +517,7 @@ class HypervecServerEngine:
             total = self.scalar_store.count(collection_name)
             self.meta_store.update(collection_name, total=total)
             self._indexes.pop(collection_name, None)
+            self._inverted_indexes.pop(collection_name, None)
             self._scalar_cache.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
@@ -538,6 +547,12 @@ class HypervecServerEngine:
             )
             self._indexes[collection_name] = index
             self._refresh_scalar_cache(collection_name, updated)
+            try:
+                self._build_inverted_index(collection_name, updated)
+            except Exception:
+                # Full-text index is best-effort at flush; it lazy-rebuilds on
+                # first search_by_full_text if missing. Don't fail vector flush.
+                self._inverted_indexes.pop(collection_name, None)
             return {
                 "flushed": True,
                 "collection_name": collection_name,
@@ -580,6 +595,7 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name).write_lock():
             self._indexes.pop(collection_name, None)
+            self._inverted_indexes.pop(collection_name, None)
             self._scalar_cache.pop(collection_name, None)
             return {"closed": True, "collection_name": collection_name}
 
@@ -631,8 +647,6 @@ class HypervecServerEngine:
             else:
                 candidate_k = min(meta.total, int(limit))
             distances, labels = self._search_index(index, query, candidate_k, search_params)
-            requested = set(output_fields or [])
-            cache = self._scalar_cache.get(collection_name)
             results: list[list[dict[str, Any]]] = []
             for q_labels, q_distances in zip(labels, distances):
                 pairs = [
@@ -640,37 +654,173 @@ class HypervecServerEngine:
                     for label, distance in zip(q_labels, q_distances)
                     if int(label) >= 0
                 ]
-                row_ids = [row_id for row_id, _ in pairs]
-                if cache is not None:
-                    scalars = [cache.get(row_id) for row_id in row_ids]
-                else:
-                    scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
-                hits = []
-                for (row_id, distance), scalar in zip(pairs, scalars):
-                    if scalar is None:
-                        continue
-                    row = {
-                        **dict(scalar["metadata"] or {}),
-                        meta.id_field: scalar["doc_id"],
-                        meta.text_field: scalar["text_content"],
-                    }
-                    if not self._filter_match(row, filter):
-                        continue
-                    if requested:
-                        entity = {key: value for key, value in row.items() if key in requested}
-                    else:
-                        entity = dict(row)
-                    hits.append(
-                        {
-                            "id": row.get(meta.id_field, row_id),
-                            "distance": distance,
-                            "entity": entity,
-                        }
+                results.append(
+                    self._hydrate_hits(
+                        meta, collection_name, pairs, output_fields, filter, int(limit)
                     )
-                    if len(hits) >= int(limit):
-                        break
-                results.append(hits)
+                )
             return results
+
+    def _hydrate_hits(
+        self,
+        meta: CollectionMeta,
+        collection_name: str,
+        pairs: list[tuple[int, float]],
+        output_fields: list[str] | None,
+        filter: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Turn (row_id, distance) pairs into {id, distance, entity} hits.
+
+        Shared by vector `search` and `search_by_full_text`. `distance` is the
+        raw score from the index (L2/IP distance for vectors, BM25 score for
+        full-text). Applies `filter` and `output_fields`, stops at `limit`.
+        """
+        requested = set(output_fields or [])
+        cache = self._scalar_cache.get(collection_name)
+        row_ids = [row_id for row_id, _ in pairs]
+        if cache is not None:
+            scalars = [cache.get(row_id) for row_id in row_ids]
+        else:
+            scalars = self.scalar_store.get_by_row_ids(collection_name, row_ids)
+        hits: list[dict[str, Any]] = []
+        for (row_id, distance), scalar in zip(pairs, scalars):
+            if scalar is None:
+                continue
+            row = {
+                **dict(scalar["metadata"] or {}),
+                meta.id_field: scalar["doc_id"],
+                meta.text_field: scalar["text_content"],
+            }
+            if not self._filter_match(row, filter):
+                continue
+            if requested:
+                entity = {key: value for key, value in row.items() if key in requested}
+            else:
+                entity = dict(row)
+            hits.append(
+                {
+                    "id": row.get(meta.id_field, row_id),
+                    "distance": distance,
+                    "entity": entity,
+                }
+            )
+            if len(hits) >= int(limit):
+                break
+        return hits
+
+    def _build_inverted_index(self, collection_name: str, meta: CollectionMeta) -> dict[str, Any]:
+        """Build the BM25 inverted index for a collection from its stored text.
+
+        Reads docs in row_id order (export_rows is ORDER BY row_id ASC), tokenizes
+        each via the Chinese analyzer, feeds TF sparse rows into a BM25 inverted
+        index, and records the row_id for each sequential inverted doc id so search
+        can map labels back to rows. Caller must hold the collection write lock.
+        """
+        ap = self.hypervec.DefaultAnalyzerParams()
+        cfg = (meta.schema or {}).get("analyzer_params") or {}
+        if cfg.get("jieba_dict_path"):
+            ap.jieba_dict_path = cfg["jieba_dict_path"]
+        if cfg.get("hmm_model_path"):
+            ap.hmm_model_path = cfg["hmm_model_path"]
+        if cfg.get("user_dict_path"):
+            ap.user_dict_path = cfg["user_dict_path"]
+        try:
+            analyzer = self.hypervec.CppjiebaAnalyzer(ap)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to construct Chinese analyzer for '{collection_name}'; "
+                f"check analyzer dict paths / HYPERVEC_DICT_DIR: {exc}"
+            ) from exc
+
+        t2s = self.hypervec.TextToSparse()
+        inverted = self.hypervec.BM25InvertedIndex()
+        row_ids: list[int] = []
+        tf_rows = []
+        for row in self.scalar_store.export_rows(collection_name):
+            text = row.get("text_content") or ""
+            tokens = analyzer.analyze(text)
+            tf_rows.append(t2s.add_document(tokens))
+            row_ids.append(int(row["row_id"]))
+        inverted.add(tf_rows)
+
+        state = {
+            "index": inverted,
+            "t2s": t2s,
+            "analyzer": analyzer,
+            "row_ids": row_ids,
+            "avgdl": float(inverted.avgdl()),
+        }
+        self._inverted_indexes[collection_name] = state
+        return state
+
+    def search_by_full_text(
+        self,
+        collection_name: str,
+        *,
+        query: str,
+        limit: int,
+        output_fields: list[str] | None = None,
+        filter: str = "",
+        consistency_level: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """BM25 full-text search over a collection's text field.
+
+        `query` is raw text (e.g. Chinese); it is tokenized, converted to an IDF
+        sparse vector, and scored against the per-collection BM25 inverted index.
+        Returns a single result list of {id, distance (BM25 score), entity}.
+        """
+        del consistency_level
+        collection_name = self.validate_collection_name(collection_name)
+        if int(limit) <= 0:
+            raise ValueError("limit must be positive.")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must not be empty.")
+
+        lock = self._lock_for(collection_name)
+        if collection_name not in self._inverted_indexes:
+            with lock.write_lock():
+                if collection_name not in self._inverted_indexes:
+                    meta = self._meta_or_raise(collection_name)
+                    if meta.data_state == "invalid":
+                        raise ConflictError(
+                            f"collection '{collection_name}' is in 'invalid' state; "
+                            "restore a valid bundle before searching."
+                        )
+                    if not Path(meta.index_path).exists():
+                        raise FileNotFoundError(
+                            f"collection '{collection_name}' index has not been flushed."
+                        )
+                    self._build_inverted_index(collection_name, meta)
+
+        with lock.read_lock():
+            meta = self._meta_or_raise(collection_name)
+            state = self._inverted_indexes[collection_name]
+            tokens = state["analyzer"].analyze(query)
+            query_idf = state["t2s"].query_to_sparse(tokens)
+            if query_idf.nnz() == 0:
+                return []
+            cfg = (meta.schema or {}).get("analyzer_params") or {}
+            k1 = float(cfg.get("k1", 1.2))
+            b = float(cfg.get("b", 0.75))
+            if filter:
+                candidate_k = min(meta.total, max(int(limit), int(limit) * 8))
+            else:
+                candidate_k = min(meta.total, int(limit))
+            if candidate_k <= 0:
+                return []
+            distances, labels = state["index"].search(
+                query_idf, candidate_k, k1, b, state["avgdl"]
+            )
+            row_ids = state["row_ids"]
+            pairs = [
+                (row_ids[int(label)], float(distance))
+                for label, distance in zip(labels, distances)
+                if int(label) >= 0 and int(label) < len(row_ids)
+            ]
+            return self._hydrate_hits(
+                meta, collection_name, pairs, output_fields, filter, int(limit)
+            )
 
     def get_version(self, collection_name: str) -> dict[str, Any]:
         meta = self._meta_or_raise(self.validate_collection_name(collection_name))
@@ -1125,6 +1275,7 @@ class HypervecServerEngine:
 
             # Evict from memory
             self._indexes.pop(collection_name, None)
+            self._inverted_indexes.pop(collection_name, None)
 
             # Delete index file + all server-generated bundle / temp / staging
             # residue in the collection directory.  Anything the export or

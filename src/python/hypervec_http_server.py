@@ -54,6 +54,13 @@ def create_app(
         filter: str = ""
         consistency_level: Optional[str] = None
 
+    class FullTextSearchRequest(BaseModel):
+        query: str
+        limit: int
+        output_fields: list[str] = Field(default_factory=list)
+        filter: str = ""
+        consistency_level: Optional[str] = None
+
     class SyncCheckRequest(BaseModel):
         client_version: int
         client_checksum: Optional[str] = None
@@ -185,6 +192,24 @@ def create_app(
                     data=request.data,
                     limit=request.limit,
                     search_params=request.search_params,
+                    output_fields=request.output_fields,
+                    filter=request.filter,
+                    consistency_level=request.consistency_level,
+                )
+            }
+        except Exception as exc:
+            raise fail(exc)
+
+    @app.post("/collections/{collection_name}/search-text")
+    def search_text(
+        collection_name: str, request: FullTextSearchRequest = Body(...)
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "results": engine.search_by_full_text(
+                    collection_name,
+                    query=request.query,
+                    limit=request.limit,
                     output_fields=request.output_fields,
                     filter=request.filter,
                     consistency_level=request.consistency_level,

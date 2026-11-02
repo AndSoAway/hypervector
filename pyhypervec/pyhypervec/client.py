@@ -552,6 +552,42 @@ class HypervecClient:
         res = self._request("POST", f"/collections/{collection_name}/search", body=body)
         return list(res.get("results", []))
 
+    def search_by_full_text(
+        self,
+        *,
+        collection_name: str,
+        query: str,
+        limit: int,
+        output_fields: list[str] | None = None,
+        filter: str | None = None,
+        consistency_level: str | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        if self._grpc is not None:
+            return self._grpc.search_by_full_text(
+                collection_name=collection_name,
+                query=query,
+                limit=limit,
+                output_fields=output_fields,
+                filter=filter,
+                consistency_level=consistency_level,
+                **kwargs,
+            )
+        body: dict[str, Any] = {
+            "query": query,
+            "limit": int(limit),
+            "output_fields": list(output_fields or []),
+        }
+        if filter:
+            body["filter"] = filter
+        if consistency_level:
+            body["consistency_level"] = consistency_level
+        body.update(kwargs)
+        res = self._request(
+            "POST", f"/collections/{collection_name}/search-text", body=body
+        )
+        return list(res.get("results", []))
+
     # ------------------------------------------------------------------
     # Bundle download / upload / purge-data
     # ------------------------------------------------------------------

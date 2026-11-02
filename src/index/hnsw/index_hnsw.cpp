@@ -26,8 +26,11 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <random>
+#include <string>
+#include <vector>
 
 namespace hypervec {
 
@@ -90,24 +93,63 @@ void IndexHNSW::Add(idx_t n, const float* x) {
   // Prepare level assignment for all vectors (including existing ones)
   hnsw.PrepareLevelTab(n_total, false);
 
-  // Create distance computer for building.
-  // Must go through storage_distance_computer() so similarity metrics (IP,
-  // Jaccard) are negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
-
-  // For single-threaded building, Add vectors one by one
+  // Per-vertex locks shared across threads; AddWithLocks takes the lock of the
+  // vertex it mutates, so concurrent insertions of different points are safe.
   std::vector<omp_lock_t> locks(n_total + 1);
   for (int i = 0; i <= n_total; i++) {
     omp_init_lock(&locks[i]);
   }
 
-  VisitedTable vt(n_total);
-
-  // Add each new vector to the HNSW graph
+  // Group the new points by the level at which they enter the graph and insert
+  // from the highest level down. Within a level, points are independent and can
+  // be linked in parallel; processing high levels first keeps the entry point
+  // stable so threads rarely contend on it.
+  int max_pt_level = 0;
   for (idx_t i = n0; i < n_total; i++) {
-    int pt_level = hnsw.levels[i] - 1;  // levels store level+1 (1-based)
-    dis->SetQuery(x + (i - n0) * d);
-    hnsw.AddWithLocks(*dis, pt_level, i, locks, vt, false);
+    int pt_level = hnsw.levels[i] - 1;
+    if (pt_level > max_pt_level) {
+      max_pt_level = pt_level;
+    }
+  }
+
+  std::vector<std::vector<idx_t>> points_by_level(max_pt_level + 1);
+  for (idx_t i = n0; i < n_total; i++) {
+    points_by_level[hnsw.levels[i] - 1].push_back(i);  // levels store level+1
+  }
+
+  std::mutex exception_mutex;
+  std::string exception_string;
+
+  for (int level = max_pt_level; level >= 0; level--) {
+    const std::vector<idx_t>& pts = points_by_level[level];
+
+#pragma omp parallel if (pts.size() > 1)
+    {
+      // Each thread needs its own distance computer and visited table. Go
+      // through storage_distance_computer() so similarity metrics (IP, Jaccard)
+      // are negated — HNSW graph traversal assumes "smaller is better".
+      // Force the bitmap strategy (use_hashset=false): building touches the
+      // table far more than a single query, so the O(size) reset amortizes
+      // better than the hash set even at 1M vectors.
+      std::unique_ptr<DistanceComputer> dis(storage_distance_computer(storage));
+      VisitedTable vt(n_total, /*use_hashset=*/false);
+
+#pragma omp for schedule(dynamic, 1)
+      for (idx_t ii = 0; ii < (idx_t)pts.size(); ii++) {
+        idx_t i = pts[ii];
+        try {
+          dis->SetQuery(x + (i - n0) * d);
+          hnsw.AddWithLocks(*dis, level, i, locks, vt, false);
+        } catch (const std::exception& e) {
+          std::lock_guard<std::mutex> lock(exception_mutex);
+          exception_string = e.what();
+        }
+      }
+    }
+
+    if (!exception_string.empty()) {
+      break;
+    }
   }
 
   // Cleanup locks
@@ -115,7 +157,9 @@ void IndexHNSW::Add(idx_t n, const float* x) {
     omp_destroy_lock(&locks[i]);
   }
 
-  delete dis;
+  if (!exception_string.empty()) {
+    HYPERVEC_THROW_MSG(exception_string.c_str());
+  }
 }
 
 void IndexHNSW::Reset() {

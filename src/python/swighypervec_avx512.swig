@@ -18,6 +18,7 @@
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
+#include <index/refine/index_refine.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
 #include <utils/structures/sparse_row.h>
@@ -307,6 +308,11 @@ struct IndexIVFPQ : IndexIVF {
              MetricType metric = kMetricL2);
 };
 
+struct IndexRefineFlat : Index {
+  IndexRefineFlat(Index* base);
+  float k_factor;
+};
+
 struct IndexHNSWLVQ : Index {
   IndexHNSWLVQ(int d, int nlocal, int nbits, int M_hnsw,
                MetricType metric = kMetricL2);
@@ -448,6 +454,13 @@ struct TermDictionary {
       hypervec::IVFSearchParameters params;
       PyObject* val = PyDict_GetItemString(py_params, "nprobe");
       if (val) params.nprobe = static_cast<hypervec::idx_t>(PyLong_AsLong(val));
+      return index_search_with_params($self, x, k, &params);
+    }
+    if (const auto* rf = dynamic_cast<const hypervec::IndexRefineFlat*>($self)) {
+      (void)rf;
+      hypervec::RefineSearchParameters params;
+      PyObject* val = PyDict_GetItemString(py_params, "k_factor");
+      if (val) params.k_factor = static_cast<float>(PyFloat_AsDouble(val));
       return index_search_with_params($self, x, k, &params);
     }
     return index_search_with_params($self, x, k, nullptr);

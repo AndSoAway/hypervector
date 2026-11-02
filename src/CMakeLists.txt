@@ -23,6 +23,7 @@ set(HYPERVEC_SRC
   index/hnsw/hnsw.cpp
   index/hnsw/visited_table.cpp
   index/idmap/index_id_map.cpp
+  index/refine/index_refine.cpp
   invlists/inverted_lists.cpp
   persistence/index_clone.cpp
   utils/common/interrupt_callback.cpp

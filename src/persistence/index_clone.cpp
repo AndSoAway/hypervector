@@ -15,6 +15,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/idmap/index_id_map.h>
+#include <index/refine/index_refine.h>
 #include <quantization/lvq/index_ivflvq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/pq/index_pq.h>
@@ -94,6 +95,14 @@ Index* clone_index(const Index* index) {
                                 ivflvq->metric_type);
     res->by_residual = ivflvq->by_residual;
     res->nprobe = ivflvq->nprobe;
+    return res;
+  }
+
+  if (auto* irf = dynamic_cast<const IndexRefineFlat*>(index)) {
+    Index* base = clone_index(irf->base);
+    auto* res = new IndexRefineFlat(base);  // builds a fresh owned refine store
+    res->k_factor = irf->k_factor;
+    res->is_trained = irf->is_trained;
     return res;
   }
 

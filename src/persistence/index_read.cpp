@@ -14,6 +14,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/refine/index_refine.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
 #include <persistence/io.h>
@@ -312,6 +313,21 @@ Index* ReadIndex(IOReader* f, int io_flags) {
       READANDCHECK(codes.data(), sz * idx->lvq.code_size);
       idx->invlists->add_entries(list_no, sz, ids.data(), codes.data());
     }
+    return idx.release();
+  }
+
+  if (h == fourcc("IRFf")) {
+    auto idx = std::make_unique<IndexRefineFlat>();
+    read_index_header(*idx, f);
+    idx->base = ReadIndex(f, 0);
+    Index* inner = ReadIndex(f, 0);
+    idx->refine = dynamic_cast<IndexFlat*>(inner);
+    HYPERVEC_THROW_IF_NOT_MSG(
+      idx->refine != nullptr,
+      "IndexRefineFlat deserialize: refine store is not an IndexFlat");
+    READ1(idx->k_factor);
+    idx->own_fields = true;
+    idx->is_trained = idx->base->is_trained;
     return idx.release();
   }
 

@@ -539,7 +539,11 @@ struct BM25InvertedIndex {
     params.bm25.avgdl = avgdl;
     std::vector<float> dist(static_cast<size_t>(k));
     std::vector<hypervec::idx_t> lab(static_cast<size_t>(k));
+    // Release the GIL for the TAAT search (pure C++, touches no Python state),
+    // so concurrent Python callers actually run in parallel.
+    Py_BEGIN_ALLOW_THREADS
     $self->Search(*query, k, dist.data(), lab.data(), &params);
+    Py_END_ALLOW_THREADS
     PyObject* dlist = PyList_New(k);
     PyObject* llist = PyList_New(k);
     for (int i = 0; i < k; ++i) {

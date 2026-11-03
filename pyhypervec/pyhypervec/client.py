@@ -20,9 +20,13 @@ class HypervecClient:
         token: str | None = None,
         timeout: float = 30.0,
         http2: bool = False,
+        flush_timeout: float = 600.0,
     ) -> None:
         self.token = token
         self.timeout = timeout
+        # flush builds the index server-side and can take minutes on large
+        # collections; give it a longer deadline than ordinary requests.
+        self.flush_timeout = flush_timeout
         self.http2 = http2
 
         parsed = parse_uri(uri)
@@ -424,9 +428,21 @@ class HypervecClient:
         )
 
     def flush(self, collection_name: str) -> dict[str, Any]:
+        # flush can take minutes (server builds the index); use flush_timeout
+        # for this one call, restoring the normal timeout afterwards.
         if self._grpc is not None:
-            return self._grpc.flush(collection_name)
-        return self._request("POST", f"/collections/{collection_name}/flush", body={})
+            prev = self._grpc._timeout
+            self._grpc._timeout = self.flush_timeout
+            try:
+                return self._grpc.flush(collection_name)
+            finally:
+                self._grpc._timeout = prev
+        prev = self.timeout
+        self.timeout = self.flush_timeout
+        try:
+            return self._request("POST", f"/collections/{collection_name}/flush", body={})
+        finally:
+            self.timeout = prev
 
     def load_collection(self, collection_name: str) -> dict[str, Any]:
         if self._grpc is not None:

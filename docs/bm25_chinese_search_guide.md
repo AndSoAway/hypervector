@@ -1,7 +1,7 @@
 # BM25 中文全文检索 —— 原理与客户端使用教程
 
 本文面向**使用全文检索功能的开发者**：讲清 BM25 中文检索怎么工作，以及怎么从
-客户端调用。只讲用法与必要原理，实现细节与测试见 [full_text_search.md](full_text_search.md)。
+客户端调用。实现细节与测试见 [full_text_search.md](full_text_search.md)。
 
 ## 一、它能做什么
 
@@ -13,7 +13,7 @@ client.search_by_full_text(collection_name="docs", query="量子力学", limit=5
 → [{"id": "...", "distance": <BM25分>, "entity": {"contents": "..."}}, ...]
 ```
 
-## 二、原理（够用就好）
+## 二、原理
 
 ### BM25 是什么
 BM25 是经典的**词袋**检索打分算法：把 query 和文档都看成"词的集合"，按**词的匹配程度**
@@ -129,13 +129,13 @@ schema = CollectionSchema(...)
 ```
 支持 `jieba_dict_path` / `hmm_model_path` / `user_dict_path`。留空则用内置词典。
 
-## 七、效果与限制（实事求是）
+## 七、测试效果
 
 - **擅长**：关键词匹配。query 的词和文档字面对得上时，命中准、头部排序好。实测
   T2Ranking 基准 MRR@10 0.42（达官方 BM25 水平）。
 - **不擅长**：语义理解。不认识同义词、近义词；大规模语料中"年份页"这类高频词堆叠的
   页面可能挤占排序——这是纯 BM25 词袋模型的固有特性，不是缺陷。
-- 要语义检索 / 向量+全文融合，是混合检索（T3）的范围，不在本功能内。
+- 语义检索 / 向量+全文融合，待开发。
 - 同一 collection 可同时做向量 `search` 和全文 `search_by_full_text`。
 
 ## 八、常见错误

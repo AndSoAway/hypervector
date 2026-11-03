@@ -225,7 +225,58 @@ class HypervecServerEngine:
             return meta_or_manifest.vector_field
         if isinstance(meta_or_manifest, dict) and meta_or_manifest.get("vector_field"):
             return str(meta_or_manifest["vector_field"])
-        return self._field_name_by_datatype(meta_or_manifest, "FLOAT_VECTOR", default="vector")
+        for datatype in ("FLOAT_VECTOR", "SPARSE_FLOAT_VECTOR"):
+            name = self._field_name_by_datatype(meta_or_manifest, datatype, default="")
+            if name:
+                return name
+        return "vector"
+
+    def _vector_datatype(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str:
+        """Return the datatype string of the vector field ("FLOAT_VECTOR" or "SPARSE_FLOAT_VECTOR")."""
+        vf = self._vector_field(meta_or_manifest)
+        for field in self._schema_fields(meta_or_manifest):
+            if str(field.get("name")) == vf:
+                return str(field.get("datatype", "FLOAT_VECTOR")).upper()
+        return "FLOAT_VECTOR"
+
+    def _is_sparse_collection(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> bool:
+        return self._vector_datatype(meta_or_manifest) == "SPARSE_FLOAT_VECTOR"
+
+    def _vector_fields(
+        self, meta_or_manifest: CollectionMeta | dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Return all vector fields declared in the schema, in declaration order.
+
+        Each entry: {"name", "datatype"} where datatype is FLOAT_VECTOR or
+        SPARSE_FLOAT_VECTOR (uppercased).
+        """
+        result = []
+        for field in self._schema_fields(meta_or_manifest):
+            datatype = str(field.get("datatype", "")).upper()
+            if datatype in ("FLOAT_VECTOR", "SPARSE_FLOAT_VECTOR"):
+                result.append({"name": str(field.get("name")), "datatype": datatype})
+        return result
+
+    def _dense_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str | None:
+        """Name of the first FLOAT_VECTOR field, or None."""
+        for f in self._vector_fields(meta_or_manifest):
+            if f["datatype"] == "FLOAT_VECTOR":
+                return f["name"]
+        return None
+
+    def _sparse_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str | None:
+        """Name of the first SPARSE_FLOAT_VECTOR field, or None."""
+        for f in self._vector_fields(meta_or_manifest):
+            if f["datatype"] == "SPARSE_FLOAT_VECTOR":
+                return f["name"]
+        return None
+
+    def _is_dual_collection(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> bool:
+        """True iff the schema declares BOTH a dense and a sparse vector field."""
+        return (
+            self._dense_field(meta_or_manifest) is not None
+            and self._sparse_field(meta_or_manifest) is not None
+        )
 
     def _text_field(self, meta_or_manifest: CollectionMeta | dict[str, Any]) -> str:
         for field in self._schema_fields(meta_or_manifest):
@@ -428,6 +479,19 @@ class HypervecServerEngine:
                 raise FileExistsError(f"collection '{collection_name}' already exists.")
             self._collection_dir(collection_name).mkdir(parents=True, exist_ok=True)
             manifest = {"schema": dict(schema)}
+            index_path = str(self._index_path(collection_name))
+            # Build per-field metadata for all declared vector fields.  The dense
+            # field owns the collection's single index path; the sparse field is
+            # stored but not indexed (BM25/inverted index is a future task).
+            vector_fields: dict[str, Any] = {}
+            for vf in self._vector_fields(manifest):
+                is_dense = vf["datatype"] == "FLOAT_VECTOR"
+                vector_fields[vf["name"]] = {
+                    "datatype": vf["datatype"],
+                    "dim": None,
+                    "index_path": index_path if is_dense else "",
+                    "index_version": 0,
+                }
             meta = self.meta_store.create(
                 collection_name,
                 schema=dict(schema),
@@ -435,7 +499,8 @@ class HypervecServerEngine:
                 id_field=self._id_field(manifest),
                 vector_field=self._vector_field(manifest),
                 text_field=self._text_field(manifest),
-                index_path=str(self._index_path(collection_name)),
+                index_path=index_path,
+                vector_fields=vector_fields,
             )
             self.scalar_store.ensure_table(collection_name)
             return self._meta_response(meta)
@@ -470,28 +535,74 @@ class HypervecServerEngine:
         with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
             self.scalar_store.ensure_table(collection_name)
+            is_dual = self._is_dual_collection(meta)
+            is_sparse = (not is_dual) and self._is_sparse_collection(meta)
+            dense_field = self._dense_field(meta)
+            sparse_field = self._sparse_field(meta)
+            # Load the term dictionary once so string-keyed terms across all rows
+            # share stable, first-seen-order ids (and are persisted below).  Both
+            # pure-sparse and dual collections may carry string terms.
+            term_dict = (
+                self.scalar_store.load_term_dictionary(collection_name)
+                if (is_sparse or is_dual)
+                else None
+            )
+            # All declared vector field names are excluded from metadata.
+            vector_field_names = {f["name"] for f in self._vector_fields(meta)}
             dim = meta.dim
             rows = []
             next_row_id = self.scalar_store.next_row_id(collection_name)
             for i, row in enumerate(data):
-                if meta.vector_field not in row:
-                    raise ValueError(f"row is missing vector field '{meta.vector_field}'.")
-                vector = np.asarray(row[meta.vector_field], dtype=np.float32)
-                if vector.ndim != 1:
-                    raise ValueError(f"row vector field '{meta.vector_field}' must be 1-D.")
-                if dim is None:
-                    dim = int(vector.size)
-                elif int(dim) != int(vector.size):
-                    raise ValueError(
-                        f"vector dimension {vector.size} does not match collection dim {dim}."
-                    )
+                if is_dual:
+                    # Dense field required; sparse optional per row.
+                    if dense_field not in row:
+                        raise ValueError(f"row is missing dense vector field '{dense_field}'.")
+                    dense_vec = np.asarray(row[dense_field], dtype=np.float32)
+                    if dense_vec.ndim != 1:
+                        raise ValueError(f"row vector field '{dense_field}' must be 1-D.")
+                    if dim is None:
+                        dim = int(dense_vec.size)
+                    elif int(dim) != int(dense_vec.size):
+                        raise ValueError(
+                            f"vector dimension {dense_vec.size} does not match collection dim {dim}."
+                        )
+                    sparse_vec = None
+                    if sparse_field in row and row[sparse_field] is not None:
+                        sparse_vec = self._normalize_sparse(row[sparse_field], term_dict)
+                    row_tuple = (next_row_id + i, None, dense_vec, sparse_vec, None, None)
+                elif is_sparse:
+                    if meta.vector_field not in row:
+                        raise ValueError(f"row is missing vector field '{meta.vector_field}'.")
+                    vector = self._normalize_sparse(row[meta.vector_field], term_dict)
+                    row_tuple = (next_row_id + i, None, vector, None, None)
+                else:
+                    if meta.vector_field not in row:
+                        raise ValueError(f"row is missing vector field '{meta.vector_field}'.")
+                    vector = np.asarray(row[meta.vector_field], dtype=np.float32)
+                    if vector.ndim != 1:
+                        raise ValueError(f"row vector field '{meta.vector_field}' must be 1-D.")
+                    if dim is None:
+                        dim = int(vector.size)
+                    elif int(dim) != int(vector.size):
+                        raise ValueError(
+                            f"vector dimension {vector.size} does not match collection dim {dim}."
+                        )
+                    row_tuple = (next_row_id + i, None, vector, None, None)
+
                 doc_id = row.get(meta.id_field, str(next_row_id + i))
                 text_content = row.get(meta.text_field, "")
-                structured_fields = {meta.id_field, meta.vector_field, meta.text_field}
+                structured_fields = {meta.id_field, meta.text_field} | vector_field_names
                 metadata = {
                     key: value for key, value in row.items() if key not in structured_fields
                 }
-                rows.append((next_row_id + i, str(doc_id), vector, str(text_content), metadata))
+                # Fill in the doc_id/text/metadata slots (positions differ between
+                # the 5-tuple and 6-tuple shapes).
+                if len(row_tuple) == 6:
+                    rid, _, dvec, svec, _, _ = row_tuple
+                    rows.append((rid, str(doc_id), dvec, svec, str(text_content), metadata))
+                else:
+                    rid, _, vec, _, _ = row_tuple
+                    rows.append((rid, str(doc_id), vec, str(text_content), metadata))
 
             # Crash-window safety (PR13-3.3): the scalar write (SQLite) and the
             # data_version bump (collections.json) cannot commit in one atomic
@@ -500,22 +611,136 @@ class HypervecServerEngine:
             # (exported_data_version != data_version) and purge is refused —
             # failing safe (a spurious re-export) rather than unsafe (purging
             # rows that were just added but never exported).
-            self.meta_store.update(
-                collection_name,
-                dim=dim,
-                data_version=meta.data_version + 1,
-            )
+            meta_changes: dict[str, Any] = {"dim": dim, "data_version": meta.data_version + 1}
+            # Mirror the resolved dim into the dense field's per-field metadata.
+            if dense_field is not None and dim is not None:
+                vfields = dict(meta.vector_fields or {})
+                if dense_field in vfields:
+                    entry = dict(vfields[dense_field])
+                    entry["dim"] = dim
+                    vfields[dense_field] = entry
+                    meta_changes["vector_fields"] = vfields
+            self.meta_store.update(collection_name, **meta_changes)
             self.scalar_store.insert_batch(collection_name, rows)
+            if term_dict is not None and len(term_dict) > 0:
+                # Persist any newly-allocated term ids so they stay stable across
+                # restarts and can reverse term_id -> term on export.
+                self.scalar_store.save_term_dictionary(collection_name, term_dict)
             total = self.scalar_store.count(collection_name)
             self.meta_store.update(collection_name, total=total)
             self._indexes.pop(collection_name, None)
             self._scalar_cache.pop(collection_name, None)
             return {"insert_count": len(data), "total": total}
 
+    @staticmethod
+    def _is_numeric_key(key: Any) -> bool:
+        """Whether a sparse-dict key denotes a term id rather than a term string.
+
+        Keys arrive as strings over HTTP/gRPC (JSON object keys are always
+        strings), so a numeric-looking string like "3" is treated as a term id,
+        while "apple" is treated as a term string requiring dictionary mapping.
+        """
+        if isinstance(key, int):
+            return True
+        if isinstance(key, str):
+            try:
+                int(key)
+                return True
+            except ValueError:
+                return False
+        return False
+
+    @classmethod
+    def _normalize_sparse(cls, value: Any, dictionary: Any = None) -> dict:
+        """Normalise a sparse vector to dict[int, float] (keyed by term id).
+
+        Accepts:
+        - {"indices": [...], "values": [...]} (Milvus/bundle export format);
+          indices are term ids, passed through directly.
+        - dict with numeric keys (term ids), passed through directly.
+        - dict with string-term keys (e.g. {"apple": 0.5}); each term is mapped
+          to a term id via `dictionary` (allocating new ids in first-seen order).
+          Requires `dictionary` to be provided.
+        """
+        if not isinstance(value, dict):
+            raise ValueError(
+                "sparse vector must be a dict or {'indices': [...], 'values': [...]}."
+            )
+        if "indices" in value and "values" in value:
+            return {int(k): float(v) for k, v in zip(value["indices"], value["values"])}
+        if all(cls._is_numeric_key(k) for k in value):
+            return {int(k): float(v) for k, v in value.items()}
+        # String-keyed terms: map each term to a term id via the dictionary.
+        if dictionary is None:
+            raise ValueError(
+                "string-keyed sparse vectors require a term dictionary; "
+                "call insert on a SPARSE_FLOAT_VECTOR collection."
+            )
+        return {dictionary.get_or_add(str(k)): float(v) for k, v in value.items()}
+
+    @staticmethod
+    def _sparse_row_to_terms(row: dict, dictionary: Any, key: str = "vector") -> dict:
+        """Rewrite an exported sparse row's vector from {"indices","values"}
+        (term ids) to {"term": weight} using the term dictionary.
+
+        `key` selects which field carries the sparse vector: "vector" for a
+        pure-sparse collection, "sparse_vector" for the sparse column of a
+        dual-field collection.  Term ids without a dictionary entry are left as
+        their string id, so a partially-populated dictionary never drops data.
+        """
+        vector = row.get(key)
+        if not (isinstance(vector, dict) and "indices" in vector and "values" in vector):
+            return row
+        terms: dict[str, float] = {}
+        for term_id, weight in zip(vector["indices"], vector["values"]):
+            try:
+                term_key = dictionary.term_of(int(term_id))
+            except (IndexError, ValueError):
+                term_key = str(term_id)
+            terms[term_key] = float(weight)
+        return {**row, key: terms}
+
+    @classmethod
+    def _rebuild_sparse_terms(
+        cls, rows: list[dict], key: str = "vector"
+    ) -> tuple[Any, list[dict]]:
+        """Rebuild a term dictionary from imported sparse rows.
+
+        `key` selects the sparse field ("vector" for pure sparse,
+        "sparse_vector" for dual).  String-keyed rows ({"term": weight}) allocate
+        term ids in first-seen order and are rewritten to {"indices","values"};
+        rows already in {"indices","values"} form (raw term ids) pass through
+        unchanged.  Returns (dictionary, rewritten_rows); the dictionary is empty
+        when no row used string terms.
+        """
+        from hypervec_term_dictionary import TermDictionary
+
+        dictionary = TermDictionary()
+        rewritten: list[dict] = []
+        for row in rows:
+            vector = row.get(key)
+            if (
+                isinstance(vector, dict)
+                and "indices" not in vector
+                and "values" not in vector
+                and vector
+            ):
+                indices = [dictionary.get_or_add(str(term)) for term in vector]
+                values = [float(v) for v in vector.values()]
+                rewritten.append({**row, key: {"indices": indices, "values": values}})
+            else:
+                rewritten.append(row)
+        return dictionary, rewritten
+
     def flush(self, collection_name: str) -> dict[str, Any]:
         collection_name = self.validate_collection_name(collection_name)
         with self._lock_for(collection_name).write_lock():
             meta = self._meta_or_raise(collection_name)
+            if self._is_sparse_collection(meta):
+                raise NotImplementedError(
+                    "sparse index building is not yet implemented; "
+                    "insert and export_rows are supported for SPARSE_FLOAT_VECTOR collections."
+                )
             if meta.dim is None:
                 raise ValueError(f"collection '{collection_name}' has no rows.")
             vectors = self.scalar_store.get_vectors(collection_name, int(meta.dim))
@@ -598,6 +823,12 @@ class HypervecServerEngine:
         collection_name = self.validate_collection_name(collection_name)
         if int(limit) <= 0:
             raise ValueError("limit must be positive.")
+        meta_check = self._meta_or_raise(collection_name)
+        if self._is_sparse_collection(meta_check):
+            raise NotImplementedError(
+                "sparse vector search is not yet implemented; "
+                "use search_by_full_text once BM25 indexing is available."
+            )
         lock = self._lock_for(collection_name)
         if collection_name not in self._indexes:
             with lock.write_lock():
@@ -834,6 +1065,20 @@ class HypervecServerEngine:
                     f"index.d={index.d} != meta.dim={meta.dim}."
                 )
             scalar_rows = self.scalar_store.export_rows(collection_name)
+            # Reverse term_id -> term so the exported bundle carries the original
+            # string terms ({"term": weight}).  Pure-sparse collections keep the
+            # sparse blob in the "vector" key; dual collections carry it in
+            # "sparse_vector".  Collections that only ever used raw term ids have
+            # an empty dictionary, in which case the {"indices","values"} form is
+            # kept unchanged.
+            if self._is_sparse_collection(meta) or self._is_dual_collection(meta):
+                sparse_key = "sparse_vector" if self._is_dual_collection(meta) else "vector"
+                term_dict = self.scalar_store.load_term_dictionary(collection_name)
+                if len(term_dict) > 0:
+                    scalar_rows = [
+                        self._sparse_row_to_terms(row, term_dict, sparse_key)
+                        for row in scalar_rows
+                    ]
             # When no explicit destination is given (the HTTP download path),
             # build into a controlled temp subdir so a failed/cancelled export
             # never leaves a stray bundle in the collection root.  purge sweeps
@@ -1000,6 +1245,20 @@ class HypervecServerEngine:
                         f"scalar_rows={len(scalar_rows)}."
                     )
 
+                # Rebuild the term dictionary from string-keyed sparse rows (if
+                # any) and rewrite their vectors to term ids so the staging store
+                # receives the {"indices","values"} form it expects.  Persisted
+                # after the scalar commit succeeds.  Pure-sparse uses the "vector"
+                # key; dual uses "sparse_vector".
+                import_term_dict = None
+                if self._is_sparse_collection(meta) or self._is_dual_collection(meta):
+                    sparse_key = (
+                        "sparse_vector" if self._is_dual_collection(meta) else "vector"
+                    )
+                    import_term_dict, scalar_rows = self._rebuild_sparse_terms(
+                        scalar_rows, sparse_key
+                    )
+
                 # Stage scalar rows into a side table.
                 self.scalar_store.import_rows_to_staging(collection_name, scalar_rows)
 
@@ -1040,6 +1299,10 @@ class HypervecServerEngine:
                     index_path.replace(pre_import)
                 staging_index.replace(index_path)
                 self.scalar_store.commit_staging(collection_name)
+                if import_term_dict is not None and len(import_term_dict) > 0:
+                    self.scalar_store.save_term_dictionary(
+                        collection_name, import_term_dict
+                    )
                 file_info = index_file_info(index_path)
                 updated = self.meta_store.bump_version(
                     collection_name,

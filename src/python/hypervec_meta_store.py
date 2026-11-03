@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import threading
 import time
@@ -53,6 +53,12 @@ class CollectionMeta:
     exported_index_checksum: str | None = None
     # Durable commit-intent record for in-flight bundle imports (Phase 3).
     import_txn: dict[str, Any] | None = None
+    # Per-vector-field metadata for Milvus-style multi-vector collections.
+    # Maps field_name -> {"datatype", "dim", "index_path", "index_version"}.
+    # The singular vector_field/dim/index_path/index_version above mirror the
+    # PRIMARY (dense) field for backward compatibility; vector_fields is empty
+    # {} for collections created before dual-field support.
+    vector_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -87,6 +93,7 @@ class CollectionMeta:
             exported_index_version=data.get("exported_index_version"),
             exported_index_checksum=data.get("exported_index_checksum"),
             import_txn=data.get("import_txn"),
+            vector_fields=dict(data.get("vector_fields") or {}),
         )
 
 
@@ -137,6 +144,7 @@ class MetaStore:
         vector_field: str,
         text_field: str,
         index_path: str,
+        vector_fields: dict[str, Any] | None = None,
     ) -> CollectionMeta:
         with self._lock:
             if collection_name in self._data:
@@ -157,6 +165,7 @@ class MetaStore:
                 index_size_bytes=None,
                 created_at=now,
                 updated_at=now,
+                vector_fields=dict(vector_fields or {}),
             )
             self._data[collection_name] = meta
             self._flush()

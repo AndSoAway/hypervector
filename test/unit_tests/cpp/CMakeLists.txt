@@ -21,6 +21,9 @@ set(HYPERVEC_TEST_SRC
 
   test_exact_ground_truth.cpp
   test_heap.cpp
+
+  test_exact_ground_truth.cpp
+  test_heap.cpp
   test_diskann_searcher.cpp
   test_diskann_storage.cpp
   test_index_diskann.cpp
@@ -46,6 +49,9 @@ set(HYPERVEC_TEST_SRC
 
   test_index_clone.cpp
 
+
+  test_index_rerank.cpp
+  test_hnsw.cpp
 
   test_index_rerank.cpp
   test_hnsw.cpp

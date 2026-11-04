@@ -146,6 +146,8 @@ def main():
         # IFlm tag; the old parameter family reported all of these as "generic".
         assert report["index"]["format_name"] == "flat_l2"
         assert report["index"]["format_tag"] == "IFlm"
+        assert report["execution"]["environment"]["omp_max_threads"] > 0
+        assert "index_load_rss_delta_bytes" in report["resources"]
         assert report["index"]["metric"] == "l2"
         assert report["index"]["vector_count"] == 3
         assert report["workload"]["query_count"] == 4
@@ -189,6 +191,50 @@ def main():
         assert rerank_report["rerank"]["candidates"] == 3
         assert_fingerprint(rerank_report["rerank"]["exact_base"], base)
         assert rerank_report["metrics"]["recall_at_k"] == 1.0
+
+        # An unsatisfiable depth must be rejected, not silently cap recall.
+        oversized = subprocess.run(
+            [str(eval_tool), "--index", str(index), "--queries", str(queries),
+             "--ground-truth", str(ground_truth), "--metric", "l2",
+             "--k", "99", "--warmup-runs", "0", "--measured-runs", "1"],
+            check=False, text=True, capture_output=True)
+        assert oversized.returncode == 1
+        assert "exceeds the number of vectors" in oversized.stderr
+
+        # A flat index accepts no runtime parameter, so sweep HNSW over ef_search.
+        hnsw = directory / "hnsw.index"
+        run(build_tool, "--input", base, "--output", hnsw,
+            "--index-type", "hnsw_flat", "--metric", "l2",
+            "--index-param", "m_hnsw=int:8")
+        sweep_path = directory / "sweep-report.json"
+        run(eval_tool, "--index", hnsw, "--queries", queries,
+            "--ground-truth", ground_truth, "--metric", "l2", "--k", 2,
+            "--warmup-runs", 0, "--measured-runs", 1,
+            "--sweep", "ef_search=8,16,32",
+            "--json-output", sweep_path)
+        sweep = json.loads(sweep_path.read_text(encoding="utf-8"))
+        points = sweep["search_sweep"]["points"]
+        assert [point["value"] for point in points] == [8, 16, 32]
+        assert all(point["recall_at_k"] == 1.0 for point in points)
+        assert sweep["index"]["format_name"] == "hnsw_flat"
+        assert sweep["execution"]["search_parameters"] == ["ef_search=32"]
+        assert sweep["search_sweep"]["headline_value"] == 32
+        assert sweep["metrics"] == {
+            key: value for key, value in points[-1].items()
+            if key not in {"value", "parameters"}}
+        single_path = directory / "single-sweep.json"
+        single = run(eval_tool, "--index", hnsw,
+            "--queries", queries, "--ground-truth", ground_truth,
+            "--metric", "l2", "--k", 2, "--sweep", "ef_search=8",
+            "--warmup-runs", 0, "--measured-runs", 1,
+            "--json-output", single_path)
+        single_report = json.loads(single_path.read_text(encoding="utf-8"))
+        assert single_report["execution"]["search_parameters"] == ["ef_search=8"]
+        assert single_report["search_sweep"]["axis"] == "ef_search"
+        assert single_report["search_sweep"]["headline_value"] == 8
+        assert len(single_report["search_sweep"]["points"]) == 1
+        assert single_report["search_sweep"]["points"][0]["value"] == 8
+        assert "sweep_axis=ef_search" in single.stdout
 
         # Provenance: a ground truth must name the base the index was built
         # from; a stale or mismatched file must be rejected.
@@ -240,6 +286,7 @@ def main():
             2,
             "--concurrency",
             4,
+            "--assume-read-only",
             "--json-output",
             concurrent_report_path,
         )

@@ -38,6 +38,7 @@ struct SearchEvaluationInput {
 
 /** Controls warmup and repeated measured searches over the complete batch. */
 struct SearchEvaluationOptions {
+  /** Search depth must be positive and no larger than index.n_total. */
   idx_t k = 10;
   size_t warmup_runs = 0;
   size_t measured_runs = 1;
@@ -46,6 +47,12 @@ struct SearchEvaluationOptions {
   /** Independent concurrent callers. With concurrency > 1 and no explicit
    * batch size, each call searches one query. Requires a read-only index. */
   size_t concurrency = 1;
+  /** Asserts the caller has verified the index performs no mutable work during
+   * Search. Concurrency above one shares one Index across threads, and the
+   * persistence layer exposes no read-only load mode, so the guarantee cannot
+   * be derived from the Index itself and must be asserted here. EvaluateSearch
+   * rejects concurrency above one while this is false. */
+  bool index_is_read_only = false;
 };
 
 /** Aggregate batch-search quality and timing metrics.

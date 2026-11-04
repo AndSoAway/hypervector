@@ -15,7 +15,20 @@ query cannot match itself; importing keeps the source's split and neighbours. Gi
 stage 2 and 3 `--provenance`, then pass both records to stage 4
 with `--build-provenance` and `--ground-truth-provenance` to reject an index that
 is not the one stage 3 built, or a ground truth computed from a base other than
-the indexed one.
+the indexed one. `--sweep NAME=v1,v2,...` evaluates one runtime parameter over
+several values with the index loaded once. `--concurrency` above one shares one
+index across threads, so `--assume-read-only` must assert `Search` mutates
+nothing; there is no read-only load mode. `--k` must not exceed the stored vector
+count.
+
+## Search depth and sweep reports
+
+Both the CLI and the reusable `EvaluateSearch` API reject `k > index.n_total`
+before running Search. Empty indexes cannot satisfy any positive search depth.
+A `--sweep` report always includes its axis and every point, even for one value.
+Top-level metrics describe the final point, named by `search_sweep.headline_value`;
+`execution.search_parameters` includes that point's applied sweep value alongside
+the fixed `--search-param` assignments. Per-point metrics remain in `points`.
 
 ## Optional exact reranking
 
@@ -39,6 +52,10 @@ rather than base rows. Useful for PQ, OPQ-PQ, LVQ and IVF-RaBitQ when
 approximate distances misorder candidates; it cannot recover a true neighbour
 the index never returned. Exact-storage graph/IVF indexes and DiskANN already
 hold or rerank raw vectors. The base adds roughly `n * d * 4` bytes.
+
+`peak_rss_bytes` is a whole-process high-water mark that also covers queries,
+ground truth and rerank base, so it is not comparable across algorithms;
+`index_load_rss_delta_bytes` is the closer estimate of index footprint.
 
 LVQ now uses mean-centered, per-vector scalar quantization: `nbits` (1–8)
 applies **to each dimension**, and `nlocal` is no longer a valid parameter.

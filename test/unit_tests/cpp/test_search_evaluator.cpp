@@ -26,7 +26,7 @@ namespace {
 
 class ScriptedIndex final : public hypervec::Index {
  public:
-  ScriptedIndex() : Index(2, hypervec::kMetricL2) {}
+  ScriptedIndex() : Index(2, hypervec::kMetricL2) { n_total = 5; }
 
   mutable size_t search_count = 0;
   mutable const hypervec::SearchParameters* received_parameters = nullptr;
@@ -53,7 +53,7 @@ class ScriptedIndex final : public hypervec::Index {
 
 class ConcurrentIndex final : public hypervec::Index {
  public:
-  ConcurrentIndex() : Index(2, hypervec::kMetricL2) {}
+  ConcurrentIndex() : Index(2, hypervec::kMetricL2) { n_total = 5; }
 
   mutable std::atomic<size_t> calls{0};
   mutable std::mutex mutex;
@@ -159,6 +159,7 @@ TEST(SearchEvaluator, ConcurrentCallersShareOnlyReadOnlyIndex) {
   options.warmup_runs = 1;
   options.measured_runs = 2;
   options.concurrency = 4;
+  options.index_is_read_only = true;
 
   const auto result = hypervec::EvaluateSearch(index, input, options);
   EXPECT_EQ(result.concurrency, 4U);
@@ -196,6 +197,7 @@ TEST(SearchEvaluator, ConcurrentHNSWSearchMatchesSequentialSearch) {
   options.warmup_runs = 1;
   options.measured_runs = 2;
   options.concurrency = 4;
+  options.index_is_read_only = true;
   const auto result = hypervec::EvaluateSearch(index, input, options);
   EXPECT_EQ(result.concurrency, 4U);
   EXPECT_EQ(result.latency_sample_count, 16U);
@@ -274,4 +276,35 @@ TEST(SearchEvaluator, RejectsInvalidRecallViews) {
   EXPECT_THROW(hypervec::ComputeRecallAtK({labels.data(), 1, 2},
                                           {labels.data(), 2, 1}, 1),
                hypervec::HypervecException);
+}
+
+TEST(SearchEvaluator, RejectsDepthAboveIndexSizeBeforeSearching) {
+  ScriptedIndex index;
+  const std::array<float, 2> query = {0, 0};
+  const std::array<hypervec::idx_t, 6> truth = {0, 1, 2, 3, 4, 5};
+  const hypervec::SearchEvaluationInput input{
+      query.data(), 1, {truth.data(), 1, 6}};
+  hypervec::SearchEvaluationOptions options;
+  options.k = 6;
+  EXPECT_THROW(hypervec::EvaluateSearch(index, input, options),
+               hypervec::HypervecException);
+  EXPECT_EQ(index.search_count, 0U);
+  index.Reset();
+  options.k = 1;
+  EXPECT_THROW(hypervec::EvaluateSearch(index, input, options),
+               hypervec::HypervecException);
+  EXPECT_EQ(index.search_count, 0U);
+}
+
+TEST(SearchEvaluator, AllowsDepthEqualToIndexSize) {
+  hypervec::IndexFlatL2 index(2);
+  const std::array<float, 2> query = {1, 0};
+  const std::array<hypervec::idx_t, 1> truth = {0};
+  index.Add(1, query.data());
+  const hypervec::SearchEvaluationInput input{
+      query.data(), 1, {truth.data(), 1, 1}};
+  hypervec::SearchEvaluationOptions options;
+  options.k = 1;
+  EXPECT_DOUBLE_EQ(hypervec::EvaluateSearch(index, input, options).recall_at_k,
+                   1.0);
 }

@@ -17,6 +17,7 @@ set(HYPERVEC_SRC
   index/ivf/index_ivf_flat.cpp
   index/flat/index_flat.cpp
   index/flat/index_flat_codes.cpp
+  index/kdtree/index_kdtree.cpp
   index/hnsw/index_hnsw.cpp
   index/hnsw/index_hnsw_pq.cpp
   index/hnsw/index_hnsw_lvq.cpp
@@ -73,6 +74,7 @@ set(HYPERVEC_HEADERS
   include/utils/structures/maybe_owned_vector.h
   include/index/flat/index_flat.h
   include/index/flat/index_flat_codes.h
+  include/index/kdtree/index_kdtree.h
   include/index/hnsw/index_hnsw.h
   include/index/hnsw/index_hnsw_pq.h
   include/index/hnsw/index_hnsw_lvq.h

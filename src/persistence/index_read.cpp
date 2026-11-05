@@ -14,6 +14,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/kdtree/index_kdtree.h>
 #include <index/refine/index_refine.h>
 #include <invlists/inverted_lists.h>
 #include <persistence/index_io.h>
@@ -177,6 +178,19 @@ Index* ReadIndex(IOReader* f, int io_flags) {
     read_index_header(*idx, f);
     idx->code_size = sizeof(float) * idx->d;
     READVECTOR(idx->codes);
+    return idx.release();
+  }
+
+  if (h == fourcc("IKDt")) {
+    auto idx = std::make_unique<IndexKDTree>();
+    read_index_header(*idx, f);
+    int leaf_size_i;
+    READ1(leaf_size_i);
+    idx->leaf_size = leaf_size_i;
+    READVECTOR(idx->xb);
+    READVECTOR(idx->nodes);
+    READVECTOR(idx->point_ids);
+    idx->tree_built = true;
     return idx.release();
   }
 

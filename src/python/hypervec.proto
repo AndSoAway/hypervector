@@ -21,6 +21,7 @@ service HyperVec {
   rpc LoadCollection(LoadCollectionRequest) returns (LoadCollectionResponse);
   rpc CloseCollection(CloseCollectionRequest) returns (CloseCollectionResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
+  rpc FullTextSearch(FullTextSearchRequest) returns (SearchResponse);
   rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
   rpc SyncCheck(SyncCheckRequest) returns (SyncCheckResponse);
   rpc DownloadIndex(DownloadIndexRequest) returns (DownloadIndexResponse);
@@ -123,6 +124,14 @@ message SearchRequest {
 }
 message SearchResponse {
   string results_json = 1;
+}
+message FullTextSearchRequest {
+  string collection_name = 1;
+  string query = 2;
+  int32 limit = 3;
+  repeated string output_fields = 4;
+  string filter = 5;
+  string consistency_level = 6;
 }
 
 message GetVersionRequest {

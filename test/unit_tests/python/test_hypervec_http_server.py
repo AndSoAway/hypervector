@@ -62,6 +62,17 @@ class FakeEngine:
             names = [example["name"], example["index_type"], *example.get("aliases", [])]
             if any(name.casefold() == requested for name in names):
                 return example
+
+    def search_by_full_text(self, collection_name, *, query, limit, **kwargs):
+        if collection_name != "demo":
+            raise FileNotFoundError(f"collection '{collection_name}' not found.")
+        if not query.strip():
+            raise ValueError("query must not be empty.")
+        del kwargs
+        return [
+            {"id": f"ft-{i}", "distance": float(limit - i), "entity": {"contents": query}}
+            for i in range(limit)
+        ]
         return None
 
     def get_version(self, collection_name):
@@ -336,3 +347,34 @@ def test_hypervec_http_purge_409_when_not_exported(tmp_path):
     # Without require_exported, it should succeed
     resp = client.post("/collections/demo/purge-data", json={"require_exported": False})
     assert resp.status_code == 200
+
+
+def test_hypervec_http_server_full_text_search(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    module = load_http_module()
+    client = TestClient(module.create_app(data_root=str(tmp_path), engine=FakeEngine()))
+
+    # Happy path: raw Chinese query -> flat results list, wrapped in {"results": ...}.
+    resp = client.post(
+        "/collections/demo/search-text",
+        json={"query": "自然语言处理", "limit": 2, "output_fields": ["contents"]},
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert [hit["id"] for hit in results] == ["ft-0", "ft-1"]
+    assert results[0]["entity"]["contents"] == "自然语言处理"
+
+    # Empty query -> ValueError -> 400.
+    bad = client.post("/collections/demo/search-text", json={"query": "  ", "limit": 2})
+    assert bad.status_code == 400
+
+    # Missing collection -> FileNotFoundError -> 404.
+    missing = client.post(
+        "/collections/nope/search-text", json={"query": "x", "limit": 2}
+    )
+    assert missing.status_code == 404

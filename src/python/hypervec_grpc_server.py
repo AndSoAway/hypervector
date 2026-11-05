@@ -169,6 +169,20 @@ class HyperVecServicer(pb2_grpc.HyperVecServicer):
             _abort(context, exc)
         return pb2.SearchResponse(results_json=_json(result))
 
+    def FullTextSearch(self, request, context):
+        try:
+            result = self._engine.search_by_full_text(
+                request.collection_name,
+                query=request.query,
+                limit=request.limit,
+                output_fields=list(request.output_fields),
+                filter=request.filter or "",
+                consistency_level=request.consistency_level or None,
+            )
+        except Exception as exc:
+            _abort(context, exc)
+        return pb2.SearchResponse(results_json=_json(result))
+
     def GetVersion(self, request, context):
         try:
             result = self._engine.get_version(request.collection_name)

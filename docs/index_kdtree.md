@@ -18,7 +18,8 @@
 **低维**数据上通过剪枝跳过大量距离计算。
 
 > 适用范围:KD-tree 的剪枝只在**低维**(经验上 d ≲ 20)有效。维度越高,回溯越难剪掉
-> 分支,检索会退化到接近暴力扫描——详见「高维退化」一节。
+> 分支,检索会退化到接近暴力扫描(结果仍精确,退化的只是速度)。高维向量的加速应选
+> 近似索引 `IndexHNSW` / `IndexIVF`。
 
 ## 算法
 
@@ -113,26 +114,53 @@ idx2 = hypervec.read_index("idx.hypervec")
 > 说明:构建 Python 扩展需要 CMake ≥ 3.17。SWIG 绑定本身已验证可正确生成
 > `IndexKDTree` 类(含构造函数、`leaf_size` 属性、`BuildTree()`)。
 
-## 高维退化
+## 测试
 
-KD-tree 的轴对齐超平面剪枝依赖"另一侧子空间离 query 足够远"这一判断。维度升高后,
-几乎每个超平面都离 query 很近,回溯时两侧都得进,树结构近乎失效,检索退化到接近
-**遍历全部叶子**——此时它的每 query 代价与 `IndexFlatL2` 暴力扫描同阶。
+单元测试在 `test/unit_tests/cpp/test_index_kdtree.cpp`,核心判据是**与 `IndexFlatL2`
+暴力精确结果对拍**——两者返回的 k 近邻集合一致即证明 KD-tree 的精确性。覆盖:
 
-**结果始终精确**(这是 exact 索引,不是近似),退化的只有速度。因此:
+| 用例 | 验证点 |
+|---|---|
+| `ExactMatchesBruteForce` | d=2/8/16、n=1000、k=10,近邻集合与 `IndexFlatL2` 完全一致 |
+| `ExactInHighDimension` | d=128 下结果仍精确(确认是回溯正确而非近似) |
+| `SearchRequiresBuiltTree` | 未 `BuildTree()` 直接 `Search` 抛异常 |
+| `FewerPointsThanK` | n < k 时尾部用 `label=-1` 填充 |
+| `EmptyIndexReturnsPadding` | 空索引返回全 `-1` |
+| `PersistenceRoundtripPreservesSearch` | 写盘读回后检索结果逐元素一致 |
 
-- 低维(几维到十几维,如地理坐标、低维 embedding):KD-tree 剪枝有效,比暴力快。
-- 高维(几十维以上,如 128/768 维语义向量):不要期待 KD-tree 比暴力快;要高维
-  加速应选近似索引 `IndexHNSW` / `IndexIVF`。
+> 对拍比较的是**近邻集合**(按 id 排序),而非逐行严格相等:`IndexKDTree` 用标量
+> `fvec_L2sqr`,`IndexFlatL2` 用 SIMD 归约,求和顺序不同,会让两个近乎等距的点的
+> 浮点距离发生极小差异、从而交换先后;距离值本身用容差比较。
 
-### 关于基准数字的一个提醒
+### 随库构建运行
 
-在 Wiki 1M(768 维)上实测,`IndexKDTree` 的每 query 耗时反而**低于** `IndexFlatL2`
-(约 35 ms vs 466 ms),recall@10 = 1.0。这**不代表 KD-tree 在 768 维剪枝有效**——
-真实原因是**并行粒度不同**:`IndexKDTree::Search` 按 query 用 OpenMP 并行,少量 query
-就能吃满多核;而 `IndexFlatL2` 这条路径主要在单条 query 内部并行,query 少时并行度低。
-要公平比较剪枝能力,应单线程运行,或让 query 数远多于线程数。换句话说,768 维下
-KD-tree "每 query 仍要算接近全量距离"的本质没变,只是被多线程摊薄了。
+测试随 CMake 的 `BUILD_TESTING` 一起编进 `hypervec_test`:
+
+```bash
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+make -j"$(nproc)" hypervec_test
+./test/unit_tests/cpp/hypervec_test --gtest_filter='IndexKDTree.*'
+```
+
+### 独立编译运行
+
+也可以不走全量 CMake,直接把测试链到已编好的静态库(`BUILD_TESTING=ON` 需要能拉取
+googletest;若网络受限,用本地已有的 gtest 头文件与库):
+
+```bash
+# 先只编库
+cmake .. -DBUILD_TESTING=OFF && make -j"$(nproc)" hypervec   # 产物: build/src/libhypervec.a
+
+# 再把测试单独编译链接(GT=本地 gtest 安装前缀,含 include/ 与 lib/)
+g++ -std=c++2a -O2 -fopenmp \
+  -I <repo>/src/include -I <repo>/src -I $GT/include \
+  <repo>/test/unit_tests/cpp/test_index_kdtree.cpp \
+  <repo>/build/src/libhypervec.a \
+  -L $GT/lib -lgtest -lgtest_main -lopenblas -llapack \
+  -Wl,-rpath,$GT/lib -o /tmp/kd_test
+/tmp/kd_test
+```
 
 ## 文件一览
 

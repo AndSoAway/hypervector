@@ -170,35 +170,42 @@ void IndexHNSW::Reset() {
 
 void IndexHNSW::Search(idx_t n, const float* x, idx_t k, float* distances,
                        idx_t* labels, const SearchParameters* params) const {
-  // Use HNSW graph-based Search
-  // Get distance computer from storage.
-  // Must go through storage_distance_computer() so similarity metrics are
-  // negated — HNSW graph traversal assumes "smaller is better".
-  auto dis = storage_distance_computer(storage);
-
   // Do not mutate the process-global OpenMP thread count here. Concurrent
   // Python callers may run Search() after the SWIG layer releases the GIL, so
   // thread count should be controlled by the caller via the OpenMP runtime
   // environment instead of per query.
 
-  // Create result handler
   using RH = HeapBlockResultHandler<HNSW::C>;
   RH bres(n, distances, labels, k);
-  typename RH::SingleResultHandler res(bres);
 
-  // Create visited table
-  VisitedTable vt(n_total);
-
-  // Search each query
-  for (idx_t i = 0; i < n; i++) {
-    dis->SetQuery(x + i * d);
-    res.begin(i);
-    hnsw.Search(*dis, this, res, vt, params);
-    res.end();
+  // result rows are disjoint and candidate heaps inside HNSW::Search are
+  // function-local, so nothing is shared between threads except the read-only
+  // graph and storage.
+  std::exception_ptr first_error;
+#pragma omp parallel
+  {
+    std::unique_ptr<DistanceComputer> pdis(storage_distance_computer(storage));
+    VisitedTable vt(n_total);
+    typename RH::SingleResultHandler res(bres);
+    std::exception_ptr local_error;
+#pragma omp for schedule(dynamic)
+    for (idx_t i = 0; i < n; i++) {
+      if (local_error) continue;
+      try {
+        pdis->SetQuery(x + i * d);
+        res.begin(i);
+        hnsw.Search(*pdis, this, res, vt, params);
+        res.end();
+      } catch (...) {
+        local_error = std::current_exception();
+      }
+    }
+    if (local_error) {
+#pragma omp critical
+      { if (!first_error) first_error = local_error; }
+    }
   }
-
-  // Cleanup
-  delete dis;
+  if (first_error) std::rethrow_exception(first_error);
 }
 
 void IndexHNSW::RangeSearch(idx_t n, const float* x, float radius,

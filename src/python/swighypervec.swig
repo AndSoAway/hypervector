@@ -16,6 +16,7 @@
 #include <index/hnsw/index_hnsw_lvq.h>
 #include <index/hnsw/index_hnsw_pq.h>
 #include <index/ivf/index_ivf_flat.h>
+#include <index/kdtree/index_kdtree.h>
 #include <quantization/pq/index_ivfpq.h>
 #include <quantization/lvq/index_lvq.h>
 #include <quantization/lvq/index_ivflvq.h>
@@ -290,6 +291,13 @@ struct IndexFlatL2 : Index {
 
 struct IndexHNSWFlat : Index {
   IndexHNSWFlat(int d, int M, MetricType metric = kMetricL2);
+};
+
+struct IndexKDTree : Index {
+  int leaf_size;
+  explicit IndexKDTree(idx_t d, MetricType metric = kMetricL2,
+                       int leaf_size = 16);
+  void BuildTree();
 };
 
 struct IndexLVQ : Index {

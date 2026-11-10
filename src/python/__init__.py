@@ -13,6 +13,7 @@ __all__ = [
     "IndexFlatL2",
     "IndexHNSWFlat",
     "IndexHNSWLVQ",
+    "IndexKDTree",
     "IndexIVFLVQ",
     "IndexLVQ",
     "ReadIndex",

@@ -15,6 +15,7 @@ set(HYPERVEC_TEST_SRC
   test_hnsw.cpp
   test_callback.cpp
   test_utils.cpp
+  test_runtime_config.cpp
   test_mmap.cpp
   test_factory_tools.cpp
   test_distances_simd.cpp
